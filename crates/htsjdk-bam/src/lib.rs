@@ -20,6 +20,7 @@ pub mod bases;
 pub mod bin;
 pub mod cigar;
 pub mod header;
+pub mod index;
 pub mod record;
 pub mod tag;
 pub mod writer;
