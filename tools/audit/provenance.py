@@ -50,13 +50,16 @@ def main(roots) -> int:
                     continue
                 source = m.group(1)
                 checked += 1
-                bad = next((w for w in FORBIDDEN if w in source.lower()), None)
+                lowered = source.lower()
+                bad = next((w for w in FORBIDDEN if w in lowered), None)
                 if bad:
                     violations.append(
                         (path, line_no, source, FORBIDDEN[bad])
                     )
                     continue
-                if not any(source.startswith(a) for a in ALLOWED):
+                # Case-insensitive: module headers cite "Picard 3.4.0" in prose and
+                # "picard.analysis.X" as a symbol, and both are the same permissive source.
+                if not any(lowered.startswith(a.lower()) for a in ALLOWED):
                     violations.append(
                         (path, line_no, source, "unclassified source; add it to ALLOWED "
                          "or FORBIDDEN in this script after checking its licence")
