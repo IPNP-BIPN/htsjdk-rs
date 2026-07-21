@@ -133,3 +133,206 @@ mod tests {
         );
     }
 }
+
+/// `SequenceUtil.isBisulfiteConverted(read, reference, negativeStrand)`.
+///
+/// On the positive strand a reference `C` read as `T` is a conversion, not a mismatch; on the
+/// negative strand a reference `G` read as `A` is. Both tests go through [`bases_equal`], so
+/// they fold case and accept `.` for `N` along with everything else that predicate accepts.
+pub fn is_bisulfite_converted(read: u8, reference: u8, negative_strand: bool) -> bool {
+    if negative_strand {
+        bases_equal(reference, b'G') && bases_equal(read, b'A')
+    } else {
+        bases_equal(reference, b'C') && bases_equal(read, b'T')
+    }
+}
+
+/// `SequenceUtil.bisulfiteBasesEqual(negativeStrand, read, reference)`.
+pub fn bisulfite_bases_equal(negative_strand: bool, read: u8, reference: u8) -> bool {
+    bases_equal(read, reference) || is_bisulfite_converted(read, reference, negative_strand)
+}
+
+/// `SequenceUtil.countMismatches(read, referenceBases, referenceOffset, bisulfiteSequence, matchAmbiguousRef)`,
+/// restricted to `matchAmbiguousRef = false`, which is what every Picard caller passes.
+///
+/// Three things decide the answer and none is about arithmetic:
+///
+///   * the walk is over **alignment blocks**, so inserted and clipped read bases are not compared
+///     at all and deleted reference bases are stepped over;
+///   * the comparison is [`bases_equal`], so `N` in the read against `N` in the reference is a
+///     **match**, and any byte outside the IUPAC table matches any other such byte;
+///   * `referenceOffset` is subtracted from the reference block start, so the caller can pass a
+///     slice of the contig rather than the whole thing. Picard's GC-bias collector passes 0 and
+///     the whole contig.
+///
+/// htsjdk wraps the whole loop in `try { } catch (Exception e)` and rethrows as `SAMException`,
+/// which turns an out-of-range reference into an error rather than a silent wrong answer. Here
+/// that is the slice index panicking, which has the same effect and the same cause.
+pub fn count_mismatches(
+    read_bases: &[u8],
+    blocks: &[crate::alignment_block::AlignmentBlock],
+    reference_bases: &[u8],
+    reference_offset: i32,
+    negative_strand: bool,
+    bisulfite_sequence: bool,
+) -> i32 {
+    let mut mismatches = 0;
+    for block in blocks {
+        let read_block_start = (block.read_start - 1) as usize;
+        let reference_block_start = (block.reference_start - 1 - reference_offset) as usize;
+        for i in 0..block.length as usize {
+            let read = read_bases[read_block_start + i];
+            let reference = reference_bases[reference_block_start + i];
+            let matches = if bisulfite_sequence {
+                bisulfite_bases_equal(negative_strand, read, reference)
+            } else {
+                bases_equal(read, reference)
+            };
+            if !matches {
+                mismatches += 1;
+            }
+        }
+    }
+    mismatches
+}
+
+/// `SequenceUtil.countInsertedBases(cigar)`: the summed length of `I` elements.
+pub fn count_inserted_bases(cigar: &crate::cigar::Cigar) -> i32 {
+    cigar
+        .elements
+        .iter()
+        .filter(|e| e.op == crate::cigar::Op::I)
+        .map(|e| e.length as i32)
+        .sum()
+}
+
+/// `SequenceUtil.countDeletedBases(cigar)`: the summed length of `D` elements.
+///
+/// `N` is **not** counted. A spliced read's skipped reference is not a deletion here, which
+/// matters for RNA-seq alignments where `N` runs are long and common.
+pub fn count_deleted_bases(cigar: &crate::cigar::Cigar) -> i32 {
+    cigar
+        .elements
+        .iter()
+        .filter(|e| e.op == crate::cigar::Op::D)
+        .map(|e| e.length as i32)
+        .sum()
+}
+
+#[cfg(test)]
+mod counter_tests {
+    use super::*;
+    use crate::alignment_block::alignment_blocks;
+    use crate::cigar::{Cigar, CigarElement, Op};
+
+    fn cigar(spec: &[(u32, Op)]) -> Cigar {
+        Cigar::new(
+            spec.iter()
+                .map(|&(length, op)| CigarElement { length, op })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn mismatches_are_counted_only_inside_alignment_blocks() {
+        let c = cigar(&[(4, Op::M), (2, Op::I), (4, Op::M)]);
+        let blocks = alignment_blocks(&c, 1);
+        // Read bases 4..6 are the insertion and are never compared, however wrong they look.
+        let read = b"AAAAGGAAAA";
+        let reference = b"AAAAAAAA";
+        assert_eq!(
+            count_mismatches(read, &blocks, reference, 0, false, false),
+            0,
+            "the inserted G's are not compared to anything"
+        );
+    }
+
+    /// A deletion steps the reference forward without consuming read bases.
+    #[test]
+    fn a_deletion_steps_the_reference() {
+        let c = cigar(&[(4, Op::M), (3, Op::D), (4, Op::M)]);
+        let blocks = alignment_blocks(&c, 1);
+        let read = b"AAAAAAAA";
+        let reference = b"AAAAGGGAAAA";
+        assert_eq!(
+            count_mismatches(read, &blocks, reference, 0, false, false),
+            0
+        );
+    }
+
+    /// `N` against `N` is a match, because the comparison is mask equality.
+    #[test]
+    fn n_matches_n() {
+        let c = cigar(&[(4, Op::M)]);
+        let blocks = alignment_blocks(&c, 1);
+        assert_eq!(
+            count_mismatches(b"ANNA", &blocks, b"ANNA", 0, false, false),
+            0
+        );
+        assert_eq!(
+            count_mismatches(b"ANNA", &blocks, b"AAAA", 0, false, false),
+            2,
+            "N against A is a mismatch"
+        );
+    }
+
+    #[test]
+    fn the_reference_offset_shifts_the_reference_index() {
+        let c = cigar(&[(4, Op::M)]);
+        let blocks = alignment_blocks(&c, 101);
+        let reference = b"GGGGAAAA";
+        // Without the offset the read would be compared against reference[100..], out of range.
+        assert_eq!(
+            count_mismatches(b"AAAA", &blocks, reference, 96, false, false),
+            0
+        );
+    }
+
+    /// Bisulfite: C→T on the forward strand and G→A on the reverse are conversions, not
+    /// mismatches, and each applies on one strand only.
+    #[test]
+    fn bisulfite_conversions_are_not_mismatches_on_their_own_strand() {
+        let c = cigar(&[(4, Op::M)]);
+        let blocks = alignment_blocks(&c, 1);
+        assert_eq!(
+            count_mismatches(b"TTTT", &blocks, b"CCCC", 0, false, true),
+            0,
+            "C read as T on the forward strand"
+        );
+        assert_eq!(
+            count_mismatches(b"TTTT", &blocks, b"CCCC", 0, true, true),
+            4,
+            "the same pair on the reverse strand is a mismatch"
+        );
+        assert_eq!(
+            count_mismatches(b"AAAA", &blocks, b"GGGG", 0, true, true),
+            0,
+            "G read as A on the reverse strand"
+        );
+    }
+
+    #[test]
+    fn without_bisulfite_a_conversion_is_a_mismatch() {
+        let c = cigar(&[(4, Op::M)]);
+        let blocks = alignment_blocks(&c, 1);
+        assert_eq!(
+            count_mismatches(b"TTTT", &blocks, b"CCCC", 0, false, false),
+            4
+        );
+    }
+
+    /// `N` in the CIGAR is a skip, not a deletion, and the counters keep them apart.
+    #[test]
+    fn skips_are_not_deletions() {
+        let c = cigar(&[(4, Op::M), (100, Op::N), (4, Op::M), (3, Op::D), (2, Op::I)]);
+        assert_eq!(count_deleted_bases(&c), 3, "the N run is not counted");
+        assert_eq!(count_inserted_bases(&c), 2);
+    }
+
+    #[test]
+    fn a_cigar_with_no_indels_counts_zero() {
+        let c = cigar(&[(10, Op::M), (5, Op::S)]);
+        assert_eq!(count_inserted_bases(&c), 0);
+        assert_eq!(count_deleted_bases(&c), 0);
+    }
+}
