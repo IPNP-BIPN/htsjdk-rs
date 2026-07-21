@@ -93,6 +93,36 @@ impl Histogram {
         self.bins.is_empty()
     }
 
+    /// `Histogram.get(id)`: the bin's value, or `None` when there is no such bin.
+    ///
+    /// The distinction matters to callers that accumulate coverage by probing keys that may not
+    /// exist; treating a missing bin as zero and as absent are the same thing arithmetically,
+    /// but only one of them is what the Java tests for.
+    pub fn get(&self, id: f64) -> Option<f64> {
+        self.bins.get(&Key(id)).copied()
+    }
+
+    /// `Histogram.trimByWidth`: removes bins whose id exceeds `width`, from the top down.
+    ///
+    /// It walks the descending key set and **stops at the first key that is not above the
+    /// width**, rather than filtering the whole map. For a normally ordered histogram the two
+    /// are the same; they differ if a NaN key is present, since NaN sorts last and compares
+    /// false against everything, so the walk stops immediately and nothing is trimmed.
+    pub fn trim_by_width(&mut self, width: i32) {
+        let width = width as f64;
+        let mut to_remove = Vec::new();
+        for k in self.bins.keys().rev() {
+            if k.0 > width {
+                to_remove.push(*k);
+            } else {
+                break;
+            }
+        }
+        for k in to_remove {
+            self.bins.remove(&k);
+        }
+    }
+
     /// `Histogram.getCount`: the total of the bin values, not the number of bins.
     pub fn count(&self) -> f64 {
         self.bins.values().sum()
@@ -443,6 +473,33 @@ mod tests {
         let hist = h(&[(1.0, 5.0), (2.0, 1.0), (3.0, 3.0)]);
         assert_eq!(hist.median_bin_size(), 3.0);
         assert_eq!(hist.mean_bin_size(), 3.0);
+    }
+
+    #[test]
+    fn trimming_removes_only_the_tail_above_the_width() {
+        let mut hist = h(&[(1.0, 1.0), (5.0, 1.0), (10.0, 1.0), (100.0, 1.0)]);
+        hist.trim_by_width(10);
+        let ids: Vec<f64> = hist.bins().map(|(k, _)| k).collect();
+        assert_eq!(ids, vec![1.0, 5.0, 10.0], "the width itself is kept");
+    }
+
+    /// The walk stops at the first key not above the width, so a NaN key (which sorts last and
+    /// compares false against everything) blocks the trim entirely.
+    #[test]
+    fn a_nan_key_stops_the_trim_immediately() {
+        let mut hist = h(&[(1.0, 1.0), (100.0, 1.0)]);
+        hist.increment(f64::NAN);
+        hist.trim_by_width(10);
+        assert_eq!(hist.size(), 3, "nothing is removed once the walk stops");
+    }
+
+    #[test]
+    fn get_distinguishes_a_missing_bin_from_a_zero_one() {
+        let mut hist = h(&[(1.0, 5.0)]);
+        assert_eq!(hist.get(1.0), Some(5.0));
+        assert_eq!(hist.get(2.0), None);
+        hist.prefill(&[2.0]);
+        assert_eq!(hist.get(2.0), Some(0.0));
     }
 
     #[test]
