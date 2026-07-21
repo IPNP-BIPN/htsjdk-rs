@@ -6,5 +6,7 @@ license.workspace = true
 repository.workspace = true
 description = "Java-semantics floating point, bit-identical to the reference JVM"
 
+[dependencies]
+
 [dev-dependencies]
 flate2.workspace = true

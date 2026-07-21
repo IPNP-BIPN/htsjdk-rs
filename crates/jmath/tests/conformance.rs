@@ -41,9 +41,9 @@ fn agreement() -> BTreeMap<String, (u64, u64)> {
         let math = bits(mb);
         let ours = match f {
             "sqrt" => jmath::math::sqrt(x),
+            "log" => jmath::math::log(x),
+            "log10" => jmath::math::log10(x),
             "exp" => x.exp(),
-            "log" => x.ln(),
-            "log10" => x.log10(),
             "log1p" => x.ln_1p(),
             "expm1" => x.exp_m1(),
             "cbrt" => x.cbrt(),
@@ -71,12 +71,23 @@ fn corpus_is_present_and_substantial() {
     );
 }
 
-/// `sqrt` is the one function that needs no porting, because IEEE-754 mandates its rounding.
+/// Functions that are bit-identical to `java.lang.Math` over the whole corpus.
+///
+/// `sqrt` is free: IEEE-754 mandates its rounding, so every implementation agrees.
+/// `log` and `log10` are ported, and reach exactness by being correctly rounded rather than by
+/// reproducing HotSpot's intrinsic. See decision 0006.
 #[test]
-fn sqrt_is_bit_identical_to_the_jvm() {
+fn ported_functions_are_bit_identical_to_the_jvm() {
     let a = agreement();
-    let (ok, n) = a["sqrt"];
-    assert_eq!(ok, n, "sqrt must be exact over all {n} points, got {ok}");
+    for f in ["sqrt", "log", "log10"] {
+        let (ok, n) = a[f];
+        assert_eq!(
+            ok,
+            n,
+            "`{f}` must match java.lang.Math on all {n} points, got {ok} ({} divergent)",
+            n - ok
+        );
+    }
 }
 
 /// Records which functions are not yet bit-identical, and reports the live rate.
@@ -94,9 +105,7 @@ fn sqrt_is_bit_identical_to_the_jvm() {
 fn unported_functions_are_not_yet_exact() {
     let a = agreement();
     let mut report = Vec::new();
-    for f in [
-        "exp", "log", "log10", "pow", "log1p", "expm1", "cbrt", "sin", "cos",
-    ] {
+    for f in ["exp", "pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
         let (ok, n) = a[f];
         report.push(format!("{f}={:.4}%", 100.0 * ok as f64 / n as f64));
         assert!(
