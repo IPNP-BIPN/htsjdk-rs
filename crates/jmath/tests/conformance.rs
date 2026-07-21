@@ -1,9 +1,9 @@
 //! Conformance against the reference JVM, from the corpus in `tests/data/jmath.csv.gz`.
 //!
-//! Only `sqrt` is implemented so far and it is asserted at 100%. The remaining functions are
-//! measured rather than asserted, and the test *fails* if any of them silently reaches 100%
-//! while still being backed by Rust's libm: that would mean the baseline moved and decision
-//! 0005's numbers no longer describe reality.
+//! `sqrt`, `log` and `log10` are ported and asserted bit-identical over every point. The rest
+//! still delegate to Rust's libm and are measured rather than asserted; that test *fails* if
+//! one of them silently reaches 100%, which would mean a function was ported without decisions
+//! 0005 and 0006 being updated to match.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
