@@ -21,8 +21,6 @@
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
 pub mod dd;
-mod exp;
-mod exp_table;
 mod log;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
@@ -47,12 +45,11 @@ pub mod math {
         crate::log::log10(x)
     }
 
-    /// `Math.exp`. Not correctly rounded, so this reproduces HotSpot's intrinsic rather than
-    /// rounding the true result.
-    #[inline]
-    pub fn exp(x: f64) -> f64 {
-        crate::exp::exp(x)
-    }
+    // `Math.exp` is WITHDRAWN, not missing. It was implemented as an operation-by-operation
+    // transcription of HotSpot's x86 intrinsic, and that source file is GPL2 *only*, with no
+    // Classpath Exception, so the transcription could not be published under this crate's MIT
+    // licence. Removed in decision 0014. `Math.exp` now has the same status as `Math.pow`:
+    // unported, with the reason recorded rather than the gap left unexplained.
 }
 
 /// `java.lang.StrictMath`. fdlibm, portable by specification.
