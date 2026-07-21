@@ -227,6 +227,19 @@ jobs:
              && java -cp .:/j/commons-math3.jar JMathDump /out/jmath.csv'
           wc -l /tmp/out/jmath.csv
 
+      - name: "Is pow(x, 2) exactly x * x?"
+        # Histogram.getStandardDeviation calls pow(value - mean, 2), which puts the deferred
+        # pow intrinsic on the Phase 1 critical path. If the two agree, Histogram can be ported
+        # with multiplication and the deferral holds. Measured here rather than assumed.
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/pow-probe":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/PowSq.java . && javac -d . PowSq.java && java PowSq' | tee /tmp/powsq.txt
+          grep -q 'differ=0$' /tmp/powsq.txt || {
+            echo "pow(x, 2) is NOT x * x on this silicon. Histogram cannot use multiplication."
+            exit 1
+          }
+
       - name: Diff every function against the emulated corpus
         # Expectation from decision 0007: exp, log, log10 and sqrt agree, because none of them
         # depends on an unrefined approximate instruction. pow is the one under test.
