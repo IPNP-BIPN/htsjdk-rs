@@ -119,9 +119,12 @@ fn acceptable_bases(bases: &[u8], is_reference: bool) -> bool {
     if would_be_star(bases) {
         return !is_reference;
     }
-    bases
-        .iter()
-        .all(|b| matches!(b, b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't' | b'N' | b'n'))
+    bases.iter().all(|b| {
+        matches!(
+            b,
+            b'A' | b'C' | b'G' | b'T' | b'a' | b'c' | b'g' | b't' | b'N' | b'n'
+        )
+    })
 }
 
 impl Allele {
@@ -239,7 +242,10 @@ mod tests {
 
     #[test]
     fn plain_bases_are_uppercased() {
-        assert_eq!(Allele::from_str("acgt", true).unwrap().display_string(), "ACGT");
+        assert_eq!(
+            Allele::from_str("acgt", true).unwrap().display_string(),
+            "ACGT"
+        );
         assert_eq!(Allele::from_str("a", false).unwrap().display_string(), "A");
     }
 
@@ -247,9 +253,14 @@ mod tests {
     /// decided by the first and last byte, so it reaches further than `<...>`.
     #[test]
     fn symbolic_bases_keep_their_case() {
-        assert_eq!(Allele::from_str("<del>", false).unwrap().display_string(), "<del>");
         assert_eq!(
-            Allele::from_str("a]chr2:456]", false).unwrap().display_string(),
+            Allele::from_str("<del>", false).unwrap().display_string(),
+            "<del>"
+        );
+        assert_eq!(
+            Allele::from_str("a]chr2:456]", false)
+                .unwrap()
+                .display_string(),
             "a]chr2:456]",
             "a breakend contains ']' so it is symbolic, so it is not uppercased"
         );
@@ -289,8 +300,14 @@ mod tests {
 
     #[test]
     fn what_cannot_be_the_reference() {
-        assert_eq!(Allele::from_str(".", true), Err(AlleleError::NoCallAsReference));
-        assert_eq!(Allele::from_str("*", true), Err(AlleleError::SpanDelAsReference));
+        assert_eq!(
+            Allele::from_str(".", true),
+            Err(AlleleError::NoCallAsReference)
+        );
+        assert_eq!(
+            Allele::from_str("*", true),
+            Err(AlleleError::SpanDelAsReference)
+        );
         assert_eq!(
             Allele::from_str("<DEL>", true),
             Err(AlleleError::SymbolicAsReference)
