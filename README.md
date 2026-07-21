@@ -33,7 +33,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | SAM text header (`SAMTextHeaderCodec.encode`) | **byte-identical**, 9 goldens |
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
-| SAM text records | planned |
+| SAM text record writer | **byte-identical**, 66 of 67 (one pinned, decision 0011) |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
 | Metrics number formatting (`FormatUtil`) | **99.73%**, 112 divergences pinned, decision 0011 |
 | `MetricsFile` layout | planned |
