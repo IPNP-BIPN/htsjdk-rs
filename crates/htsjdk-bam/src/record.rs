@@ -169,6 +169,20 @@ impl BamRecord {
     /// Returns the record's on-disk bytes including its own leading `block_size` field, which
     /// is how records appear in a BAM stream.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        self.encode_inner(None)
+    }
+
+    /// `encode`, with the indexing bin forced rather than computed.
+    ///
+    /// `BAMRecordCodec` forces the bin to 0 when the record's reference is longer than
+    /// `BIN_GENOMIC_SPAN`. Deciding that needs the sequence dictionary, which a record does
+    /// not carry, so the writer decides and passes the answer in. See
+    /// [`crate::writer::BamWriter`].
+    pub fn encode_with_bin(&self, index_bin: i32) -> Result<Vec<u8>, EncodeError> {
+        self.encode_inner(Some(index_bin))
+    }
+
+    fn encode_inner(&self, forced_bin: Option<i32>) -> Result<Vec<u8>, EncodeError> {
         let read_length = self.read_length();
 
         // If cigar is too long, put into CG tag and replace with sentinel value.
@@ -202,14 +216,13 @@ impl BamRecord {
 
         // The sentinel has the same reference length as the real CIGAR, so displacing a long
         // CIGAR does not move the bin.
-        let index_bin = if self.alignment_start != bin::NO_ALIGNMENT_START {
-            // htsjdk additionally forces the bin to 0 for references longer than
-            // BIN_GENOMIC_SPAN, after warning once. That needs the sequence dictionary, so it
-            // belongs to the writer rather than to the record; see `encode_with_bin`.
-            bin::compute_indexing_bin(self.alignment_start, self.alignment_end())
-                .map_err(EncodeError::Bin)?
-        } else {
-            0
+        let index_bin = match forced_bin {
+            Some(b) => b,
+            None if self.alignment_start != bin::NO_ALIGNMENT_START => {
+                bin::compute_indexing_bin(self.alignment_start, self.alignment_end())
+                    .map_err(EncodeError::Bin)?
+            }
+            None => 0,
         };
 
         if read_name_len + 1 > 255 {
