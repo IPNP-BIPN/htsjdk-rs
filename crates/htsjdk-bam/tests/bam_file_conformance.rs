@@ -317,3 +317,36 @@ fn the_large_case_spans_multiple_bgzf_blocks() {
         "the large case must cross block boundaries to test the framing; got {blocks} blocks"
     );
 }
+
+/// The reader must handle files htsjdk actually produced, not only ones we produced.
+///
+/// Round-tripping our own writer proves the two halves agree with each other, which is a
+/// weaker claim: a shared misunderstanding of the format would pass it.
+#[test]
+fn htsjdks_own_files_read_back_to_the_records_that_went_in() {
+    use htsjdk_bam::reader::BamReader;
+
+    let cases = file_cases();
+    let goldens = goldens("file");
+    for ((name, header, records), (_, hex)) in cases.iter().zip(&goldens) {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        let plain = htsjdk_bgzf::decompress_all(&bytes).unwrap();
+        let reader = BamReader::new(&plain).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+
+        assert_eq!(
+            reader.header.raw_text,
+            header.encode(),
+            "{name}: header text"
+        );
+        let parsed = reader.header.text.clone();
+        assert_eq!(&parsed, header, "{name}: parsed header");
+
+        let back: Vec<BamRecord> = reader
+            .map(|r| r.unwrap_or_else(|e| panic!("{name}: {e:?}")))
+            .collect();
+        assert_eq!(back.len(), records.len(), "{name}: record count");
+        assert_eq!(&back, records, "{name}: records");
+    }
+}
