@@ -151,7 +151,7 @@ impl<R: Read> BgzfReader<R> {
         }
 
         let block_length = u16::from_le_bytes([header[16], header[17]]) as usize + 1;
-        if block_length < BLOCK_HEADER_LENGTH || block_length > MAX_COMPRESSED_BLOCK_SIZE {
+        if !(BLOCK_HEADER_LENGTH..=MAX_COMPRESSED_BLOCK_SIZE).contains(&block_length) {
             return Err(BgzfError::UnexpectedBlockLength(block_length));
         }
 

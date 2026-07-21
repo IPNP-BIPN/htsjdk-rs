@@ -7,11 +7,21 @@
 //! the algorithm ported.
 //!
 //! See `docs/decisions/0006-correct-rounding-is-the-target-for-log-and-log10.md`.
+//!
+//! `clippy::approx_constant` is allowed module-wide. It flags the `hi` halves of the
+//! double-double constants as approximations of `std::f64::consts::LN_2` and `LOG10_E`, and
+//! taking that advice would defeat the entire point: these are pairs precisely so they carry
+//! ~53 bits *more* than a single `f64`, and `hi` alone is deliberately only the leading half.
+//! Substituting the std constant silently discards the precision that makes correct rounding
+//! possible, and the corpus would fail on exactly the hard-to-round points.
+//!
+//! `clippy::excessive_precision` is allowed for the same reason: the pairs were emitted at
+//! 400-bit precision and the digits record what was generated, not what `f64` can hold.
+#![allow(clippy::approx_constant, clippy::excessive_precision)]
 
 use crate::dd::{self, DoubleDouble};
 
-// ln(2) and log10(e) to ~106 bits. Generated at 400-bit precision; the pair represents each
-// constant to a relative error near 1e-33.
+// ln(2) and log10(e) to ~106 bits, generated at 400-bit precision.
 const LN2: DoubleDouble = DoubleDouble::new(6.93147180559945286e-01, 2.31904681384629956e-17);
 const LOG10_E: DoubleDouble = DoubleDouble::new(4.34294481903251817e-01, 1.09831965021676507e-17);
 

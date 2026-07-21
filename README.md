@@ -62,5 +62,9 @@ The topology mirrors upstream, including the direction of the dependencies.
 
 ## License
 
-The reference implementations are MIT (htsjdk) and BSD-3-Clause (GATK, Picard). License for
-this port is to be finalized before the repository is made public.
+MIT, matching the htsjdk sources this ports. See `LICENSE`.
+
+One caveat, taken from htsjdk's own README: htsjdk is **not uniformly MIT**. Licensing is
+per-file, and notably the CRAM code is Apache License 2.0. Since CRAM is in scope for this
+port, code derived from it will carry Apache 2.0 rather than MIT, and will say so in the file
+header. Check the notice on the reference file before porting anything new.

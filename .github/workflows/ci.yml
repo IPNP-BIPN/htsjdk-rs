@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test on real x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the host CPU
+        # Which silicon produced a result is part of its provenance, and decision 0007 makes
+        # the vendor specifically relevant.
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 'vendor_id' /proc/cpuinfo
+          grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|avx2|avx512f|fma)$' | sort | tr '\n' ' '
+          echo
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Pinned; must match rust-toolchain.toml.
+          toolchain: "1.97.1"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --release
+
+      - name: Builds are reproducible
+        # Two clean builds of the same source must produce the same bytes. A build that is not
+        # reproducible cannot support a claim that its output is.
+        run: |
+          cargo build --release -p htsjdk-bgzf
+          find target/release -maxdepth 1 -name 'libhtsjdk_bgzf*.rlib' -exec sha256sum {} \; > /tmp/build1.txt
+          cargo clean
+          cargo build --release -p htsjdk-bgzf
+          find target/release -maxdepth 1 -name 'libhtsjdk_bgzf*.rlib' -exec sha256sum {} \; > /tmp/build2.txt
+          diff <(cut -d' ' -f1 /tmp/build1.txt) <(cut -d' ' -f1 /tmp/build2.txt) \
+            && echo "reproducible" \
+            || { echo "BUILD IS NOT REPRODUCIBLE"; exit 1; }
+
+  oracle-on-real-silicon:
+    name: Regenerate goldens on real x86-64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the host CPU
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 'vendor_id' /proc/cpuinfo
+
+      - name: Build the oracle image
+        # The image runs OracleProbe during its own build, so a degraded environment cannot
+        # produce an image at all, let alone a golden.
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+
+      - name: Regenerate the BGZF goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/bgzf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/B.java . && javac -cp "$ORACLE_CP" -d . B.java \
+             && java -cp ".:$ORACLE_CP" B' > /tmp/bgzf_real.txt
+          grep -c '^  (' /tmp/bgzf_real.txt
+
+      - name: Compare against the committed goldens
+        # The committed goldens were produced under Rosetta on Apple Silicon. If real silicon
+        # disagrees, every claim resting on them is void, so this must fail loudly.
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          def parse(t):
+              return {(m[0], int(m[1])): (int(m[2]), m[3]) for m in
+                      re.findall(r'\("(\w+)", (\d+), (\d+), "([0-9a-f]{32})"\)', t)}
+          real = parse(open('/tmp/bgzf_real.txt').read())
+          committed = parse(open('crates/htsjdk-bgzf/tests/bgzf_conformance.rs').read())
+          shared = set(real) & set(committed)
+          bad = [k for k in shared if real[k] != committed[k]]
+          print(f"real={len(real)} committed={len(committed)} compared={len(shared)} mismatches={len(bad)}")
+          for k in bad[:10]:
+              print(f"  {k}: real={real[k]} committed={committed[k]}")
+          sys.exit(1 if bad or not shared else 0)
+          PY
+
+  pow-portability:
+    name: "Decision 0007: is Math.pow stable across silicon?"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the host CPU
+        # The whole point of this job. rcpps is specified by an error bound, not by exact
+        # results, so the vendor and model are the experiment's independent variable.
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 'vendor_id' /proc/cpuinfo
+
+      - name: Build the oracle image
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+
+      - name: Regenerate the math corpus on real silicon
+        run: |
+          curl -fsSL -o /tmp/commons-math3.jar \
+            https://repo1.maven.org/maven2/org/apache/commons/commons-math3/3.6.1/commons-math3-3.6.1.jar
+          echo "1e56d7b058d28b65abd256b8458e3885b674c1d588fa43cd7d1cbb9c7ef2b308  /tmp/commons-math3.jar" | sha256sum -c -
+          mkdir -p /tmp/out
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/jmath-conformance":/harness:ro -v /tmp:/j:ro -v /tmp/out:/out \
+            -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/JMathDump.java . && javac -cp /j/commons-math3.jar -d . JMathDump.java \
+             && java -cp .:/j/commons-math3.jar JMathDump /out/jmath.csv'
+          wc -l /tmp/out/jmath.csv
+
+      - name: Diff every function against the emulated corpus
+        # Expectation from decision 0007: exp, log, log10 and sqrt agree, because none of them
+        # depends on an unrefined approximate instruction. pow is the one under test.
+        run: |
+          python3 - <<'PY'
+          import gzip, collections, sys
+          def load(open_fn, path):
+              d = {}
+              with open_fn(path) as fh:
+                  for line in fh:
+                      if line.startswith('#'): continue
+                      p = line.rstrip('\n').split(',')
+                      if len(p) < 3: continue
+                      d[(p[0], p[1])] = p[2]
+              return d
+          emulated = load(lambda p: gzip.open(p, 'rt'), 'crates/jmath/tests/data/jmath.csv.gz')
+          real = load(open, '/tmp/out/jmath.csv')
+          shared = set(emulated) & set(real)
+          diff = collections.Counter(k[0] for k in shared if emulated[k] != real[k])
+          total = collections.Counter(k[0] for k in shared)
+          print(f"{'fn':<8} {'compared':>10} {'differing':>10}")
+          for fn in sorted(total):
+              print(f"{fn:<8} {total[fn]:>10} {diff.get(fn, 0):>10}")
+          safe = [f for f in ('exp', 'log', 'log10', 'sqrt') if diff.get(f, 0)]
+          if safe:
+              print(f"\nFAIL: {safe} differ between emulated and real silicon. These are ported "
+                    f"and asserted exact, so their goldens are now invalid.")
+              sys.exit(1)
+          if diff.get('pow', 0):
+              print(f"\nDecision 0007 outcome: pow DIFFERS on real silicon "
+                    f"({diff['pow']} of {total['pow']} points). The emulated pow column "
+                    f"describes Rosetta, not hardware. Oracle for pow must move to real x86-64.")
+              sys.exit(1)
+          print("\nDecision 0007 outcome: pow agrees between emulated and real silicon here. "
+                "One vendor only; AMD remains untested.")
+          PY
