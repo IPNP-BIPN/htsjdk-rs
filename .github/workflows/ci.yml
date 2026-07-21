@@ -165,6 +165,39 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+      - name: Regenerate the BAI goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/bam-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/BaiDump.java . && javac -cp "$ORACLE_CP" -d . BaiDump.java \
+             && java -cp ".:$ORACLE_CP" BaiDump' > /tmp/bai_real.txt
+          wc -l /tmp/bai_real.txt
+
+      - name: Compare the BAI goldens against the committed ones
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#'): continue
+                  parts = line.rstrip('\n').split('\t', 2)
+                  if len(parts) < 3: continue
+                  d[(parts[0], parts[1])] = parts[2]
+              return d
+          real = parse('/tmp/bai_real.txt')
+          committed = parse('crates/htsjdk-bam/tests/data/bai.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print(f"case sets differ: {sorted(set(real) ^ set(committed))[:5]}")
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]:
+              print(f"  {k}")
+          sys.exit(1 if bad else 0)
+          PY
+
   pow-portability:
     name: "Decision 0007: is Math.pow stable across silicon?"
     runs-on: ubuntu-latest
