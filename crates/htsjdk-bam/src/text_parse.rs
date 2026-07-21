@@ -19,6 +19,33 @@ use crate::tag::{Tag, TagValue, Tags};
 /// `SAMLineParser.NUM_REQUIRED_FIELDS`.
 pub const NUM_REQUIRED_FIELDS: usize = 11;
 
+/// `htsjdk.samtools.ValidationStringency`.
+///
+/// This exists because htsjdk's **writer does not enforce what its reader checks**. A record
+/// with no reference name but a non-zero MAPQ is written without complaint and then rejected by
+/// `SAMLineParser` at the default stringency, which is `STRICT`. Found by feeding htsjdk's own
+/// SAM output back to this parser.
+///
+/// So a port that is unconditionally strict cannot read every file htsjdk produces, and a port
+/// that is unconditionally lenient cannot reproduce htsjdk's default behaviour. Both are needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ValidationStringency {
+    /// `ValidationStringency.DEFAULT_STRINGENCY`.
+    #[default]
+    Strict,
+    /// Logs and continues. The port returns the record and drops the message, since there is
+    /// no logger here to write it to.
+    Lenient,
+    /// Neither throws nor logs.
+    Silent,
+}
+
+impl ValidationStringency {
+    fn rejects(self) -> bool {
+        matches!(self, ValidationStringency::Strict)
+    }
+}
+
 /// Why a SAM line was rejected. Messages mirror htsjdk's wording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
@@ -254,7 +281,23 @@ fn parse_array_tag(_tag: Tag, value: &str) -> Result<TagValue, ParseError> {
 /// `resolve` maps a reference name to its dictionary index, returning `None` for a name the
 /// header does not carry. Reference names are indices in a `BamRecord`, so the caller supplies
 /// the header's view rather than the parser guessing.
-pub fn parse_line<F>(line: &str, mut resolve: F) -> Result<BamRecord, ParseError>
+pub fn parse_line<F>(line: &str, resolve: F) -> Result<BamRecord, ParseError>
+where
+    F: FnMut(&str) -> Option<i32>,
+{
+    parse_line_with(line, resolve, ValidationStringency::default())
+}
+
+/// `SAMLineParser.parseLine` at an explicit stringency.
+///
+/// Only the *consistency* checks are governed by it, matching `reportErrorParsingLine`. A
+/// malformed integer or an unparseable tag is a fatal error at every stringency, because
+/// `reportFatalErrorParsingLine` throws unconditionally.
+pub fn parse_line_with<F>(
+    line: &str,
+    mut resolve: F,
+    stringency: ValidationStringency,
+) -> Result<BamRecord, ParseError>
 where
     F: FnMut(&str) -> Option<i32>,
 {
@@ -281,12 +324,20 @@ where
     })?;
     let read_unmapped = flags & crate::record::READ_UNMAPPED_FLAG != 0;
 
+    // Consistency failures are reported through here so the stringency governs them in one
+    // place, exactly as `reportErrorParsingLine` does.
+    let inconsistent = |msg: &str| -> Result<(), ParseError> {
+        if stringency.rejects() {
+            Err(ParseError::Inconsistent(msg.to_string()))
+        } else {
+            Ok(())
+        }
+    };
+
     let rname = fields[2];
     let reference_index = if rname == "*" {
         if !read_unmapped {
-            return Err(ParseError::Inconsistent(
-                "RNAME is not specified but flags indicate mapped".into(),
-            ));
+            inconsistent("RNAME is not specified but flags indicate mapped")?;
         }
         -1
     } else {
@@ -302,30 +353,20 @@ where
     // absent. Only the second group is checked in both directions.
     if rname != "*" {
         if pos == 0 {
-            return Err(ParseError::Inconsistent(
-                "POS must be non-zero if RNAME is specified".into(),
-            ));
+            inconsistent("POS must be non-zero if RNAME is specified")?;
         }
         if !read_unmapped && cigar_text == "*" {
-            return Err(ParseError::Inconsistent(
-                "CIGAR must not be '*' if RNAME is specified".into(),
-            ));
+            inconsistent("CIGAR must not be '*' if RNAME is specified")?;
         }
     } else {
         if pos != 0 {
-            return Err(ParseError::Inconsistent(
-                "POS must be zero if RNAME is not specified".into(),
-            ));
+            inconsistent("POS must be zero if RNAME is not specified")?;
         }
         if mapq != 0 {
-            return Err(ParseError::Inconsistent(
-                "MAPQ must be zero if RNAME is not specified".into(),
-            ));
+            inconsistent("MAPQ must be zero if RNAME is not specified")?;
         }
         if cigar_text != "*" {
-            return Err(ParseError::Inconsistent(
-                "CIGAR must be '*' if RNAME is not specified".into(),
-            ));
+            inconsistent("CIGAR must be '*' if RNAME is not specified")?;
         }
     }
 
@@ -334,11 +375,10 @@ where
         -1
     } else if mate_rname == "=" {
         // `=` means "the same reference as this record", which is why an unplaced record
-        // cannot use it.
+        // cannot use it. At a lenient stringency the record survives with no mate reference,
+        // which is what htsjdk's `setMateReferenceName` leaves it as.
         if reference_index < 0 {
-            return Err(ParseError::Inconsistent(
-                "MRNM is '=', but RNAME is not set".into(),
-            ));
+            inconsistent("MRNM is '=', but RNAME is not set")?;
         }
         reference_index
     } else {
@@ -585,6 +625,45 @@ mod tests {
             );
         }
         assert_eq!(parse_cigar("*").unwrap(), Cigar::default());
+    }
+
+    /// The asymmetry that made the stringency model necessary: htsjdk's writer emits a record
+    /// its own default-stringency reader rejects. Both behaviours are reproduced.
+    #[test]
+    fn a_record_htsjdk_writes_but_strictly_rejects_is_readable_leniently() {
+        // RNAME '*' with MAPQ 60: htsjdk's SAMFileWriter writes this without complaint.
+        let line = "unplaced\t4\t*\t0\t60\t*\t*\t0\t0\tACGT\t?@AB";
+
+        assert!(
+            matches!(parse_line(line, resolver), Err(ParseError::Inconsistent(_))),
+            "STRICT is the default and must reject it"
+        );
+
+        for lenient in [ValidationStringency::Lenient, ValidationStringency::Silent] {
+            let r = parse_line_with(line, resolver, lenient).unwrap();
+            assert_eq!(r.mapping_quality, 60, "the value survives, unchanged");
+            assert_eq!(r.reference_index, -1);
+        }
+    }
+
+    /// A malformed integer is fatal at every stringency, because htsjdk's
+    /// `reportFatalErrorParsingLine` throws unconditionally rather than consulting it.
+    #[test]
+    fn a_malformed_field_is_fatal_even_when_lenient() {
+        let line = "read1\t99\tchr1\tNOTANUMBER\t60\t4M\t=\t300\t250\tACGT\t?@AB";
+        for s in [
+            ValidationStringency::Strict,
+            ValidationStringency::Lenient,
+            ValidationStringency::Silent,
+        ] {
+            assert!(
+                matches!(
+                    parse_line_with(line, resolver, s),
+                    Err(ParseError::BadInteger { .. })
+                ),
+                "{s:?} must still refuse a malformed integer"
+            );
+        }
     }
 
     #[test]
