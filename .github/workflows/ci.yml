@@ -155,6 +155,10 @@ jobs:
                     f"({diff['pow']} of {total['pow']} points). The emulated pow column "
                     f"describes Rosetta, not hardware. Oracle for pow must move to real x86-64.")
               sys.exit(1)
-          print("\nDecision 0007 outcome: pow agrees between emulated and real silicon here. "
-                "One vendor only; AMD remains untested.")
+          vendor = "unknown"
+          for line in open('/proc/cpuinfo'):
+              if line.startswith('vendor_id'):
+                  vendor = line.split(':')[1].strip(); break
+          print(f"\nDecision 0007 outcome: pow agrees between the emulated corpus and this "
+                f"real host ({vendor}). Other vendors remain untested.")
           PY
