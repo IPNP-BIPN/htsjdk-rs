@@ -33,6 +33,8 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | SAM text header (`SAMTextHeaderCodec.encode`) | **byte-identical**, 9 goldens |
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | SAM text records | planned |
+| Metrics number formatting (`FormatUtil`) | **99.73%**, 112 divergences pinned, decision 0011 |
+| `MetricsFile` layout | planned |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
 | VCF / tribble index | planned |
 | CRAM | planned, later phase |
