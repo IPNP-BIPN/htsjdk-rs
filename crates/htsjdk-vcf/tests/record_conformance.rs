@@ -389,3 +389,67 @@ fn every_format_vcf_double_case_matches_the_oracle() {
         mismatches.join("\n")
     );
 }
+
+/// The `%f` / `%e` agreement rate against the oracle, over the sweep in
+/// `tools/vcf-conformance/JavaFormatSweep.java`.
+///
+/// Ignored by default because the sweep file is generated in the pinned container rather than
+/// committed: 127,803 lines of formatted doubles is corpus, not source. CI runs it with
+/// `JFORMAT_SWEEP` pointing at the freshly generated file.
+///
+/// The thresholds are the rates measured in decision 0017, minus nothing. They are assertions
+/// and not targets: if the rate *falls*, something regressed; if it rises, htsjdk or the JDK
+/// changed and the decision needs revisiting either way.
+#[test]
+#[ignore = "needs JFORMAT_SWEEP from the pinned oracle"]
+fn the_jvm_format_model_holds_at_the_measured_rate() {
+    let path = std::env::var("JFORMAT_SWEEP").expect("JFORMAT_SWEEP");
+    let text = std::fs::read_to_string(&path).expect("sweep file");
+
+    let (mut n, mut bad_f, mut bad_e, mut bad_small, mut n_small) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    let mut smallest_divergence = f64::INFINITY;
+    for line in text.lines() {
+        let p: Vec<&str> = line.split('\t').collect();
+        if p.len() < 4 {
+            continue;
+        }
+        let d = f64::from_bits(u64::from_str_radix(p[0], 16).expect("hex bits"));
+        n += 1;
+        let small = d.abs() < 1e15;
+        if small {
+            n_small += 1;
+        }
+        let mut diverged = false;
+        if htsjdk_vcf::jformat::format_fixed(d, 2) != p[1] {
+            bad_f += 1;
+            diverged = true;
+        }
+        if htsjdk_vcf::jformat::format_fixed(d, 3) != p[2] {
+            diverged = true;
+        }
+        if htsjdk_vcf::jformat::format_scientific(d, 3) != p[3] {
+            bad_e += 1;
+            diverged = true;
+        }
+        if diverged {
+            smallest_divergence = smallest_divergence.min(d.abs());
+            if small {
+                bad_small += 1;
+            }
+        }
+    }
+    assert!(n > 100_000, "the sweep should cover the whole corpus, got {n}");
+
+    let rate = 100.0 * (n - bad_f) as f64 / n as f64;
+    let rate_small = 100.0 * (n_small - bad_small) as f64 / n_small as f64;
+    println!("n={n}  %.2f agreement {rate:.4}%  below 1e15 {rate_small:.6}%");
+    println!("smallest diverging magnitude {smallest_divergence:e}");
+
+    assert_eq!(bad_e, 0, "%.3e was exact in decision 0017 and must stay exact");
+    assert!(rate >= 99.85, "%.2f agreement fell to {rate:.4}%");
+    assert!(rate_small >= 99.99, "agreement below 1e15 fell to {rate_small:.6}%");
+    assert!(
+        smallest_divergence > 1e14,
+        "a divergence appeared at {smallest_divergence:e}, below the 6.9e14 bound in decision 0017"
+    );
+}
