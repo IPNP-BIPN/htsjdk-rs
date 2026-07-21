@@ -28,6 +28,9 @@ public final class OracleProbe {
     private static final boolean EXPECTED_GKL_AVAILABLE = true;
     private static final List<String> REQUIRED_CPU_FLAGS = Arrays.asList("avx", "avx2", "sse4_2");
 
+    /** Decision 0011: metrics number formatting is locale-dependent, so the locale is pinned. */
+    private static final String EXPECTED_LOCALE = "en_US";
+
     public static void main(String[] args) throws Exception {
         final List<String> failures = new ArrayList<>();
 
@@ -39,6 +42,13 @@ public final class OracleProbe {
         final boolean intelDeflater = new IntelDeflaterFactory().usingIntelDeflater();
         final boolean intelInflater = new IntelInflaterFactory().usingIntelInflater();
         final TreeSet<String> cpuFlags = readCpuFlags();
+        // Decision 0011: FormatUtil reaches NumberFormat.getNumberInstance(), which takes the
+        // default locale, and nothing in htsjdk, Picard or GATK pins it. A golden generated
+        // under fr-FR has commas for decimal points; under ar-EG it has Arabic-Indic digits.
+        // So the locale is part of the oracle contract, and a wrong one must fail the run
+        // rather than quietly produce an unusable golden.
+        final java.util.Locale locale = java.util.Locale.getDefault();
+        final String decimalSample = new java.text.DecimalFormat("0.0#####").format(1.0 / 3.0);
 
         if (!EXPECTED_ARCH.equals(arch)) {
             failures.add("os.arch is '" + arch + "', expected '" + EXPECTED_ARCH + "'");
@@ -56,6 +66,14 @@ public final class OracleProbe {
             failures.add("usingIntelInflater is " + intelInflater + ", expected "
                     + EXPECTED_GKL_AVAILABLE);
         }
+        if (!EXPECTED_LOCALE.equals(locale.toString())) {
+            failures.add("default locale is '" + locale + "', expected '" + EXPECTED_LOCALE
+                    + "'. Metrics number formatting is locale-dependent; see decision 0011.");
+        }
+        if (!"0.333333".equals(decimalSample)) {
+            failures.add("a decimal formats as '" + decimalSample + "', expected '0.333333'."
+                    + " The locale check passed but the formatting still differs.");
+        }
         for (final String flag : REQUIRED_CPU_FLAGS) {
             if (!cpuFlags.isEmpty() && !cpuFlags.contains(flag)) {
                 failures.add("CPU flag '" + flag + "' is absent");
@@ -70,6 +88,8 @@ public final class OracleProbe {
         json.append("  \"java_vendor\": \"").append(javaVendor).append("\",\n");
         json.append("  \"using_intel_deflater\": ").append(intelDeflater).append(",\n");
         json.append("  \"using_intel_inflater\": ").append(intelInflater).append(",\n");
+        json.append("  \"default_locale\": \"").append(locale).append("\",\n");
+        json.append("  \"decimal_sample\": \"").append(decimalSample).append("\",\n");
         json.append("  \"cpu_flags_checked\": \"").append(String.join(",", REQUIRED_CPU_FLAGS)).append("\",\n");
         json.append("  \"avx\": ").append(cpuFlags.contains("avx")).append(",\n");
         json.append("  \"avx2\": ").append(cpuFlags.contains("avx2")).append(",\n");
