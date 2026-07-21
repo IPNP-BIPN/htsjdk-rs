@@ -28,8 +28,8 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 
 | Module | Status |
 |---|---|
-| BGZF reader/writer (`BlockCompressedOutputStream` semantics) | planned |
-| BAM record codec (byte level, incl. `bin` and tag type promotion) | planned |
+| BGZF reader/writer (`BlockCompressedOutputStream` semantics) | **byte-identical**, 35 goldens |
+| BAM record codec (byte level, incl. `bin` and tag type promotion) | **byte-identical**, 136 goldens |
 | SAM text | planned |
 | BAM index | planned |
 | VCF / tribble index | planned |
