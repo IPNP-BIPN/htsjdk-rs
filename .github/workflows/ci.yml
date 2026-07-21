@@ -332,6 +332,51 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+      - name: Regenerate the VCF record goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/VcfRecordDump.java . && javac -cp "$ORACLE_CP" -d . VcfRecordDump.java \
+             && java -cp ".:$ORACLE_CP" VcfRecordDump' > /tmp/vcfrec_real.txt
+          wc -l /tmp/vcfrec_real.txt
+
+      - name: Compare the VCF record goldens against the committed ones
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#'): continue
+                  p = line.rstrip('\n').split('\t', 1)
+                  if len(p) < 2: continue
+                  d[p[0]] = p[1]
+              return d
+          real = parse('/tmp/vcfrec_real.txt')
+          committed = parse('crates/htsjdk-vcf/tests/data/vcf_record.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print(f"case sets differ: {sorted(set(real) ^ set(committed))[:5]}")
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]: print(f"  {k}")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: "Decision 0017: does the JVM number-format model still hold?"
+        # The sweep is 127,803 doubles, generated rather than committed. The test asserts the
+        # rates recorded in decision 0017, so a regression in the model and a change in the
+        # JDK's own formatting both fail here rather than passing quietly.
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/JavaFormatSweep.java . && javac -d . JavaFormatSweep.java \
+             && java -cp . JavaFormatSweep' > /tmp/jformat_sweep.txt
+          wc -l /tmp/jformat_sweep.txt
+          JFORMAT_SWEEP=/tmp/jformat_sweep.txt \
+            cargo test -p htsjdk-vcf --test record_conformance -- --ignored --nocapture
+
       - name: "Decision 0016: is the VCF header comparator still inconsistent?"
         # The cycle is the reason the port uses a total order where htsjdk has none. If a future
         # htsjdk made the comparator consistent, this fails and the divergence can be removed.
