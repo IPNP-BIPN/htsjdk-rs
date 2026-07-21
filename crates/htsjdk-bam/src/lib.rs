@@ -23,6 +23,7 @@ pub mod header;
 pub mod index;
 pub mod reader;
 pub mod record;
+pub mod sam_file;
 pub mod tag;
 pub mod text;
 pub mod text_parse;

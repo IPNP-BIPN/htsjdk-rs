@@ -35,6 +35,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
 | SAM text record writer | **byte-identical**, 66 of 67 (one licence-blocked, decision 0013) |
 | SAM text record parser | BAM → SAM → BAM byte-identical |
+| Whole SAM text files | **byte-identical**, 5 goldens; BAM → SAM matches htsjdk |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
 | Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
 | `MetricsFile` layout | planned |
@@ -79,6 +80,7 @@ compiler will never catch any of them.
 | [0012](docs/decisions/0012-nan-sign-bits-are-chosen-by-the-fpu.md) | NaN sign bits are chosen by the FPU, so the port is not bit-identical to itself across architectures |
 | [0013](docs/decisions/0013-the-last-divergences-are-blocked-by-a-licence-not-by-difficulty.md) | The last formatting divergences are blocked by a licence, not by difficulty |
 | [0014](docs/decisions/0014-math-exp-was-withdrawn-it-was-a-gpl2-transcription.md) | `Math.exp` is withdrawn: it was a transcription of GPL2-only source |
+| [0015](docs/decisions/0015-htsjdks-writer-emits-records-its-own-reader-rejects.md) | htsjdk's SAM writer emits records its own reader rejects |
 
 ## Part of a three-repository program
 
