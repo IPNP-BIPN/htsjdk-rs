@@ -4,5 +4,6 @@
 //! `htsjdk.variant.variantcontext.writer`.
 
 pub mod header;
+pub mod jformat;
 
 pub use header::{Cardinality, HeaderLine, LineType, VcfHeader};
