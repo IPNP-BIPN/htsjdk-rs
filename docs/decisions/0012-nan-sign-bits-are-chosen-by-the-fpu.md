@@ -1,6 +1,6 @@
 # 0012. NaN sign bits are chosen by the FPU, so the port is not bit-identical to itself across architectures
 
-**Status:** accepted; scoped, measured, and gated on x86-64
+**Status:** accepted; scoped, measured, gated on x86-64, and confirmed there
 **Date:** 2026-07-21
 **Follows:** [0005](0005-java-math-has-three-implementations.md)
 
@@ -87,3 +87,19 @@ than PR #9384's ~1 ULP and is unobservable in every text output format.
 Worth noting for the ARM port that motivated all of this: an arm64 GATK has the same property,
 and nothing in PR #9384 addresses it, because Java's own `Double.toString` renders every NaN as
 `"NaN"` and hides it too.
+
+
+## Addendum: confirmed on x86-64
+
+The claim above — that the *same Rust source* compiled for x86-64 matches the golden exactly —
+was an inference from two separate measurements. CI has now tested it directly.
+
+`cargo test --workspace` runs on GitHub Actions' `ubuntu-latest`, which is x86-64. On that
+target the conformance test permits **no exemption at all** and asserts the exemption list is
+empty. It passes. So all **338** statistics, including `single/standardDeviation`, are
+bit-identical to htsjdk when the port runs on the oracle's own architecture.
+
+That converts the decision from "the divergence is explained" to "the divergence is confined to
+non-oracle architectures, and measured to be absent on the oracle's". The same test binary is
+the one that fails on aarch64 with exactly one exemption, so the two results come from one
+source, not from two configurations that might have drifted.
