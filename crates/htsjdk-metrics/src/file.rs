@@ -69,6 +69,27 @@ pub trait MetricBean {
     fn values(&self) -> Vec<Value>;
 }
 
+/// Sorts the combined key set the way the first histogram's comparator would.
+///
+/// htsjdk's `Histogram` keys its bins on `HKEY extends Comparable`, and every metrics histogram
+/// in Picard uses a numeric key, so the comparator is numeric ordering. The port carries the
+/// keys as already-formatted strings, so the class name recorded on the histogram is what says
+/// which ordering to apply. An unrecognised class falls back to the string order, which is what
+/// a `Comparable` String would give.
+fn sort_keys(key_class: &str, keys: &mut [&str]) {
+    match key_class {
+        "java.lang.Integer" | "java.lang.Long" | "java.lang.Short" | "java.lang.Byte"
+        | "java.lang.Double" | "java.lang.Float" => {
+            keys.sort_by(|a, b| {
+                let pa: f64 = a.parse().unwrap_or(f64::NAN);
+                let pb: f64 = b.parse().unwrap_or(f64::NAN);
+                pa.total_cmp(&pb)
+            });
+        }
+        _ => keys.sort(),
+    }
+}
+
 /// A `Histogram` as `printHistogram` writes it: a bin label, a value label, and sorted bins.
 #[derive(Debug, Clone)]
 pub struct Histogram {
@@ -158,9 +179,16 @@ impl MetricsFile {
                 out.push_str(&h.value_label);
             }
             out.push('\n');
-            // The combined key set, in the order of the first histogram's bins followed by any
-            // key only later histograms have. htsjdk builds a TreeSet, so callers supply
-            // sorted bins and this preserves them.
+            // htsjdk builds the combined key set as
+            //
+            //     new TreeSet<HKEY>(nonEmptyHistograms.get(0).comparator())
+            //
+            // so the union is *re-sorted*, by the first non-empty histogram's comparator, and
+            // not simply concatenated. The difference shows the moment a later histogram holds
+            // a key smaller than every key in the first: concatenating puts it last, htsjdk puts
+            // it where it sorts. `CollectAlignmentSummaryMetrics` does exactly that, with a
+            // total-read-length histogram followed by an aligned-length one whose keys are
+            // smaller wherever a read was clipped.
             let mut keys: Vec<&str> = Vec::new();
             for h in &non_empty {
                 for (k, _) in &h.bins {
@@ -169,6 +197,7 @@ impl MetricsFile {
                     }
                 }
             }
+            sort_keys(&non_empty[0].key_class, &mut keys);
             for key in keys {
                 out.push_str(key);
                 for h in &non_empty {
@@ -251,6 +280,54 @@ mod tests {
         assert_eq!(Value::Null.format(), "");
         assert_eq!(Value::Bool(true).format(), "Y");
         assert_eq!(Value::Bool(false).format(), "N");
+    }
+
+    /// The union is re-sorted by the first histogram's comparator, so a key that appears only
+    /// in a later histogram lands where it sorts and not at the end. Concatenating the key
+    /// lists gives a file that is valid, readable, and different.
+    #[test]
+    fn the_combined_key_set_is_sorted_not_concatenated() {
+        let mut f = MetricsFile::new();
+        f.histograms.push(Histogram {
+            bin_label: "READ_LENGTH".to_string(),
+            value_label: "TOTAL".to_string(),
+            key_class: "java.lang.Integer".to_string(),
+            bins: vec![("20".to_string(), 1.0)],
+        });
+        f.histograms.push(Histogram {
+            bin_label: "READ_LENGTH".to_string(),
+            value_label: "ALIGNED".to_string(),
+            key_class: "java.lang.Integer".to_string(),
+            bins: vec![("15".to_string(), 1.0)],
+        });
+        let text = f.write();
+        let rows: Vec<&str> = text
+            .lines()
+            .skip_while(|l| !l.starts_with("READ_LENGTH"))
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(rows, ["15\t0\t1", "20\t1\t0"]);
+    }
+
+    /// Numeric, not lexicographic: 9 sorts before 10.
+    #[test]
+    fn integer_keys_sort_numerically() {
+        let mut f = MetricsFile::new();
+        f.histograms.push(Histogram {
+            bin_label: "BIN".to_string(),
+            value_label: "A".to_string(),
+            key_class: "java.lang.Integer".to_string(),
+            bins: vec![("9".to_string(), 1.0), ("10".to_string(), 2.0)],
+        });
+        let text = f.write();
+        let rows: Vec<&str> = text
+            .lines()
+            .skip_while(|l| !l.starts_with("BIN"))
+            .skip(1)
+            .filter(|l| !l.is_empty())
+            .collect();
+        assert_eq!(rows, ["9\t1", "10\t2"]);
     }
 
     #[test]
