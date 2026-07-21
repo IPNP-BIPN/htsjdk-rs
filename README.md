@@ -40,7 +40,8 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
 | `MetricsFile` layout | planned |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
-| VCF / tribble index | planned |
+| VCF header | **byte-identical**, 7 goldens, decision 0016 |
+| VCF records / tribble index | planned |
 | CRAM | planned, later phase |
 
 ## Bit-identity contract
@@ -81,6 +82,7 @@ compiler will never catch any of them.
 | [0013](docs/decisions/0013-the-last-divergences-are-blocked-by-a-licence-not-by-difficulty.md) | The last formatting divergences are blocked by a licence, not by difficulty |
 | [0014](docs/decisions/0014-math-exp-was-withdrawn-it-was-a-gpl2-transcription.md) | `Math.exp` is withdrawn: it was a transcription of GPL2-only source |
 | [0015](docs/decisions/0015-htsjdks-writer-emits-records-its-own-reader-rejects.md) | htsjdk's SAM writer emits records its own reader rejects |
+| [0016](docs/decisions/0016-the-vcf-header-comparator-is-not-a-total-order.md) | The VCF header comparator is not a total order |
 
 ## Part of a three-repository program
 
