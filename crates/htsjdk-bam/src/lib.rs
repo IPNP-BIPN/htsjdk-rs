@@ -16,14 +16,17 @@
 //! - what an absent quality string becomes ([`record`]);
 //! - where a CIGAR too long for the format goes, and what stands in for it ([`record`]).
 
+pub mod alignment_block;
 pub mod bases;
 pub mod bin;
 pub mod cigar;
+pub mod fasta;
 pub mod header;
 pub mod index;
 pub mod reader;
 pub mod record;
 pub mod sam_file;
+pub mod sequence;
 pub mod tag;
 pub mod text;
 pub mod text_parse;
