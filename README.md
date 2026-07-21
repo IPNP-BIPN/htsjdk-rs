@@ -43,6 +43,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | VCF header | **byte-identical**, 7 goldens, decision 0016 |
 | VCF records (`VCFEncoder`, `Allele`, genotypes) | **byte-identical**, 54 records + 29 double cases, decisions 0017, 0018 |
 | JVM `%f` / `%e` number formatting | **99.85%** over 127,803 doubles; **100%** for `%.3e` and below 6.9e14, decision 0017 |
+| Whole VCF files (`VariantContextWriter`) | **byte-identical**, 7 goldens, decision 0019 |
 | Tribble index | planned |
 | CRAM | planned, later phase |
 
@@ -87,6 +88,7 @@ compiler will never catch any of them.
 | [0016](docs/decisions/0016-the-vcf-header-comparator-is-not-a-total-order.md) | The VCF header comparator is not a total order |
 | [0017](docs/decisions/0017-the-jvm-formats-a-short-decimal-not-the-value.md) | The JVM's `%f` rounds a short decimal, not the value |
 | [0018](docs/decisions/0018-four-ordering-rules-in-one-library.md) | Four ordering rules in one library, none of them written down |
+| [0019](docs/decisions/0019-re-sorting-a-sorted-header-is-stable-measured-not-proven.md) | Re-sorting an already-sorted VCF header is stable: measured, not proven |
 
 ## Part of a three-repository program
 
