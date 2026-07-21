@@ -20,6 +20,9 @@
 //!
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
+pub mod dd;
+mod log;
+
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
     /// IEEE-754 mandates a correctly-rounded square root, so every implementation agrees
@@ -27,6 +30,19 @@ pub mod math {
     #[inline]
     pub fn sqrt(x: f64) -> f64 {
         x.sqrt()
+    }
+
+    /// `Math.log`. Measured to be correctly rounded, so the port rounds the true result once
+    /// rather than reproducing HotSpot's intrinsic.
+    #[inline]
+    pub fn log(x: f64) -> f64 {
+        crate::log::log(x)
+    }
+
+    /// `Math.log10`. Correctly rounded, as above.
+    #[inline]
+    pub fn log10(x: f64) -> f64 {
+        crate::log::log10(x)
     }
 }
 
