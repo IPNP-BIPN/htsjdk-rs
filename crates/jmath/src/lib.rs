@@ -21,6 +21,8 @@
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
 pub mod dd;
+mod exp;
+mod exp_table;
 mod log;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
@@ -43,6 +45,13 @@ pub mod math {
     #[inline]
     pub fn log10(x: f64) -> f64 {
         crate::log::log10(x)
+    }
+
+    /// `Math.exp`. Not correctly rounded, so this reproduces HotSpot's intrinsic rather than
+    /// rounding the true result.
+    #[inline]
+    pub fn exp(x: f64) -> f64 {
+        crate::exp::exp(x)
     }
 }
 

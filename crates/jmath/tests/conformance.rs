@@ -1,9 +1,9 @@
 //! Conformance against the reference JVM, from the corpus in `tests/data/jmath.csv.gz`.
 //!
-//! `sqrt`, `log` and `log10` are ported and asserted bit-identical over every point. The rest
-//! still delegate to Rust's libm and are measured rather than asserted; that test *fails* if
-//! one of them silently reaches 100%, which would mean a function was ported without decisions
-//! 0005 and 0006 being updated to match.
+//! `sqrt`, `log`, `log10` and `exp` are ported and asserted bit-identical over every point.
+//! The rest still delegate to Rust's libm and are measured rather than asserted; that test
+//! *fails* if one of them silently reaches 100%, which would mean a function was ported
+//! without decisions 0005 and 0006 being updated to match.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
@@ -43,7 +43,7 @@ fn agreement() -> BTreeMap<String, (u64, u64)> {
             "sqrt" => jmath::math::sqrt(x),
             "log" => jmath::math::log(x),
             "log10" => jmath::math::log10(x),
-            "exp" => x.exp(),
+            "exp" => jmath::math::exp(x),
             "log1p" => x.ln_1p(),
             "expm1" => x.exp_m1(),
             "cbrt" => x.cbrt(),
@@ -73,13 +73,19 @@ fn corpus_is_present_and_substantial() {
 
 /// Functions that are bit-identical to `java.lang.Math` over the whole corpus.
 ///
-/// `sqrt` is free: IEEE-754 mandates its rounding, so every implementation agrees.
-/// `log` and `log10` are ported, and reach exactness by being correctly rounded rather than by
-/// reproducing HotSpot's intrinsic. See decision 0006.
+/// Three different routes to exactness, and the distinction matters:
+///
+/// - `sqrt` is free: IEEE-754 mandates its rounding, so every implementation already agrees.
+/// - `log` and `log10` are correctly rounded in the reference, so rounding the true result
+///   suffices and no algorithm port was needed.
+/// - `exp` is *not* correctly rounded, so it reproduces HotSpot's intrinsic operation by
+///   operation, including its SIMD lane structure and accumulation order.
+///
+/// See decision 0006.
 #[test]
 fn ported_functions_are_bit_identical_to_the_jvm() {
     let a = agreement();
-    for f in ["sqrt", "log", "log10"] {
+    for f in ["sqrt", "log", "log10", "exp"] {
         let (ok, n) = a[f];
         assert_eq!(
             ok,
@@ -105,7 +111,7 @@ fn ported_functions_are_bit_identical_to_the_jvm() {
 fn unported_functions_are_not_yet_exact() {
     let a = agreement();
     let mut report = Vec::new();
-    for f in ["exp", "pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
+    for f in ["pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
         let (ok, n) = a[f];
         report.push(format!("{f}={:.4}%", 100.0 * ok as f64 / n as f64));
         assert!(
