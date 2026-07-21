@@ -99,6 +99,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jmath"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "libz-sys"
 version = "1.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
