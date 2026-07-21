@@ -1,9 +1,11 @@
 //! Conformance against the reference JVM, from the corpus in `tests/data/jmath.csv.gz`.
 //!
-//! `sqrt`, `log`, `log10` and `exp` are ported and asserted bit-identical over every point.
-//! The rest still delegate to Rust's libm and are measured rather than asserted; that test
-//! *fails* if one of them silently reaches 100%, which would mean a function was ported
-//! without decisions 0005 and 0006 being updated to match.
+//! `sqrt`, `log` and `log10` are ported and asserted bit-identical over every point. The rest
+//! delegate to Rust's libm and are measured rather than asserted; that test *fails* if one of
+//! them silently reaches 100%, which would mean a function was ported without decisions 0005
+//! and 0006 being updated to match.
+//!
+//! `exp` was in the first list and is now in the second. See decision 0014.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
@@ -43,7 +45,11 @@ fn agreement() -> BTreeMap<String, (u64, u64)> {
             "sqrt" => jmath::math::sqrt(x),
             "log" => jmath::math::log(x),
             "log10" => jmath::math::log10(x),
-            "exp" => jmath::math::exp(x),
+            // `exp` is WITHDRAWN, not missing: the port was a transcription of GPL2-only
+            // HotSpot source (decision 0014). It stays in the corpus, routed to the system
+            // libm, so its divergence rate is measured and reported rather than the function
+            // quietly disappearing from the table.
+            "exp" => x.exp(),
             "log1p" => x.ln_1p(),
             "expm1" => x.exp_m1(),
             "cbrt" => x.cbrt(),
@@ -73,19 +79,22 @@ fn corpus_is_present_and_substantial() {
 
 /// Functions that are bit-identical to `java.lang.Math` over the whole corpus.
 ///
-/// Three different routes to exactness, and the distinction matters:
+/// Two routes to exactness, and the distinction matters:
 ///
 /// - `sqrt` is free: IEEE-754 mandates its rounding, so every implementation already agrees.
 /// - `log` and `log10` are correctly rounded in the reference, so rounding the true result
 ///   suffices and no algorithm port was needed.
-/// - `exp` is *not* correctly rounded, so it reproduces HotSpot's intrinsic operation by
-///   operation, including its SIMD lane structure and accumulation order.
+///
+/// There was a third route and it is gone. `exp` is *not* correctly rounded, so being exact
+/// required reproducing HotSpot's intrinsic operation by operation, which is a transcription of
+/// GPL2-only source and could not ship under this crate's MIT licence. Withdrawn in decision
+/// 0014.
 ///
 /// See decision 0006.
 #[test]
 fn ported_functions_are_bit_identical_to_the_jvm() {
     let a = agreement();
-    for f in ["sqrt", "log", "log10", "exp"] {
+    for f in ["sqrt", "log", "log10"] {
         let (ok, n) = a[f];
         assert_eq!(
             ok,
@@ -107,11 +116,16 @@ fn ported_functions_are_bit_identical_to_the_jvm() {
 /// When one of these is ported, its entry moves to the exact-match list above and the row in
 /// decision 0005 is updated. This test failing means a function became exact without anyone
 /// recording it.
+///
+/// `exp` moved in the other direction. It was exact, by transcription of GPL2-only HotSpot
+/// source, and was withdrawn in decision 0014 because that transcription could not ship under
+/// this crate's MIT licence. Its rate here is the system libm's, and the gap between that rate
+/// and 100% is the exact size of what the licence costs.
 #[test]
 fn unported_functions_are_not_yet_exact() {
     let a = agreement();
     let mut report = Vec::new();
-    for f in ["pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
+    for f in ["exp", "pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
         let (ok, n) = a[f];
         report.push(format!("{f}={:.4}%", 100.0 * ok as f64 / n as f64));
         assert!(
