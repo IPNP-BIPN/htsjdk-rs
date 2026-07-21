@@ -33,6 +33,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Every ported symbol comes from a licence-compatible source
+        # Decision 0014: an operation-by-operation transcription of GPL2-only HotSpot source
+        # was published in this MIT crate and found eleven commits later by reading module
+        # headers. This makes that reading mechanical so the next one fails here instead.
+        run: python3 tools/audit/provenance.py crates
+
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --release
