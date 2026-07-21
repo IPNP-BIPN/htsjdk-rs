@@ -13,7 +13,7 @@ pub mod read;
 pub mod vfp;
 mod write;
 
-pub use read::{BgzfError, BgzfReader, DecompressedBlock};
+pub use read::{decompress_all, BgzfError, BgzfReader, DecompressedBlock};
 pub use write::BgzfWriter;
 
 // Constants transcribed from BlockCompressedStreamConstants.

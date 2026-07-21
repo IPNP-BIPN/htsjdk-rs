@@ -256,3 +256,18 @@ fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
     }
     Ok(total)
 }
+
+/// Decompresses an entire BGZF stream into one buffer.
+///
+/// A convenience over [`BgzfReader::next_block`] for callers that want the payload rather than
+/// the block structure. It deliberately does not hide the block structure from anything that
+/// needs it: the differential harness reports positions in terms of blocks, and losing that
+/// would make a divergence in a large BAM unlocatable.
+pub fn decompress_all(bytes: &[u8]) -> Result<Vec<u8>, BgzfError> {
+    let mut reader = BgzfReader::new(bytes);
+    let mut out = Vec::new();
+    while let Some(block) = reader.next_block()? {
+        out.extend_from_slice(&block.data);
+    }
+    Ok(out)
+}

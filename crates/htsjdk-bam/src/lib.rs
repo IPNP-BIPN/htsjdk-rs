@@ -19,10 +19,14 @@
 pub mod bases;
 pub mod bin;
 pub mod cigar;
+pub mod header;
 pub mod record;
 pub mod tag;
+pub mod writer;
 
 pub use bin::compute_indexing_bin;
 pub use cigar::{Cigar, CigarElement, Op};
+pub use header::SamHeader;
 pub use record::{BamRecord, DecodeError, EncodeError};
 pub use tag::{Tag, TagValue, Tags};
+pub use writer::BamWriter;

@@ -6,5 +6,8 @@ license.workspace = true
 repository.workspace = true
 description = "Byte-level port of htsjdk's BAM record codec"
 
+[dependencies]
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }
+
 [dev-dependencies]
 flate2.workspace = true
