@@ -81,6 +81,12 @@ public class VcfRecordDump {
 
         // Bases are uppercased on construction, so a lowercase input is not round-tripped.
         emitVc("lowercase_bases", base("acgt", "a").make());
+        // ...unless the allele is symbolic, and "symbolic" is decided by the first and last
+        // byte, so ending in '>' is enough to preserve case.
+        emitVc("symbolic_lowercase", base("A", "<del>").make());
+        emitVc("ends_with_gt", base("A", "at>").make());
+        emitVc("breakend_lowercase", base("A", "a]chr2:456]").make());
+        emitVc("single_breakend", base("A", ".a").make());
 
         // ---- QUAL --------------------------------------------------------------------------
         // VariantContextBuilder takes log10 p-error; the encoder prints -10 * that.
