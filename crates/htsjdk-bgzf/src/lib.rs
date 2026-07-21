@@ -23,12 +23,13 @@ pub const MAX_COMPRESSED_BLOCK_SIZE: usize = 64 * 1024;
 pub const GZIP_OVERHEAD: usize = BLOCK_HEADER_LENGTH + BLOCK_FOOTER_LENGTH + 2;
 pub const NO_COMPRESSION_OVERHEAD: usize = 10;
 
-/// 65498. Note this is *not* 64 KiB: htsjdk reserves the gzip and no-compression overhead so
-/// that even an incompressible block still fits inside 64 KiB once framed.
+/// Uncompressed bytes per block: 65498, which is *not* 64 KiB. htsjdk reserves the gzip and
+/// no-compression overhead so that even an incompressible block still fits inside 64 KiB once
+/// framed.
 pub const DEFAULT_UNCOMPRESSED_BLOCK_SIZE: usize =
     64 * 1024 - (GZIP_OVERHEAD + NO_COMPRESSION_OVERHEAD);
 
-/// 65518. The size of htsjdk's `compressedBuffer`, and therefore the threshold that decides
+/// Size of htsjdk's `compressedBuffer`, 65518, and therefore the threshold that decides
 /// whether the no-compression fallback kicks in.
 pub const COMPRESSED_BUFFER_SIZE: usize = MAX_COMPRESSED_BLOCK_SIZE - BLOCK_HEADER_LENGTH;
 

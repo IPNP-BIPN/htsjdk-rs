@@ -20,13 +20,25 @@
 //!   exp(x) = 2^n * T[j] * (1 + P(r))
 //!   x = m*ln2/64 + r,   m = n*64 + j,   j in [0,64)
 //! ```
+//!
+//! `clippy::excessive_precision` is allowed module-wide: the literals are transcribed verbatim
+//! from HotSpot's `_cv` table and its algorithm comment, digits included. Trimming them to what
+//! `f64` can hold would make the constants harder to diff against the reference, which is the
+//! only check that matters here.
+#![allow(clippy::excessive_precision)]
 
 use crate::exp_table::{T_HI, T_LO};
 
+// These are HotSpot's constants, transcribed from `_cv`, not the mathematically nearest
+// doubles. `LN2_64_HI` in particular has its low mantissa bits deliberately cleared
+// (`0x3f862e42fefa0000`) so that `m * LN2_64_HI` is exact for the integers `m` that occur,
+// which is what makes the two-step argument reduction work. Replacing any of these with a
+// `std::f64::consts` value, or with a more accurate literal, changes the result bits.
 /// 64 / ln(2)
 const INV_LN2_64: f64 = 92.33248261689366;
-/// ln(2)/64, split so that `m * LN2_64_HI` is exact for the integers `m` that occur.
+/// ln(2)/64, high part, low mantissa bits cleared on purpose.
 const LN2_64_HI: f64 = 0.010830424696223417;
+/// ln(2)/64, the remainder the high part cannot represent.
 const LN2_64_LO: f64 = 2.572804622327669e-14;
 
 /// The classic round-to-nearest-integer trick: adding 1.5 * 2^52 forces the fraction out.
@@ -94,10 +106,11 @@ pub fn exp(x: f64) -> f64 {
     let scaled_exponent = ((n as i64 + 1023) as u64) << 52;
     let t = f64::from_bits(T_HI[j] | scaled_exponent);
 
-    // Accumulation order is load-bearing: each step rounds.
+    // Accumulation order is load-bearing: each step rounds. Written to mirror the original's
+    // `addsd` sequence rather than to read naturally.
     let mut acc = r + T_LO[j];
     acc += lane0;
-    acc = lane1 + acc;
+    acc += lane1;
     acc += half_r2;
 
     // A separate multiply and add, not a fused multiply-add: the original emits `mulsd`
