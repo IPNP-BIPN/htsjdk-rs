@@ -33,9 +33,9 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | SAM text header (`SAMTextHeaderCodec.encode`) | **byte-identical**, 9 goldens |
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
-| SAM text record writer | **byte-identical**, 66 of 67 (one pinned, decision 0011) |
+| SAM text record writer | **byte-identical**, 66 of 67 (one licence-blocked, decision 0013) |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
-| Metrics number formatting (`FormatUtil`) | **99.73%**, 112 divergences pinned, decision 0011 |
+| Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
 | `MetricsFile` layout | planned |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
 | VCF / tribble index | planned |
@@ -76,6 +76,7 @@ compiler will never catch any of them.
 | [0010](docs/decisions/0010-the-bai-index-is-where-a-divergence-is-least-likely-to-be-noticed.md) | The BAI index is where a divergence is least likely to be noticed |
 | [0011](docs/decisions/0011-metrics-number-formatting-depends-on-the-jvm-locale.md) | Metrics number formatting depends on the JVM's locale, and nothing pins it |
 | [0012](docs/decisions/0012-nan-sign-bits-are-chosen-by-the-fpu.md) | NaN sign bits are chosen by the FPU, so the port is not bit-identical to itself across architectures |
+| [0013](docs/decisions/0013-the-last-divergences-are-blocked-by-a-licence-not-by-difficulty.md) | The last formatting divergences are blocked by a licence, not by difficulty |
 
 ## Part of a three-repository program
 
