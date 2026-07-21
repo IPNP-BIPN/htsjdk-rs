@@ -205,11 +205,19 @@ mod tests {
     #[test]
     fn ties_round_away_from_zero_on_the_short_decimal() {
         assert_eq!(format_fixed(0.125, 2), "0.13");
-        assert_eq!(format!("{:.2}", 0.125), "0.12", "Rust rounds the exact value");
+        assert_eq!(
+            format!("{:.2}", 0.125),
+            "0.12",
+            "Rust rounds the exact value"
+        );
 
         // 2.675 is really 2.67499999999999982236431605997495353221893310546875.
         assert_eq!(format_fixed(2.675, 2), "2.68");
-        assert_eq!(format!("{:.2}", 2.675), "2.67", "Rust rounds the exact value");
+        assert_eq!(
+            format!("{:.2}", 2.675),
+            "2.67",
+            "Rust rounds the exact value"
+        );
     }
 
     /// A large double prints its *short* digits padded with zeros, not its exact expansion.
@@ -219,7 +227,11 @@ mod tests {
         assert!(ours.starts_with('1'));
         assert_eq!(ours.len(), 1 + 300 + 3, "one digit, 300 zeros, '.00'");
         assert!(ours[1..301].bytes().all(|b| b == b'0'));
-        assert_ne!(format!("{:.2}", 1e300), ours, "Rust expands the exact value");
+        assert_ne!(
+            format!("{:.2}", 1e300),
+            ours,
+            "Rust expands the exact value"
+        );
     }
 
     #[test]

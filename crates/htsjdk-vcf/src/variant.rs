@@ -303,7 +303,10 @@ mod tests {
         g.dp = Some(11);
         g.gq = Some(30);
         v.genotypes.push(g);
-        assert_eq!(v.calc_vcf_genotype_keys(true), ["GT", "AD", "DP", "GQ", "PL"]);
+        assert_eq!(
+            v.calc_vcf_genotype_keys(true),
+            ["GT", "AD", "DP", "GQ", "PL"]
+        );
     }
 
     /// One sample carrying a field puts it in every sample's FORMAT.
@@ -313,8 +316,10 @@ mod tests {
         let mut g1 = Genotype::new("S1", vec![allele("A", true), allele("T", false)]);
         g1.dp = Some(11);
         v.genotypes.push(g1);
-        v.genotypes
-            .push(Genotype::new("S2", vec![allele("A", true), allele("A", true)]));
+        v.genotypes.push(Genotype::new(
+            "S2",
+            vec![allele("A", true), allele("A", true)],
+        ));
         assert_eq!(v.calc_vcf_genotype_keys(true), ["GT", "DP"]);
     }
 
@@ -341,7 +346,11 @@ mod tests {
         assert_eq!(format_vcf_double(-1e-21), "0.00");
         assert_eq!(format_vcf_double(0.0), "0.00");
         assert_eq!(format_vcf_double(-0.0), "0.00");
-        assert_eq!(format_vcf_double(1e-20), "1.000e-20", "the boundary is inclusive");
+        assert_eq!(
+            format_vcf_double(1e-20),
+            "1.000e-20",
+            "the boundary is inclusive"
+        );
     }
 
     #[test]

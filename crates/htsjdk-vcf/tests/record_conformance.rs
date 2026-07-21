@@ -11,7 +11,7 @@ use std::io::Read;
 use htsjdk_vcf::allele::Allele;
 use htsjdk_vcf::encoder::VcfEncoder;
 use htsjdk_vcf::header::{Cardinality, HeaderLine, LineType, VcfHeader};
-use htsjdk_vcf::variant::{format_vcf_double, Genotype, VariantContext, Value};
+use htsjdk_vcf::variant::{format_vcf_double, Genotype, Value, VariantContext};
 
 fn corpus() -> Vec<(String, String)> {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/vcf_record.txt.gz");
@@ -59,7 +59,9 @@ fn parse_java_hex_double(s: &str) -> f64 {
         Some(r) => (-1.0, r),
         None => (1.0, s),
     };
-    let rest = rest.strip_prefix("0x").expect("Double.toHexString starts 0x");
+    let rest = rest
+        .strip_prefix("0x")
+        .expect("Double.toHexString starts 0x");
     let (mantissa, exp) = rest.split_once('p').expect("Double.toHexString has p");
     let (int_part, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
     let mut value = int_part.parse::<f64>().expect("hex integer part is 0 or 1");
@@ -107,7 +109,11 @@ fn header() -> VcfHeader {
     ] {
         h.lines.push(HeaderLine::format(id, n, t, d));
     }
-    for (id, d) in [("q10", "Quality below 10"), ("aFilter", "a"), ("zFilter", "z")] {
+    for (id, d) in [
+        ("q10", "Quality below 10"),
+        ("aFilter", "a"),
+        ("zFilter", "z"),
+    ] {
         h.lines.push(HeaderLine::filter(id, d));
     }
     h.samples = vec!["SAMPLE1".to_string(), "SAMPLE2".to_string()];
@@ -244,7 +250,10 @@ fn cases() -> Vec<(String, String)> {
     );
     let mut phased = gt("SAMPLE1", &[a.clone(), t.clone()]);
     phased.phased = true;
-    with_gts("gt_phased", vec![phased, gt("SAMPLE2", &[a.clone(), a.clone()])]);
+    with_gts(
+        "gt_phased",
+        vec![phased, gt("SAMPLE2", &[a.clone(), a.clone()])],
+    );
     with_gts(
         "gt_nocall",
         vec![
@@ -378,7 +387,9 @@ fn every_format_vcf_double_case_matches_the_oracle() {
         let d = parse_java_hex_double(hex);
         let ours = format_vcf_double(d);
         if &&ours != expected {
-            mismatches.push(format!("{hex} ({d:e})\n  htsjdk: {expected}\n  ours  : {ours}"));
+            mismatches.push(format!(
+                "{hex} ({d:e})\n  htsjdk: {expected}\n  ours  : {ours}"
+            ));
         }
     }
     assert!(
@@ -438,16 +449,25 @@ fn the_jvm_format_model_holds_at_the_measured_rate() {
             }
         }
     }
-    assert!(n > 100_000, "the sweep should cover the whole corpus, got {n}");
+    assert!(
+        n > 100_000,
+        "the sweep should cover the whole corpus, got {n}"
+    );
 
     let rate = 100.0 * (n - bad_f) as f64 / n as f64;
     let rate_small = 100.0 * (n_small - bad_small) as f64 / n_small as f64;
     println!("n={n}  %.2f agreement {rate:.4}%  below 1e15 {rate_small:.6}%");
     println!("smallest diverging magnitude {smallest_divergence:e}");
 
-    assert_eq!(bad_e, 0, "%.3e was exact in decision 0017 and must stay exact");
+    assert_eq!(
+        bad_e, 0,
+        "%.3e was exact in decision 0017 and must stay exact"
+    );
     assert!(rate >= 99.85, "%.2f agreement fell to {rate:.4}%");
-    assert!(rate_small >= 99.99, "agreement below 1e15 fell to {rate_small:.6}%");
+    assert!(
+        rate_small >= 99.99,
+        "agreement below 1e15 fell to {rate_small:.6}%"
+    );
     assert!(
         smallest_divergence > 1e14,
         "a divergence appeared at {smallest_divergence:e}, below the 6.9e14 bound in decision 0017"
