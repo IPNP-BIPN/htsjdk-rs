@@ -74,14 +74,18 @@ produces a different size, and all ten match.
 corpus: JDK 17's bundled 1.2.11, macOS system 1.2.12, and the vendored 1.3.2. zlib's deflate
 output has been stable across that range for these levels.
 
-## Remaining work
+## Confirmed in the pinned container
 
-The goldens were produced by a **local macOS arm64 OpenJDK 17.0.19**, not by the pinned
-`linux/amd64` container that is the authoritative oracle. Regenerate them there and confirm.
-Deflate is pure integer code with no floating point, so a platform difference at identical zlib
-version would be surprising, but "surprising" is not "verified".
+The goldens were originally produced by a local macOS arm64 OpenJDK 17.0.19. They have since
+been regenerated inside the pinned `linux/amd64` oracle image (Temurin 17.0.19+10), which
+bundles **zlib 1.3.2** where the macOS JDK bundles 1.2.11.
 
-Until that runs in the container, this decision is **validated but not confirmed**.
+**All 70 zlib vectors and all 35 BGZF vectors match, zero mismatches.** This decision is
+therefore **confirmed**, not merely validated. Four zlib versions now agree byte for byte on
+this corpus across two architectures: JDK 1.2.11 (macOS arm64), system 1.2.12 (macOS),
+JDK 1.3.2 (container amd64), and vendored 1.3.2 (Rust).
+
+See `tools/oracle/` for the image and the runner that reproduces this.
 
 ## Reproduction
 
