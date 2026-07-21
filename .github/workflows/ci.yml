@@ -470,6 +470,27 @@ jobs:
             exit 1
           }
 
+  overlap-order:
+    name: "Decision 0020: does the overlap set's order reach the output?"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the oracle image
+        run: docker build -t htsjdk-rs-oracle:4.2.0 tools/oracle
+      - name: "CollectRnaSeqMetrics is deterministic across HashSet orderings"
+        # The port skips a byte-exact IntervalTree because the overlap set is folded
+        # commutatively downstream. If a future htsjdk made that fold order-dependent, two runs
+        # would diverge and this fails, reopening decision 0020.
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/rnaseq-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/OverlapOrderProbe.java . && javac -cp "$ORACLE_CP" -d . OverlapOrderProbe.java \
+             && java -cp ".:$ORACLE_CP" OverlapOrderProbe' 2>/dev/null | tee /tmp/overlap.txt
+          grep -q 'TWO_RUNS_IDENTICAL=true' /tmp/overlap.txt || {
+            echo "CollectRnaSeqMetrics is no longer order-independent. Decision 0020 must be revisited."
+            exit 1
+          }
+
   pow-portability:
     name: "Decision 0007: is Math.pow stable across silicon?"
     runs-on: ubuntu-latest
