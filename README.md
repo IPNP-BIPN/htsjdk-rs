@@ -34,6 +34,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
 | SAM text record writer | **byte-identical**, 66 of 67 (one licence-blocked, decision 0013) |
+| SAM text record parser | BAM → SAM → BAM byte-identical |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
 | Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
 | `MetricsFile` layout | planned |
