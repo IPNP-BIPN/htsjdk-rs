@@ -30,7 +30,7 @@ Both foldings are order-independent, so the `HashSet`'s iteration order cannot r
 
 ## Measured, not merely read
 
-The reading is confirmed in the pinned oracle by `tools/rnaseq-conformance/OverlapOrderProbe.java`.
+The reading is confirmed in the pinned oracle by `picard-rs`'s `tools/rnaseq-conformance/OverlapOrderProbe.java`. The probe exercises `CollectRnaSeqMetrics`, a *Picard* class, so it lives and runs in picard-rs CI where the oracle contains Picard, not here.
 `Gene` does not override `hashCode`, so it inherits identity hash, whose value is not stable across
 constructions; a `HashSet<Gene>` therefore iterates in a different order on each run. The probe
 runs `CollectRnaSeqMetrics` twice, over an input with **fourteen genes overlapping the same
