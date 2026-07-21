@@ -5,6 +5,8 @@
 
 pub mod file;
 pub mod format;
+pub mod histogram;
 
 pub use file::{MetricBean, MetricsFile, Value};
 pub use format::{format_bool, format_double, format_long};
+pub use histogram::Histogram;
