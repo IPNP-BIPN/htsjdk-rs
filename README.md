@@ -40,6 +40,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
 | `MetricsFile` layout | planned |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
+| Interval lists (`IntervalList`, `.interval_list`) | **byte-identical**, 11 goldens |
 | VCF header | **byte-identical**, 7 goldens, decision 0016 |
 | VCF records (`VCFEncoder`, `Allele`, genotypes) | **byte-identical**, 54 records + 29 double cases, decisions 0017, 0018 |
 | JVM `%f` / `%e` number formatting | **99.85%** over 127,803 doubles; **100%** for `%.3e` and below 6.9e14, decision 0017 |
