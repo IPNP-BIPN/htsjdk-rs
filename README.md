@@ -101,6 +101,38 @@ compiler will never catch any of them.
 
 The topology mirrors upstream, including the direction of the dependencies.
 
+## Relationship to `fulcrumgenomics/riker`
+
+[riker](https://github.com/fulcrumgenomics/riker) is an independent Rust reimplementation of
+Picard's QC tools, MIT-licensed, from the maintainers of Picard and htsjdk. It overlaps this
+program's Picard layer, and the distinction is worth stating plainly because it decides how the
+two relate.
+
+**riker targets functional equivalence; this program targets byte equivalence.** riker's own
+README says it "is not intended to be a drop-in replacement for Picard" — lowercase `snake_case`
+headers, no metadata lines, and "bug fixes that yield slightly different outputs in specific edge
+cases". So riker is a better tool; this is a byte-for-byte reproduction of the existing one,
+including the bugs.
+
+That makes riker a **source of divergence candidates, never a source to port from**. Its
+`ERRATA.md` documents exactly where a careful reimplementer chooses to differ from Picard, and
+every entry is a place this port must *not* differ. Those entries are pinned as conformance
+cases in `picard-rs`, measured against the reference rather than trusted. Where riker's reading
+of Picard and this port's agree, that is an independent cross-check of the reading; where riker's
+errata is silent on something byte comparison surfaces (its list does not mention Picard's
+alignment-block cycle binning, for instance), that is evidence for the method rather than against
+riker.
+
+## Commit attribution
+
+Commits are co-authored with the model that wrote them. On 2026-07-21 the history of all three
+repositories was rewritten to add that trailer uniformly, at the maintainer's request. The
+rewrite changed every commit SHA. `picard-rs` and `gatk-rs` pin their dependencies by SHA, so
+their **current** pins were updated to the rewritten commits, but pins recorded in *historical*
+commits now name pre-rewrite SHAs that no longer exist. Historical builds before that date are
+therefore no longer bit-reproducible; current and future ones are. This was a deliberate trade,
+made with the cost understood.
+
 ## License
 
 MIT, matching the htsjdk sources this ports. See `LICENSE`.
