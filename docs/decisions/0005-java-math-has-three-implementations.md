@@ -89,3 +89,27 @@ and `log`, then the rest. `sin`/`cos`/`cbrt` are last; nothing on the current la
 `tools/jmath-conformance/JMathDump.java` through `tools/oracle/run.sh`. Values are stored as
 raw bit patterns, never decimal: decimal rendering discards exactly the difference being
 measured.
+
+
+## Addendum: two of the three are GPL2, and this record did not say so
+
+Decision 0014 withdrew `Math.exp` because reproducing it exactly required transcribing
+`macroAssembler_x86_exp.cpp`, which is GPL2 **only**, with no Classpath Exception.
+
+That reframes this record. It establishes that a port must track *which* of the three math
+libraries each call site used, and it treats the three as equivalent problems differing only in
+difficulty. They are not equivalent:
+
+| library | source | licence | portable by transcription? |
+|---|---|---|---|
+| `java.lang.Math` | HotSpot intrinsics | GPL2 only | **no** |
+| `java.lang.StrictMath` | fdlibm in `java.base` | GPL2 + Classpath Exception | **no** |
+| commons-math3 `FastMath` | Apache Commons | Apache 2.0 | yes |
+
+Only the third can be transcribed. For the first two, exactness has to be reached the way
+decision 0006 reached it for `log`: by establishing an independent property of the result — that
+it is correctly rounded — and implementing to that property rather than to the algorithm. Where
+no such property holds, as with `exp`, the function stays unported.
+
+This is a much sharper constraint than "track which library each call site used", and it should
+have been in this record from the start.
