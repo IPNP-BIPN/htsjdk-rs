@@ -8,5 +8,6 @@ pub mod encoder;
 pub mod header;
 pub mod jformat;
 pub mod variant;
+pub mod vcf_file;
 
 pub use header::{Cardinality, HeaderLine, LineType, VcfHeader};
