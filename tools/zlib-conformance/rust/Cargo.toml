@@ -1,0 +1,8 @@
+[package]
+name = "r2"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
+md-5 = "0.10"
