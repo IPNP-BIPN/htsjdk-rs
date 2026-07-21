@@ -34,6 +34,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
 | SAM text records | planned |
+| `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
 | Metrics number formatting (`FormatUtil`) | **99.73%**, 112 divergences pinned, decision 0011 |
 | `MetricsFile` layout | planned |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
@@ -74,6 +75,7 @@ compiler will never catch any of them.
 | [0009](docs/decisions/0009-header-attribute-order-is-a-property-of-a-java-collection.md) | The SAM header's byte order is decided by a Java collection choice |
 | [0010](docs/decisions/0010-the-bai-index-is-where-a-divergence-is-least-likely-to-be-noticed.md) | The BAI index is where a divergence is least likely to be noticed |
 | [0011](docs/decisions/0011-metrics-number-formatting-depends-on-the-jvm-locale.md) | Metrics number formatting depends on the JVM's locale, and nothing pins it |
+| [0012](docs/decisions/0012-nan-sign-bits-are-chosen-by-the-fpu.md) | NaN sign bits are chosen by the FPU, so the port is not bit-identical to itself across architectures |
 
 ## Part of a three-repository program
 
