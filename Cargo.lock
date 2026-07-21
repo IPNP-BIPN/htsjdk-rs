@@ -99,6 +99,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "htsjdk-diff"
+version = "0.0.0"
+dependencies = [
+ "htsjdk-bgzf",
+]
+
+[[package]]
 name = "jmath"
 version = "0.0.0"
 dependencies = [
