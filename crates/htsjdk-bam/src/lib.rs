@@ -25,6 +25,7 @@ pub mod reader;
 pub mod record;
 pub mod tag;
 pub mod text;
+pub mod text_parse;
 pub mod writer;
 
 pub use bin::compute_indexing_bin;
