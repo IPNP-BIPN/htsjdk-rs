@@ -119,3 +119,21 @@ passes reports 100% and means nothing.
 first thing the metrics archetype needs and it was attempted first for that reason. It is
 **not** representative of archetype cost: it is shared infrastructure paid once, and the
 marginal cost of collector number two is still unmeasured.
+
+
+## Addendum: cause A confirmed for `float`, not only `double`
+
+Porting the SAM text writer produced one divergence in 67 lines, and it is the same cause.
+`TextTagCodec` renders a float tag with `Float.toString`, and Java 17's is not the shortest
+round-trip decimal there either:
+
+| value | Java 17 | Rust shortest |
+|---|---|---|
+| `Float.MIN_VALUE` (`0x00000001`) | `1.4E-45` | `1E-45` |
+
+Both parse back to the same subnormal, so both are valid round trips; they are simply different
+decimals. The `FloatingDecimal` port this decision already lists as outstanding covers both
+widths, so the SAM case is pinned in
+`crates/htsjdk-bam/tests/sam_text_conformance.rs` rather than patched, on the same reasoning:
+patching one rendering to match while the underlying algorithm differs would pass that test and
+fail the next value.
