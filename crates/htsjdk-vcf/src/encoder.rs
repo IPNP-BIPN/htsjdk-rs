@@ -364,9 +364,9 @@ impl VcfHeader {
     /// INFO and FORMAT share the `Compound` variant, distinguished by their `key`, exactly as
     /// `VCFCompoundHeaderLine` is shared between `VCFInfoHeaderLine` and `VCFFormatHeaderLine`.
     fn has_compound(&self, kind: &str, wanted: &str) -> bool {
-        self.lines.iter().any(|l| {
-            matches!(l, HeaderLine::Compound { key, id, .. } if key == kind && id == wanted)
-        })
+        self.lines.iter().any(
+            |l| matches!(l, HeaderLine::Compound { key, id, .. } if key == kind && id == wanted),
+        )
     }
 
     pub fn has_info_line(&self, id: &str) -> bool {
@@ -392,7 +392,11 @@ mod tests {
     fn the_qual_trim_hides_a_lossy_format() {
         assert_eq!(format_qual_value(30.0), "30");
         assert_eq!(format_qual_value(0.0), "0");
-        assert_eq!(format_qual_value(0.001), "0", "not distinguishable from zero");
+        assert_eq!(
+            format_qual_value(0.001),
+            "0",
+            "not distinguishable from zero"
+        );
         assert_eq!(format_qual_value(29.5), "29.50");
         assert_eq!(format_qual_value(1234.5678), "1234.57");
     }
@@ -407,5 +411,4 @@ mod tests {
         assert!(!is_missing_value("0"));
         assert!(!is_missing_value(".0"));
     }
-
 }
