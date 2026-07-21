@@ -363,3 +363,79 @@ fn htsjdk_really_does_collapse_every_integer_width_to_i() {
         "the corpus must span the whole ladder, saw {seen}"
     );
 }
+
+/// The property the two text modules exist to make true: **BAM → SAM → BAM is byte-identical.**
+///
+/// This is not obvious. The text form discards every integer tag's binary width (decision 0008
+/// says 200 is `C`, 300 is `s`, 40000 is `S`; text says `i` for all three), so the round trip
+/// closes only because the encoder re-derives the width from the value.
+///
+/// What that proves is narrower than it first appears, and the distinction is worth stating
+/// because the loose version was written here first and was wrong. This test shows the ladder
+/// is **deterministic**, not that it is **correct**: a ladder that mapped every value to the
+/// wrong width would still round-trip, as long as it did so consistently. Correctness comes
+/// from `every_record_encodes_to_htsjdks_bytes` in the BAM suite, which compares against
+/// goldens. The two tests are not redundant and neither subsumes the other.
+///
+/// Confirmed by sabotage: making the parser resolve a `=` mate to -1 instead of to RNAME fails
+/// this test on the first case, while sabotaging the ladder itself does not.
+#[test]
+fn a_bam_record_survives_a_round_trip_through_sam_text() {
+    use htsjdk_bam::text_parse::parse_line;
+
+    let resolve = |name: &str| match name {
+        "chr1" => Some(0),
+        "chr2" => Some(1),
+        _ => None,
+    };
+
+    let mut checked = 0usize;
+    let mut skipped = Vec::new();
+    for case in cases() {
+        let original = match case.record.encode() {
+            Ok(bytes) => bytes,
+            // A record the binary encoder refuses is out of scope for a round trip.
+            Err(_) => continue,
+        };
+
+        let line = match write_alignment(
+            &case.record,
+            name_of(case.record.reference_index),
+            name_of(case.record.mate_reference_index),
+        ) {
+            Some(l) => l,
+            None => continue,
+        };
+
+        // htsjdk's parser refuses some records this port can encode: an unplaced record with a
+        // CIGAR, for instance. Those are recorded rather than silently passed over.
+        let parsed = match parse_line(&line, resolve) {
+            Ok(r) => r,
+            Err(e) => {
+                skipped.push(format!("{}: {e:?}", case.name));
+                continue;
+            }
+        };
+
+        checked += 1;
+        assert_eq!(
+            parsed.encode().expect("re-encode"),
+            original,
+            "{}: BAM -> SAM -> BAM changed the bytes\n  line: {line}",
+            case.name
+        );
+    }
+
+    assert!(
+        checked > 50,
+        "only {checked} records round-tripped; skipped {skipped:?}"
+    );
+    // The skips are asserted rather than tolerated: a growing list would mean the parser is
+    // rejecting more than it should.
+    assert!(
+        skipped.len() <= 2,
+        "{} records could not be parsed back:\n{}",
+        skipped.len(),
+        skipped.join("\n")
+    );
+}
