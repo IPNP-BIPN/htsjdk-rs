@@ -90,6 +90,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "htsjdk-bam"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "htsjdk-bgzf"
 version = "0.0.0"
 dependencies = [

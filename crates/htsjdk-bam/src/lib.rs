@@ -1,0 +1,28 @@
+//! Byte-level port of htsjdk's BAM record codec.
+//!
+//! Ported from htsjdk 4.2.0, symbol by symbol, from the pinned clone. Every module names the
+//! Java class and method it comes from.
+//!
+//! The BAM *format* is public and short. Reimplementing it from the specification produces a
+//! file that `samtools` reads, that carries the right reads, and that is not htsjdk's file.
+//! The gap between those two is what this crate is for, and it is made of choices the
+//! specification explicitly leaves open:
+//!
+//! - the indexing `bin`, which readers scanning linearly never check ([`bin`]);
+//! - the width chosen for each integer tag, which is picked from the value by a ladder that is
+//!   not the obvious one ([`tag`]);
+//! - the order tags are written in, which sorts on the tag's *second* character ([`tag`]);
+//! - the trailing nibble of an odd-length read, which is `=` and not `N` ([`bases`]);
+//! - what an absent quality string becomes ([`record`]);
+//! - where a CIGAR too long for the format goes, and what stands in for it ([`record`]).
+
+pub mod bases;
+pub mod bin;
+pub mod cigar;
+pub mod record;
+pub mod tag;
+
+pub use bin::compute_indexing_bin;
+pub use cigar::{Cigar, CigarElement, Op};
+pub use record::{BamRecord, DecodeError, EncodeError};
+pub use tag::{Tag, TagValue, Tags};
