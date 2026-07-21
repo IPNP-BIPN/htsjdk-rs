@@ -93,6 +93,42 @@ jobs:
           sys.exit(1 if bad or not shared else 0)
           PY
 
+      - name: Regenerate the BAM codec goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/bam-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/BamCodecDump.java . && javac -cp "$ORACLE_CP" -d . BamCodecDump.java \
+             && java -cp ".:$ORACLE_CP" BamCodecDump' > /tmp/bam_real.txt
+          grep -c $'\t' /tmp/bam_real.txt
+
+      - name: Compare the BAM goldens against the committed ones
+        # The BAM record codec is pure integer work, so unlike the math corpus there is no
+        # reason to expect emulation to change it. That is the hypothesis; this measures it,
+        # because "no reason to expect" is how decision 0004's wrong assumption got in.
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#') or '\t' not in line: continue
+                  name, hexes = line.rstrip('\n').split('\t', 1)
+                  d[name] = hexes
+              return d
+          real = parse('/tmp/bam_real.txt')
+          committed = parse('crates/htsjdk-bam/tests/data/bam_codec.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print(f"case sets differ: only-real={sorted(set(real)-set(committed))[:5]} "
+                    f"only-committed={sorted(set(committed)-set(real))[:5]}")
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]:
+              print(f"  {k}")
+          sys.exit(1 if bad else 0)
+          PY
+
   pow-portability:
     name: "Decision 0007: is Math.pow stable across silicon?"
     runs-on: ubuntu-latest
