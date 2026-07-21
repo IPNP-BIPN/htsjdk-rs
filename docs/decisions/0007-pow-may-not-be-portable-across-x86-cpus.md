@@ -1,6 +1,6 @@
 # 0007. `Math.pow` is deferred: its intrinsic depends on an approximate hardware instruction
 
-**Status:** accepted (defer `pow`, test the hazard before porting)
+**Status:** accepted; hazard partially cleared, see the addendum
 **Date:** 2026-07-21
 **Follows:** [0006](0006-correct-rounding-is-the-target-for-log-and-log10.md)
 
@@ -76,3 +76,37 @@ a reason that did not hold; this one gates exactly the part that is actually at 
 `DuplicationMetrics.estimateLibrarySize` uses `Math.exp`; both are ported and exact.
 `MathUtils.log10SumLog10` reaches `Math.pow`, so this becomes blocking at BQSR and beyond, not
 before.
+
+
+## Addendum: measured, and the hazard did not materialise on AMD
+
+CI ran the experiment. The whole corpus was regenerated inside the same pinned oracle image on
+a real **AMD EPYC 7763** (`AuthenticAMD`, GitHub Actions `ubuntu-latest`) and diffed against
+the emulated corpus produced under Rosetta on Apple Silicon.
+
+| fn | compared | differing |
+|---|---:|---:|
+| `exp` | 44,987 | 0 |
+| `log` | 44,987 | 0 |
+| `log10` | 44,987 | 0 |
+| `sqrt` | 44,987 | 0 |
+| **`pow`** | **404,883** | **0** |
+
+Zero differences anywhere, including every `pow` point. So Rosetta's emulation of `rcpps` and
+AMD's hardware agree, at least across the sampled inputs.
+
+Two caveats keep this from closing the question outright:
+
+1. **Intel is still untested.** The experiment compared emulated-on-ARM against AMD. The
+   original worry was vendor divergence, and only one vendor has been sampled. An Intel runner
+   would complete it.
+2. **Agreement on a sample is not a proof of agreement everywhere.** 404,883 points is a good
+   sample of a space of `2^128` argument pairs.
+
+What this does establish is that the risk is smaller than feared and that `pow` is no longer
+blocked on the *portability* question. It still needs its 2,220-line intrinsic ported, which is
+a large job, and it still first becomes relevant at BQSR.
+
+The generated goldens were also confirmed on real silicon: the BGZF corpus regenerated in the
+container on the AMD host matches the committed goldens exactly, which independently validates
+every claim in decisions 0001 and 0003 outside the emulated environment.
