@@ -77,6 +77,13 @@ a reason that did not hold; this one gates exactly the part that is actually at 
 `MathUtils.log10SumLog10` reaches `Math.pow`, so this becomes blocking at BQSR and beyond, not
 before.
 
+> **This priority claim was wrong, and the correction is below.** `Math.pow` is reached far
+> earlier than BQSR: `htsjdk.samtools.util.Histogram.getStandardDeviation` calls
+> `pow(value - mean, 2)` through `import static java.lang.Math.*`, and `Histogram` is used by
+> 20 of the 44 Picard metrics tools, including every member of the calibration triple. The
+> blocker is real in Phase 1, not Phase 4. It is also, as measured below, not a blocker at
+> all.
+
 
 ## Addendum: measured, and the hazard did not materialise on AMD
 
@@ -110,3 +117,38 @@ a large job, and it still first becomes relevant at BQSR.
 The generated goldens were also confirmed on real silicon: the BGZF corpus regenerated in the
 container on the AMD host matches the committed goldens exactly, which independently validates
 every claim in decisions 0001 and 0003 outside the emulated environment.
+
+
+## Addendum 2: `pow(x, 2)` is exactly `x * x`, so the earliest dependency is harmless
+
+Found while scoping `Histogram` for the calibration triple. `getStandardDeviation` computes
+
+```java
+total += localCount * pow(value - mean, 2);
+```
+
+with `pow` statically imported from `java.lang.Math`. That puts the deferred function on the
+Phase 1 critical path, four phases earlier than this record claimed.
+
+The cheap question was asked first, as with `log` in decision 0006: does the intrinsic need
+porting at all *for this exponent*? Measured in the pinned oracle image over **1,999,558**
+points — the named boundaries (zero, both signs, one, subnormals, `MIN_VALUE`, `MAX_VALUE`,
+both infinities), one million values in the magnitude range a standard deviation actually sees,
+and one million drawn from the full random bit pattern:
+
+```
+checked=1999558 differ=0
+```
+
+`Math.pow(x, 2.0)` and `x * x` are **bit-identical on every point**, compared by raw bits so
+signed zeros and NaN payloads count.
+
+So `Histogram` can be ported using multiplication, and the deferral of the general `pow`
+intrinsic holds. This is not a coincidence of one machine: the intrinsic special-cases integral
+exponents before it reaches `rcpps` at all, which is why the approximate instruction never
+touches the result. The probe runs in CI so the property is re-measured on real silicon rather
+than trusted from one emulated run.
+
+What this does **not** license is assuming other small exponents behave the same way.
+`pow(x, 0.5)`, `pow(x, 3)` and `pow(x, -1)` are separate questions, and each one is a
+measurement rather than an inference.
