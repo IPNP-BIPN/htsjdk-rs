@@ -11,7 +11,13 @@
 //! Pinning the failures rather than trimming the corpus is the point. A conformance suite that
 //! contains only what already passes reports 100% and means nothing.
 //!
-//! The cause is diagnosed and recorded in decision 0011. It is not a rounding tweak away:
+//! The cause is diagnosed in decision 0011 and the work is **blocked by a licence**, not by
+//! difficulty: see decision 0013. `FloatingDecimal` and `DigitList` are `java.base` classes
+//! under GPL2, and the OpenJDK Assembly Exception grants permission to *link*, not to translate
+//! and relicense. These 112 values are therefore quarantined as bio-identical rather than
+//! pending.
+//!
+//! The cause itself is not a rounding tweak away:
 //! `DecimalFormat` rounds the digit string produced by Java 17's `FloatingDecimal`, and
 //! `DigitList.shouldRoundUp` consults whether that string is exact and whether it was already
 //! rounded up. Both require the exact decimal expansion of the double. Fitting a rule to this
