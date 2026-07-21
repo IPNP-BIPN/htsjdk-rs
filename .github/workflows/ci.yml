@@ -377,6 +377,55 @@ jobs:
           JFORMAT_SWEEP=/tmp/jformat_sweep.txt \
             cargo test -p htsjdk-vcf --test record_conformance -- --ignored --nocapture
 
+      - name: Regenerate the whole-VCF-file goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/VcfFileDump.java . && javac -cp "$ORACLE_CP" -d . VcfFileDump.java \
+             && java -cp ".:$ORACLE_CP" VcfFileDump' > /tmp/vcffile_real.txt
+          wc -l /tmp/vcffile_real.txt
+
+      - name: Compare the whole-VCF-file goldens against the committed ones
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#'): continue
+                  p = line.rstrip('\n').split('\t', 1)
+                  if len(p) < 2: continue
+                  d[p[0]] = p[1]
+              return d
+          real = parse('/tmp/vcffile_real.txt')
+          committed = parse('crates/htsjdk-vcf/tests/data/vcf_file.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print(f"case sets differ: {sorted(set(real) ^ set(committed))[:5]}")
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]: print(f"  {k}")
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: "Decision 0019: is re-sorting a sorted VCF header still a no-op?"
+        # The port relies on it: writing a header that has already been through the comparator
+        # once must not reorder it. Measured stable, not proven stable, so it is re-measured.
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/ResortProbe.java . && javac -cp "$ORACLE_CP" -d . ResortProbe.java \
+             && java -cp ".:$ORACLE_CP" ResortProbe' 2>/dev/null | tee /tmp/resort.txt
+          grep -q 'CYCLIC_RESORT_STABLE=true' /tmp/resort.txt || {
+            echo "Re-sorting a cyclic header is no longer stable. Decision 0019 needs revisiting."
+            exit 1
+          }
+          grep -q 'REALISTIC_RESORT_STABLE=true' /tmp/resort.txt || {
+            echo "Re-sorting a realistic dictionary is no longer stable."
+            exit 1
+          }
+
       - name: "Decision 0016: is the VCF header comparator still inconsistent?"
         # The cycle is the reason the port uses a total order where htsjdk has none. If a future
         # htsjdk made the comparator consistent, this fails and the divergence can be removed.
