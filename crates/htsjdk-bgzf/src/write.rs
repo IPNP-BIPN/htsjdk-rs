@@ -9,9 +9,10 @@ use std::io::{self, Write};
 use flate2::{Compress, Compression, Crc, FlushCompress, Status};
 
 use crate::{
-    BGZF_ID1, BGZF_ID2, BGZF_LEN, BLOCK_FOOTER_LENGTH, BLOCK_HEADER_LENGTH, COMPRESSED_BUFFER_SIZE,
-    DEFAULT_COMPRESSION_LEVEL, DEFAULT_UNCOMPRESSED_BLOCK_SIZE, EMPTY_GZIP_BLOCK, GZIP_CM_DEFLATE,
-    GZIP_FLG, GZIP_ID1, GZIP_ID2, GZIP_OS_UNKNOWN, GZIP_XFL, GZIP_XLEN,
+    vfp, BGZF_ID1, BGZF_ID2, BGZF_LEN, BLOCK_FOOTER_LENGTH, BLOCK_HEADER_LENGTH,
+    COMPRESSED_BUFFER_SIZE, DEFAULT_COMPRESSION_LEVEL, DEFAULT_UNCOMPRESSED_BLOCK_SIZE,
+    EMPTY_GZIP_BLOCK, GZIP_CM_DEFLATE, GZIP_FLG, GZIP_ID1, GZIP_ID2, GZIP_OS_UNKNOWN, GZIP_XFL,
+    GZIP_XLEN,
 };
 
 /// Writes a BGZF stream whose bytes match `BlockCompressedOutputStream`.
@@ -20,6 +21,8 @@ pub struct BgzfWriter<W: Write> {
     buffer: Vec<u8>,
     level: u32,
     finished: bool,
+    /// Byte offset of the block currently being filled, `mBlockAddress` in htsjdk.
+    block_address: u64,
 }
 
 impl<W: Write> BgzfWriter<W> {
@@ -34,6 +37,7 @@ impl<W: Write> BgzfWriter<W> {
             buffer: Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE),
             level,
             finished: false,
+            block_address: 0,
         }
     }
 
@@ -79,6 +83,7 @@ impl<W: Write> BgzfWriter<W> {
 
         let total = self.write_gzip_block(&compressed, self.buffer.len(), crc.sum())?;
         self.buffer.clear();
+        self.block_address += total as u64;
         Ok(total)
     }
 
@@ -112,6 +117,19 @@ impl<W: Write> BgzfWriter<W> {
         self.inner
             .write_all(&(uncompressed_size as u32).to_le_bytes())?;
         Ok(total)
+    }
+
+    /// `BlockCompressedOutputStream.getFilePointer()`: the virtual file pointer at the current
+    /// write position.
+    ///
+    /// The upper 48 bits are the compressed byte offset of the block being filled; the lower 16
+    /// are the offset into that block's *uncompressed* payload. Taken before and after writing a
+    /// record, the pair is exactly the chunk the BAM index stores.
+    pub fn file_pointer(&self) -> u64 {
+        // The buffer never exceeds DEFAULT_UNCOMPRESSED_BLOCK_SIZE (65498), which fits the
+        // 16-bit offset field, so this cannot fail in practice.
+        vfp::make_file_pointer(self.block_address, self.buffer.len() as u32)
+            .expect("block offset is bounded by the uncompressed block size")
     }
 
     /// Flushes any buffered data and appends the BGZF terminator block, as
