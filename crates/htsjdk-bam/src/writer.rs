@@ -19,6 +19,7 @@ use htsjdk_bgzf::BgzfWriter;
 
 use crate::bin::BIN_GENOMIC_SPAN;
 use crate::header::SamHeader;
+use crate::index::{BamIndexer, Chunk};
 use crate::record::{BamRecord, EncodeError};
 
 /// `BAMFileConstants.BAM_MAGIC`.
@@ -29,6 +30,8 @@ pub struct BamWriter<W: Write> {
     bgzf: BgzfWriter<W>,
     /// Reference lengths, kept for the too-large-reference bin rule.
     reference_lengths: Vec<i32>,
+    /// Present when an index is being built alongside the file.
+    indexer: Option<BamIndexer>,
 }
 
 impl<W: Write> BamWriter<W> {
@@ -59,7 +62,18 @@ impl<W: Write> BamWriter<W> {
         Ok(BamWriter {
             bgzf,
             reference_lengths: header.sequences.iter().map(|s| s.length).collect(),
+            indexer: None,
         })
+    }
+
+    /// Builds a BAI index alongside the file, as `SAMFileWriterFactory.setCreateIndex(true)`
+    /// does.
+    ///
+    /// This must be enabled before the first record: the index records the virtual file
+    /// pointer around every record, and there is no way to recover the ones already written.
+    pub fn with_index(mut self) -> Self {
+        self.indexer = Some(BamIndexer::new(self.reference_lengths.clone()));
+        self
     }
 
     /// Whether this reference is too long for the BAI bin field.
@@ -77,18 +91,57 @@ impl<W: Write> BamWriter<W> {
 
     /// `BAMFileWriter.writeAlignment`.
     pub fn write(&mut self, record: &BamRecord) -> Result<(), WriteError> {
-        let bytes = if self.reference_too_large_for_bin(record.reference_index) {
+        let forced_bin = self.reference_too_large_for_bin(record.reference_index);
+        let bytes = if forced_bin {
             record.encode_with_bin(0)
         } else {
             record.encode()
         }
         .map_err(WriteError::Encode)?;
-        self.bgzf.write_all(&bytes).map_err(WriteError::Io)
+
+        // htsjdk takes the pointer *before* encoding and again after, so the chunk spans
+        // exactly this record's bytes. Taking it after the write for the start, or including
+        // the next record, shifts every chunk in the index.
+        let start_offset = self.bgzf.file_pointer();
+        self.bgzf.write_all(&bytes).map_err(WriteError::Io)?;
+        let stop_offset = self.bgzf.file_pointer();
+
+        if let Some(indexer) = &mut self.indexer {
+            let index_bin = if forced_bin {
+                0
+            } else if record.alignment_start != crate::bin::NO_ALIGNMENT_START {
+                crate::bin::compute_indexing_bin(record.alignment_start, record.alignment_end())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            indexer.process(
+                record.reference_index,
+                record.alignment_start,
+                record.alignment_end(),
+                index_bin,
+                record.read_unmapped(),
+                Chunk {
+                    start: start_offset,
+                    end: stop_offset,
+                },
+            );
+        }
+        Ok(())
     }
 
     /// Closes the BGZF stream, emitting the empty terminator block.
     pub fn finish(self) -> io::Result<W> {
         self.bgzf.into_inner()
+    }
+
+    /// Closes the stream and returns the file alongside its BAI index.
+    ///
+    /// Panics unless [`Self::with_index`] was called.
+    pub fn finish_with_index(self) -> io::Result<(W, Vec<u8>)> {
+        let indexer = self.indexer.expect("with_index was not enabled");
+        let index = indexer.finish();
+        Ok((self.bgzf.into_inner()?, index))
     }
 }
 
