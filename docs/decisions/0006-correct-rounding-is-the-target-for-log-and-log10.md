@@ -43,7 +43,8 @@ divergent ones:
 - `log`, `log10`: the target is **correct rounding**. Implemented with double-double
   arithmetic, no algorithm port. **Now 44,996/44,996 exact against `java.lang.Math`.**
 - `exp`, `pow`: measurably **not** correctly rounded, so correct rounding is the wrong target
-  and HotSpot's algorithm does have to be ported.
+  and HotSpot's algorithm does have to be ported. **`exp` is now done and exact**
+  (44,996/44,996); see the note below.
 - `sqrt`: already exact everywhere, mandated by IEEE-754.
 
 Testing the cheap hypothesis first turned the two highest-priority functions from an assembly
@@ -78,3 +79,26 @@ invisible on ordinary inputs and fatal on precisely the hard-to-round ones, whic
 exactly the points a correctness claim depends on. "99.9956% agreement" reads like a near miss
 caused by fundamental limits; it was a fixable defect, and the diagnostic that distinguished
 the two was measuring how many bits the failures actually needed.
+
+
+## Addendum: `exp` ported, 44,996/44,996 exact
+
+The other branch of the split has been walked. `Math.exp` reproduces HotSpot's Intel LIBM
+intrinsic from `macroAssembler_x86_exp.cpp` at `jdk-17-ga`, and matches on every corpus point.
+
+Two things made it work, and both are the opposite of how one would naturally write it:
+
+**The SIMD lane structure is load-bearing.** The original is packed-double code in which the
+two lanes of each register carry *different* polynomial terms, combined at specific points:
+lane 0 accumulates `r^5 * (c2 + c4*r)`, lane 1 accumulates `r^3 * (c3 + c5*r)`, and the `r^2/2`
+term arrives separately. Rewriting that as a single Horner evaluation is algebraically
+identical and produces different bits, because every intermediate rounds to `f64`.
+
+**The final step is a multiply then an add, not an FMA.** The original emits `mulsd` followed
+by `addsd`, so the product rounds before the sum. Using `mul_add` would be more accurate and
+therefore wrong.
+
+The table was generated from the source rather than transcribed: 64 entries of two values each
+is precisely the kind of copying where one wrong nibble yields a plausible wrong answer.
+
+`pow` remains, and has its own intrinsic.
