@@ -25,6 +25,7 @@ pub mod header;
 pub mod index;
 pub mod interval;
 pub mod overlap;
+pub mod read_group_checksum;
 pub mod reader;
 pub mod record;
 pub mod sam_file;
