@@ -25,6 +25,7 @@ use crate::record::BamRecord;
 use crate::tag::{Tag, TagValue};
 
 const READ_PAIRED: u16 = 0x1;
+const READ_UNMAPPED: u16 = 0x4;
 const FIRST_OF_PAIR: u16 = 0x40;
 const SECOND_OF_PAIR: u16 = 0x80;
 
@@ -62,6 +63,41 @@ pub fn write_record(record: &FastqRecord) -> String {
     let mut s = record.to_fastq_string();
     s.push('\n');
     s
+}
+
+/// `SAMUtils.fastqToPhred(String)`: each printable FASTQ character back to a binary score.
+///
+/// Panics on a character outside `33..=126`, matching htsjdk's `IllegalArgumentException`. The
+/// inverse of [`phred_to_fastq`].
+pub fn fastq_to_phred(fastq: &str) -> Vec<u8> {
+    fastq
+        .bytes()
+        .map(|c| {
+            assert!(
+                (33..=126).contains(&c),
+                "Invalid fastq character: {}",
+                c as char
+            );
+            c - 33
+        })
+        .collect()
+}
+
+/// `SequenceUtil.getSamReadNameFromFastqHeader`: the SAM read name for a FASTQ header.
+///
+/// The header is truncated at the first space, then any trailing `/1` or `/2` pair suffixes are
+/// stripped (in a loop, to trap the pathological `/1/1`), because a `/1` left on an unpaired read
+/// causes trouble downstream in tools like MergeBamAlignment.
+pub fn get_sam_read_name_from_fastq_header(fastq_header: &str) -> String {
+    let mut name = match fastq_header.find(' ') {
+        Some(idx) => &fastq_header[..idx],
+        None => fastq_header,
+    }
+    .to_string();
+    while name.ends_with("/1") || name.ends_with("/2") {
+        name.truncate(name.len() - 2);
+    }
+    name
 }
 
 /// `SAMUtils.phredToFastq(byte[])`: each score offset by 33 into printable ASCII.
@@ -125,6 +161,39 @@ pub fn as_fastq_record(rec: &BamRecord) -> FastqRecord {
 /// `FastqEncoder.encode(SAMRecord)`: convert then format.
 pub fn encode(rec: &BamRecord) -> String {
     as_fastq_record(rec).to_fastq_string()
+}
+
+impl FastqRecord {
+    /// `FastqRecord.getReadBases()`: the sequence as bytes, or empty when there is none.
+    pub fn get_read_bases(&self) -> Vec<u8> {
+        match &self.read_string {
+            None => Vec::new(),
+            Some(s) => s.as_bytes().to_vec(),
+        }
+    }
+
+    /// `FastqRecord.getBaseQualities()`: the FASTQ qualities decoded to binary scores.
+    pub fn get_base_qualities(&self) -> Vec<u8> {
+        match &self.quality_string {
+            None => Vec::new(),
+            Some(s) => fastq_to_phred(s),
+        }
+    }
+}
+
+/// `FastqEncoder.asSAMRecord(FastqRecord, header)`, without the custom hook.
+///
+/// Builds an **unmapped** record: the read name is the FASTQ header cleaned by
+/// [`get_sam_read_name_from_fastq_header`], and the bases and qualities are decoded from the
+/// record. This is the conversion `FastqToSam` performs on every input read.
+pub fn as_sam_record(record: &FastqRecord) -> BamRecord {
+    BamRecord {
+        read_name: get_sam_read_name_from_fastq_header(record.read_name.as_deref().unwrap_or("")),
+        flags: READ_UNMAPPED,
+        read_bases: record.get_read_bases(),
+        base_qualities: record.get_base_qualities(),
+        ..Default::default()
+    }
 }
 
 /// `StringUtil.isBlank`: null or all-whitespace. Here the null case is the caller's `None`.
@@ -341,6 +410,63 @@ mod tests {
         // With skipping on, the blanks are consumed and the record is too short instead.
         let err2 = parse_fastq("@r\n\n+\n\n", true).unwrap_err();
         assert!(err2.0.contains("too short"), "{}", err2.0);
+    }
+
+    #[test]
+    fn fastq_to_phred_is_the_inverse_of_phred_to_fastq() {
+        assert_eq!(fastq_to_phred("!?I"), vec![0, 30, 40]);
+        assert_eq!(phred_to_fastq(&fastq_to_phred("ABCabc")), "ABCabc");
+    }
+
+    /// Verified against htsjdk's SequenceUtil.getSamReadNameFromFastqHeader.
+    #[test]
+    fn the_sam_read_name_drops_the_comment_and_pair_suffix() {
+        assert_eq!(get_sam_read_name_from_fastq_header("read1/1"), "read1");
+        assert_eq!(get_sam_read_name_from_fastq_header("read1/2"), "read1");
+        assert_eq!(
+            get_sam_read_name_from_fastq_header("read1 comment"),
+            "read1"
+        );
+        assert_eq!(get_sam_read_name_from_fastq_header("read1"), "read1");
+        // The loop strips a pathological doubled suffix.
+        assert_eq!(get_sam_read_name_from_fastq_header("r/1/2"), "r");
+        // A space is truncated before the suffix is considered, so a suffix after a space is gone
+        // with the comment.
+        assert_eq!(get_sam_read_name_from_fastq_header("read1 x/1"), "read1");
+    }
+
+    #[test]
+    fn as_sam_record_builds_an_unmapped_read() {
+        let fq = FastqRecord {
+            read_name: Some("read1/1".to_string()),
+            read_string: Some("ACGT".to_string()),
+            quality_header: Some(String::new()),
+            quality_string: Some("II?5".to_string()),
+        };
+        let sam = as_sam_record(&fq);
+        assert_eq!(sam.read_name, "read1"); // suffix stripped
+        assert_eq!(sam.flags, READ_UNMAPPED);
+        assert_eq!(sam.read_bases, b"ACGT");
+        assert_eq!(sam.base_qualities, vec![40, 40, 30, 20]);
+    }
+
+    /// The full SAM -> FASTQ -> SAM round trip preserves bases and qualities, and the pair suffix
+    /// that encoding added is removed again by the name cleanup.
+    #[test]
+    fn sam_to_fastq_to_sam_round_trips_bases_and_quals() {
+        let original = rec(
+            "read1",
+            READ_PAIRED | FIRST_OF_PAIR,
+            b"ACGTN",
+            &[40, 30, 20, 10, 0],
+        );
+        let fastq_text = write_record(&as_fastq_record(&original));
+        let parsed = &parse_fastq(&fastq_text, false).unwrap()[0];
+        let back = as_sam_record(parsed);
+        assert_eq!(back.read_name, "read1");
+        assert_eq!(back.read_bases, original.read_bases);
+        assert_eq!(back.base_qualities, original.base_qualities);
+        assert_eq!(back.flags, READ_UNMAPPED);
     }
 
     /// The encoder and reader are inverse on the fields the reader populates.
