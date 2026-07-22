@@ -99,6 +99,31 @@ jobs:
           sys.exit(1 if bad or not shared else 0)
           PY
 
+      - name: Regenerate the BGZF termination goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/bgzf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/Term.java . && javac -cp "$ORACLE_CP" -d . Term.java \
+             && java -cp ".:$ORACLE_CP" Term' > /tmp/term_real.txt
+          grep -c '^  (' /tmp/term_real.txt
+
+      - name: Compare the termination goldens against the committed ones
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          def parse(t):
+              return {(m[0], m[1]): m[2] for m in
+                      re.findall(r'\("(\w+)", "(\w+)", "(\w+)"\)', t)}
+          real = parse(open('/tmp/term_real.txt').read())
+          committed = parse(open('crates/htsjdk-bgzf/tests/termination_conformance.rs').read())
+          shared = set(real) & set(committed)
+          bad = [k for k in shared if real[k] != committed[k]]
+          print(f"real={len(real)} committed={len(committed)} compared={len(shared)} mismatches={len(bad)}")
+          for k in bad[:10]:
+              print(f"  {k}: real={real[k]} committed={committed[k]}")
+          sys.exit(1 if bad or not shared else 0)
+          PY
+
       - name: Regenerate the BAM codec goldens
         run: |
           docker run --rm --platform linux/amd64 \
