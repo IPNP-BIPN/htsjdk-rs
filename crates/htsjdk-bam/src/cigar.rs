@@ -148,6 +148,117 @@ impl Cigar {
     }
 }
 
+/// `CigarUtil.softClipEndOfRead(clipFrom, oldCigar)`: soft-clip the read from the 1-based position
+/// `clip_from` to its end, rewriting the cigar element list.
+///
+/// Ported from `htsjdk.samtools.CigarUtil.softClipEndOfRead` and the `clipEndOfRead` /
+/// `mergeClippingCigarElement` it delegates to, tag 4.2.0. Used by CleanSam to trim alignments that
+/// hang off the end of the reference, and by the read clippers generally. This is the soft-clip
+/// entry; the hard-clip path of `mergeClippingCigarElement` is reproduced faithfully but is not
+/// exercised here.
+pub fn soft_clip_end_of_read(clip_from: i32, old_cigar: &[CigarElement]) -> Vec<CigarElement> {
+    clip_end_of_read(clip_from, old_cigar, Op::S)
+}
+
+/// `CigarUtil.clipEndOfRead`.
+///
+/// Walks the elements until the one that reaches or straddles `clip_from`, copying earlier elements
+/// verbatim and handing the boundary element to [`merge_clipping_cigar_element`]. The clipped region
+/// is always at the end, so nothing follows it.
+pub fn clip_end_of_read(
+    clip_from: i32,
+    old_cigar: &[CigarElement],
+    clipping_operator: Op,
+) -> Vec<CigarElement> {
+    // clippedBases = CoordMath.getLength(clipFrom, Cigar.getReadLength(oldCigar)) = readLen - clipFrom + 1.
+    let read_length: i32 = old_cigar
+        .iter()
+        .filter(|c| c.op.consumes_read_bases())
+        .map(|c| c.length as i32)
+        .sum();
+    let clipped_bases = read_length - clip_from + 1;
+
+    let mut new_cigar: Vec<CigarElement> = Vec::new();
+    let mut pos = 1i32;
+    let last = old_cigar[old_cigar.len() - 1];
+    let trailing_hard_clip_bases = if last.op == Op::H {
+        last.length as i32
+    } else {
+        0
+    };
+
+    for c in old_cigar {
+        let op = c.op;
+        let length = if op.consumes_read_bases() {
+            c.length as i32
+        } else {
+            0
+        };
+        let end_pos = pos + length - 1; // same as pos on the next iteration
+
+        if end_pos < clip_from - 1 {
+            // Before the clip point: copy verbatim.
+            new_cigar.push(*c);
+        } else {
+            // Adjacent to or straddling the boundary; the rest is clipped.
+            merge_clipping_cigar_element(
+                &mut new_cigar,
+                *c,
+                (clip_from - 1) - (pos - 1),
+                clipped_bases,
+                clipping_operator,
+                trailing_hard_clip_bases,
+            );
+            break;
+        }
+        pos = end_pos + 1;
+    }
+    new_cigar
+}
+
+/// `CigarUtil.mergeClippingCigarElement`.
+fn merge_clipping_cigar_element(
+    new_cigar: &mut Vec<CigarElement>,
+    original: CigarElement,
+    relative_clipped_position: i32,
+    clipped_bases: i32,
+    new_clipping_operator: Op,
+    trailing_hard_clipped_bases: i32,
+) {
+    let original_operator = original.op;
+    let mut clip_amount = clipped_bases;
+    if new_clipping_operator == Op::H {
+        clip_amount += trailing_hard_clipped_bases;
+    }
+    if original_operator.consumes_read_bases() {
+        if (original_operator.consumes_reference_bases() || new_clipping_operator == Op::H)
+            && relative_clipped_position > 0
+        {
+            new_cigar.push(CigarElement {
+                length: relative_clipped_position as u32,
+                op: original_operator,
+            });
+        }
+        if !(original_operator.consumes_reference_bases() || new_clipping_operator == Op::H)
+            || original_operator == new_clipping_operator
+        {
+            clip_amount = clipped_bases + relative_clipped_position;
+        }
+    } else if relative_clipped_position != 0 {
+        panic!("Unexpected non-0 relativeClippedPosition {relative_clipped_position}");
+    }
+    new_cigar.push(CigarElement {
+        length: clip_amount as u32,
+        op: new_clipping_operator,
+    });
+    if new_clipping_operator == Op::S && trailing_hard_clipped_bases > 0 {
+        new_cigar.push(CigarElement {
+            length: trailing_hard_clipped_bases as u32,
+            op: Op::H,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +274,25 @@ mod tests {
         Op::Eq,
         Op::X,
     ];
+
+    fn m(len: u32, op: Op) -> CigarElement {
+        CigarElement { length: len, op }
+    }
+
+    #[test]
+    fn soft_clipping_a_plain_match_splits_it() {
+        // 36M clipped from base 30 -> 29M7S, verified against htsjdk in the conformance corpus.
+        let out = soft_clip_end_of_read(30, &[m(36, Op::M)]);
+        assert_eq!(Cigar::new(out).to_text(), "29M7S");
+    }
+
+    #[test]
+    fn soft_clipping_across_an_insertion_absorbs_it() {
+        // 10M5I21M clipped from base 12: the boundary lands inside the insertion, which is folded
+        // into the soft clip (10M26S), not left as a separate element.
+        let out = soft_clip_end_of_read(12, &[m(10, Op::M), m(5, Op::I), m(21, Op::M)]);
+        assert_eq!(Cigar::new(out).to_text(), "10M26S");
+    }
 
     #[test]
     fn the_binary_codes_are_the_declaration_order() {
