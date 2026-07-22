@@ -127,6 +127,117 @@ pub fn encode(rec: &BamRecord) -> String {
     as_fastq_record(rec).to_fastq_string()
 }
 
+/// `StringUtil.isBlank`: null or all-whitespace. Here the null case is the caller's `None`.
+fn is_blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// `htsjdk.samtools.fastq.FastqReader`, as a parser over already-read text.
+///
+/// Ports `readNextRecord`, `checkLine`, and `readLineConditionallySkippingBlanks`. Blank-line
+/// skipping is off by default in htsjdk (`new FastqReader(file)` passes `skipBlankLines = false`),
+/// so it is a parameter here. A record is four lines: an `@` header, the sequence, a `+` header,
+/// and the qualities, with the sequence and quality lines required to be the same length. The
+/// record's name and quality header are the header lines with their leading `@`/`+` removed.
+pub struct FastqReader<'a> {
+    lines: std::str::Lines<'a>,
+    skip_blank_lines: bool,
+    line: usize,
+}
+
+impl<'a> FastqReader<'a> {
+    pub fn new(text: &'a str, skip_blank_lines: bool) -> Self {
+        FastqReader {
+            lines: text.lines(),
+            skip_blank_lines,
+            line: 0,
+        }
+    }
+
+    /// `readLineConditionallySkippingBlanks`: the next line, skipping blanks only when configured to.
+    fn next_line(&mut self) -> Option<&'a str> {
+        loop {
+            let line = self.lines.next()?;
+            if !(self.skip_blank_lines && is_blank(line)) {
+                return Some(line);
+            }
+        }
+    }
+
+    /// `checkLine`: a line that is missing (`None`) or blank is an error.
+    fn check_line(&self, line: Option<&'a str>, kind: &str) -> Result<&'a str, FastqError> {
+        match line {
+            None => Err(FastqError(format!("File is too short - missing {kind}"))),
+            Some(l) if is_blank(l) => Err(FastqError(format!("Missing {kind}"))),
+            Some(l) => Ok(l),
+        }
+    }
+
+    /// `readNextRecord`: the next record, `None` at end of input.
+    pub fn next_record(&mut self) -> Result<Option<FastqRecord>, FastqError> {
+        let seq_header = match self.next_line() {
+            None => return Ok(None),
+            Some(h) => h,
+        };
+        if is_blank(seq_header) {
+            return Err(FastqError("Missing sequence header".to_string()));
+        }
+        if !seq_header.starts_with('@') {
+            return Err(FastqError(format!(
+                "Sequence header must start with @: {seq_header}"
+            )));
+        }
+
+        let seq_line = self.next_line();
+        let seq_line = self.check_line(seq_line, "SequenceLine")?;
+
+        let qual_header = self.next_line();
+        let qual_header = self.check_line(qual_header, "QualityHeader")?;
+        if !qual_header.starts_with('+') {
+            return Err(FastqError(format!(
+                "Quality header must start with +: {qual_header}"
+            )));
+        }
+
+        let qual_line = self.next_line();
+        let qual_line = self.check_line(qual_line, "QualityLine")?;
+
+        if seq_line.len() != qual_line.len() {
+            return Err(FastqError(
+                "Sequence and quality line must be the same length".to_string(),
+            ));
+        }
+
+        self.line += 4;
+        Ok(Some(FastqRecord {
+            read_name: Some(seq_header[1..].to_string()),
+            read_string: Some(seq_line.to_string()),
+            quality_header: Some(qual_header[1..].to_string()),
+            quality_string: Some(qual_line.to_string()),
+        }))
+    }
+}
+
+/// An error while parsing FASTQ, carrying htsjdk's message (without its line-number suffix).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FastqError(pub String);
+
+impl std::fmt::Display for FastqError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Parse an entire FASTQ text into its records.
+pub fn parse_fastq(text: &str, skip_blank_lines: bool) -> Result<Vec<FastqRecord>, FastqError> {
+    let mut reader = FastqReader::new(text, skip_blank_lines);
+    let mut out = Vec::new();
+    while let Some(rec) = reader.next_record()? {
+        out.push(rec);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +299,61 @@ mod tests {
     fn the_writer_terminates_the_record_with_a_newline() {
         let r = as_fastq_record(&rec("r", 0, b"A", &[40]));
         assert_eq!(write_record(&r), "@r\nA\n+\nI\n");
+    }
+
+    #[test]
+    fn a_two_record_file_parses_into_two_records() {
+        let text = "@r1 desc\nACGT\n+\nIIII\n@r2\nTT\n+r2\n##\n";
+        let recs = parse_fastq(text, false).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].read_name.as_deref(), Some("r1 desc"));
+        assert_eq!(recs[0].read_string.as_deref(), Some("ACGT"));
+        assert_eq!(recs[0].quality_header.as_deref(), Some(""));
+        assert_eq!(recs[0].quality_string.as_deref(), Some("IIII"));
+        // The quality header keeps whatever followed the '+'.
+        assert_eq!(recs[1].quality_header.as_deref(), Some("r2"));
+    }
+
+    #[test]
+    fn a_header_without_the_at_sign_is_rejected() {
+        let err = parse_fastq("r1\nACGT\n+\nIIII\n", false).unwrap_err();
+        assert!(err.0.contains("must start with @"), "{}", err.0);
+    }
+
+    #[test]
+    fn mismatched_sequence_and_quality_lengths_are_rejected() {
+        let err = parse_fastq("@r\nACGT\n+\nII\n", false).unwrap_err();
+        assert!(err.0.contains("same length"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_truncated_record_is_too_short() {
+        let err = parse_fastq("@r\nACGT\n", false).unwrap_err();
+        assert!(err.0.contains("too short"), "{}", err.0);
+    }
+
+    /// With blank-line skipping off (htsjdk's default), a blank line where the sequence is expected
+    /// is a missing-line error, not a skipped line.
+    #[test]
+    fn a_blank_line_is_significant_by_default() {
+        let err = parse_fastq("@r\n\n+\n\n", false).unwrap_err();
+        assert!(err.0.contains("Missing SequenceLine"), "{}", err.0);
+        // With skipping on, the blanks are consumed and the record is too short instead.
+        let err2 = parse_fastq("@r\n\n+\n\n", true).unwrap_err();
+        assert!(err2.0.contains("too short"), "{}", err2.0);
+    }
+
+    /// The encoder and reader are inverse on the fields the reader populates.
+    #[test]
+    fn encode_then_parse_round_trips() {
+        let original = FastqRecord {
+            read_name: Some("read1/1".to_string()),
+            read_string: Some("ACGTN".to_string()),
+            quality_header: Some(String::new()),
+            quality_string: Some("IIII#".to_string()),
+        };
+        let text = write_record(&original);
+        let parsed = parse_fastq(&text, false).unwrap();
+        assert_eq!(parsed, vec![original]);
     }
 }
