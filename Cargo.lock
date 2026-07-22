@@ -95,6 +95,7 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "htsjdk-bgzf",
+ "md-5",
 ]
 
 [[package]]

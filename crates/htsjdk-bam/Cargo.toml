@@ -8,6 +8,7 @@ description = "Byte-level port of htsjdk's BAM record codec"
 
 [dependencies]
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
+md-5 = "0.10"
 
 [dev-dependencies]
 flate2.workspace = true
