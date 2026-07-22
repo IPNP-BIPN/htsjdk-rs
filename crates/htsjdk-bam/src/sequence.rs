@@ -219,6 +219,152 @@ pub fn count_deleted_bases(cigar: &crate::cigar::Cigar) -> i32 {
         .sum()
 }
 
+/// `SequenceUtil.complement(b)`: the Watson-Crick complement of a single base byte.
+///
+/// Only the eight `acgt`/`ACGT` bytes are mapped; **every other byte is returned unchanged**,
+/// including `N`, the IUPAC ambiguity codes, and any non-base byte. Case is preserved (a lowercase
+/// base complements to a lowercase base), which matters because htsjdk does not uppercase read
+/// bases and a reverse-complemented soft-masked base must stay soft-masked.
+pub fn complement(b: u8) -> u8 {
+    match b {
+        b'a' => b't',
+        b'c' => b'g',
+        b'g' => b'c',
+        b't' => b'a',
+        b'A' => b'T',
+        b'C' => b'G',
+        b'G' => b'C',
+        b'T' => b'A',
+        other => other,
+    }
+}
+
+/// `SequenceUtil.reverse(array, offset, len)`: reverse a window of `len` bytes starting at `offset`,
+/// in place.
+///
+/// A zero-length window is a no-op, matching the Java loop that never executes.
+pub fn reverse(array: &mut [u8], offset: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let (mut i, mut j) = (offset, offset + len - 1);
+    while i < j {
+        array.swap(i, j);
+        i += 1;
+        j -= 1;
+    }
+    // The Java `if (len % 2 == 1) array[i] = array[i];` is a deliberate no-op on the middle byte.
+}
+
+/// `SequenceUtil.reverseComplement(bases, offset, len)`: reverse and complement a window in place.
+///
+/// On an odd-length window the middle byte is complemented in place, which a reverse-then-complement
+/// written as two passes would also do but which is easy to drop when fusing them into one pass.
+pub fn reverse_complement_range(bases: &mut [u8], offset: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let (mut i, mut j) = (offset, offset + len - 1);
+    while i < j {
+        let tmp = complement(bases[i]);
+        bases[i] = complement(bases[j]);
+        bases[j] = tmp;
+        i += 1;
+        j -= 1;
+    }
+    if len % 2 == 1 {
+        bases[i] = complement(bases[i]);
+    }
+}
+
+/// `SequenceUtil.reverseComplement(bases)`: reverse-complement the whole slice in place.
+pub fn reverse_complement(bases: &mut [u8]) {
+    let len = bases.len();
+    reverse_complement_range(bases, 0, len);
+}
+
+/// `SequenceUtil.reverseQualities(quals)`: reverse the whole slice in place, without complementing.
+pub fn reverse_qualities(quals: &mut [u8]) {
+    let len = quals.len();
+    reverse(quals, 0, len);
+}
+
+#[cfg(test)]
+mod complement_tests {
+    use super::*;
+
+    #[test]
+    fn complement_maps_only_acgt_and_preserves_case() {
+        assert_eq!(complement(b'A'), b'T');
+        assert_eq!(complement(b'T'), b'A');
+        assert_eq!(complement(b'C'), b'G');
+        assert_eq!(complement(b'G'), b'C');
+        assert_eq!(complement(b'a'), b't');
+        assert_eq!(complement(b'g'), b'c');
+        // Everything else is unchanged: N, IUPAC codes, and non-bases.
+        assert_eq!(complement(b'N'), b'N');
+        assert_eq!(complement(b'n'), b'n');
+        assert_eq!(complement(b'R'), b'R');
+        assert_eq!(complement(b'.'), b'.');
+        assert_eq!(complement(0), 0);
+    }
+
+    #[test]
+    fn reverse_complement_of_a_known_sequence() {
+        // revcomp(ACGTN) = NACGT (reverse gives NTGCA, complement gives NACGT).
+        let mut b = b"ACGTN".to_vec();
+        reverse_complement(&mut b);
+        assert_eq!(&b, b"NACGT");
+    }
+
+    /// A mixed-case sequence with an `N` and a non-base, verified against
+    /// `htsjdk.samtools.util.SequenceUtil.reverseComplement` at 4.2.0.
+    #[test]
+    fn reverse_complement_matches_htsjdk_on_mixed_case() {
+        let mut b = b"aAcCgGtTnN.".to_vec();
+        reverse_complement(&mut b);
+        assert_eq!(&b, b".NnAaCcGgTt");
+    }
+
+    #[test]
+    fn odd_length_complements_the_middle_base() {
+        // A three-base palindromic-length window: the centre must be complemented, not left as is.
+        let mut b = b"GAT".to_vec();
+        reverse_complement(&mut b);
+        // reverse(GAT)=TAG, complement=ATC.
+        assert_eq!(&b, b"ATC");
+        // The middle 'A' became 'T' rather than staying 'A'.
+        assert_eq!(b[1], b'T');
+    }
+
+    #[test]
+    fn reverse_leaves_the_middle_element_in_place() {
+        let mut q = vec![1u8, 2, 3, 4, 5];
+        reverse(&mut q, 0, 5);
+        assert_eq!(q, vec![5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn a_windowed_reverse_complement_touches_only_the_window() {
+        // Reverse-complement the middle four bases, leaving the flanks untouched.
+        let mut b = b"xxACGTxx".to_vec();
+        reverse_complement_range(&mut b, 2, 4);
+        assert_eq!(&b, b"xxACGTxx"); // ACGT is its own reverse complement
+        let mut b2 = b"xxAACCxx".to_vec();
+        reverse_complement_range(&mut b2, 2, 4);
+        // revcomp(AACC)=GGTT, flanks unchanged.
+        assert_eq!(&b2, b"xxGGTTxx");
+    }
+
+    #[test]
+    fn an_empty_slice_is_a_no_op() {
+        let mut b: Vec<u8> = Vec::new();
+        reverse_complement(&mut b);
+        reverse_qualities(&mut b);
+        assert!(b.is_empty());
+    }
+}
+
 #[cfg(test)]
 mod counter_tests {
     use super::*;
