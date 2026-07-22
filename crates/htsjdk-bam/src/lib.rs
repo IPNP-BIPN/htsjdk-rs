@@ -26,6 +26,7 @@ pub mod fastq;
 pub mod header;
 pub mod index;
 pub mod interval;
+pub mod murmur3;
 pub mod overlap;
 pub mod pair;
 pub mod query_name;
