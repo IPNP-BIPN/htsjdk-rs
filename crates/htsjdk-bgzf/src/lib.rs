@@ -10,10 +10,12 @@
 //! `docs/decisions/0001-deflate-backend.md`.
 
 pub mod read;
+pub mod termination;
 pub mod vfp;
 mod write;
 
 pub use read::{decompress_all, BgzfError, BgzfReader, DecompressedBlock};
+pub use termination::{check_termination, FileTermination};
 pub use write::BgzfWriter;
 
 // Constants transcribed from BlockCompressedStreamConstants.
