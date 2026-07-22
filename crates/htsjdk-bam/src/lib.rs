@@ -21,6 +21,7 @@ pub mod bases;
 pub mod bin;
 pub mod cigar;
 pub mod fasta;
+pub mod fastq;
 pub mod header;
 pub mod index;
 pub mod interval;
