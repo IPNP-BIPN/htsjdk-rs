@@ -20,6 +20,7 @@ pub mod alignment_block;
 pub mod bases;
 pub mod bin;
 pub mod cigar;
+pub mod coordinate;
 pub mod fasta;
 pub mod fastq;
 pub mod header;
