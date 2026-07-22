@@ -472,6 +472,38 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+      - name: Regenerate the CigarUtil soft-clip golden
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/cigar-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/CigarClipDump.java . && javac -cp "$ORACLE_CP" -d . CigarClipDump.java \
+             && java -cp ".:$ORACLE_CP" CigarClipDump' > /tmp/cigarclip_real.txt
+          wc -l /tmp/cigarclip_real.txt
+
+      - name: Compare the CigarUtil soft-clip golden against the committed one
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#'): continue
+                  p = line.rstrip('\n').split('\t', 2)
+                  if len(p) < 3: continue
+                  d[(p[0], p[1])] = p[2]
+              return d
+          real = parse('/tmp/cigarclip_real.txt')
+          committed = parse('crates/htsjdk-bam/tests/data/cigar_clip.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print("case sets differ:", sorted(set(real) ^ set(committed))[:5])
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]: print(f"  {k}: real={real[k]} committed={committed[k]}")
+          sys.exit(1 if bad else 0)
+          PY
+
       - name: "Decision 0019: is re-sorting a sorted VCF header still a no-op?"
         # The port relies on it: writing a header that has already been through the comparator
         # once must not reorder it. Measured stable, not proven stable, so it is re-measured.
