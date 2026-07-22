@@ -280,6 +280,13 @@ impl Tags {
             .map(|i| &self.entries[i].1)
     }
 
+    /// `SAMRecord.setAttribute(tag, null)`: drop the tag if present.
+    pub fn remove(&mut self, tag: Tag) {
+        if let Ok(i) = self.entries.binary_search_by_key(&tag, |(t, _)| *t) {
+            self.entries.remove(i);
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &(Tag, TagValue)> {
         self.entries.iter()
     }
