@@ -149,6 +149,16 @@ impl<W: Write> BgzfWriter<W> {
         self.finish()?;
         Ok(self.inner)
     }
+
+    /// Flushes any buffered bytes as a block, then returns the inner writer **without** appending
+    /// the EOF terminator block. This is what `BAMFileWriter.writeHeader(OutputStream)` needs: it
+    /// wraps the stream in a `BlockCompressedOutputStream`, writes the header, and calls `flush()`
+    /// only, never `close()`, so the header is a complete block boundary with no terminator (the
+    /// terminator comes later, from whatever is appended after it).
+    pub fn into_inner_without_terminator(mut self) -> io::Result<W> {
+        self.flush()?;
+        Ok(self.inner)
+    }
 }
 
 impl<W: Write> Write for BgzfWriter<W> {
@@ -175,5 +185,32 @@ impl<W: Write> Write for BgzfWriter<W> {
             self.deflate_block()?;
         }
         self.inner.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{decompress_all, EMPTY_GZIP_BLOCK};
+    use std::io::Write;
+
+    #[test]
+    fn into_inner_without_terminator_omits_the_eof_block_but_keeps_the_data() {
+        let payload = b"BAM\x01some header bytes";
+
+        let mut w = BgzfWriter::new(Vec::new());
+        w.write_all(payload).unwrap();
+        let without = w.into_inner_without_terminator().unwrap();
+
+        let mut w2 = BgzfWriter::new(Vec::new());
+        w2.write_all(payload).unwrap();
+        let with = w2.into_inner().unwrap();
+
+        // The terminated stream is exactly the un-terminated one followed by the EOF block.
+        assert_eq!(with.len(), without.len() + EMPTY_GZIP_BLOCK.len());
+        assert_eq!(&with[..without.len()], &without[..]);
+        assert!(!without.ends_with(&EMPTY_GZIP_BLOCK));
+        // Both decompress to the same payload.
+        assert_eq!(decompress_all(&without).unwrap(), payload);
     }
 }
