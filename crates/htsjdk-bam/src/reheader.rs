@@ -19,7 +19,9 @@
 
 use std::io::{self, Read};
 
-use htsjdk_bgzf::{vfp, BgzfError, BgzfReader, BgzfWriter};
+use htsjdk_bgzf::{
+    check_termination, vfp, BgzfError, BgzfReader, BgzfWriter, FileTermination, EMPTY_GZIP_BLOCK,
+};
 
 use crate::header::SamHeader;
 use crate::writer::{write_bam_header_block, BAM_MAGIC};
@@ -35,6 +37,8 @@ pub enum ReheaderError {
     Truncated,
     /// The virtual offset of the first record did not land on a decoded block boundary.
     BlockNotFound,
+    /// The input has no valid GZIP block at the end of the file (`checkTermination == DEFECTIVE`).
+    Defective,
 }
 
 impl From<BgzfError> for ReheaderError {
@@ -77,43 +81,83 @@ fn consume_header<R: Read>(reader: &mut BgzfReader<R>) -> Result<(), ReheaderErr
     Ok(())
 }
 
+/// `BamFileIoUtils.blockCopyBamFile(input, out, skipHeader, skipTerminator)`: copy a BAM's
+/// compressed blocks into a new byte buffer without decoding the records.
+///
+/// - `skip_header`: drop the header. htsjdk seeks to the first record's virtual offset, re-compresses
+///   the bytes remaining in that decoded block as one new block, then raw-copies from the next block.
+///   With `skip_header=false` the whole file is raw-copied from offset 0, header included.
+/// - `skip_terminator`: drop the trailing EOF block if the input has one, so blocks from a following
+///   file (or a freshly written terminator) can be appended.
+pub fn block_copy(
+    input_bam: &[u8],
+    skip_header: bool,
+    skip_terminator: bool,
+) -> Result<Vec<u8>, ReheaderError> {
+    // checkTermination: reject a file whose tail is not a valid GZIP block, and learn whether an
+    // EOF terminator is present (so skip_terminator can drop exactly it).
+    let term = check_termination(input_bam);
+    if term == FileTermination::Defective {
+        return Err(ReheaderError::Defective);
+    }
+
+    let mut out = Vec::new();
+    let copy_start = if skip_header {
+        // Locate the first record: consume the header, then read the virtual file pointer.
+        let mut finder = BgzfReader::new(input_bam);
+        consume_header(&mut finder)?;
+        let vptr = finder.virtual_pos();
+        let first_block_addr = vfp::block_address(vptr);
+        let first_offset = vfp::block_offset(vptr) as usize;
+
+        // Find the decoded block the first record starts in, to grab its tail and its successor's
+        // compressed address. A fresh reader is used because the finder consumed part of the stream.
+        let mut scan = BgzfReader::new(input_bam);
+        let mut tail: Vec<u8> = Vec::new();
+        let mut next_block_addr: Option<u64> = None;
+        while let Some(block) = scan.next_block()? {
+            if block.block_address == first_block_addr {
+                tail = block.data[first_offset..].to_vec();
+                next_block_addr = Some(block.block_address + block.block_compressed_size as u64);
+                break;
+            }
+        }
+        let next_block_addr = next_block_addr.ok_or(ReheaderError::BlockNotFound)?;
+
+        // Re-compress the first-record tail as one flushed block (empty tail writes nothing, as
+        // htsjdk's flush() of a zero-byte BlockCompressedOutputStream writes no block).
+        if !tail.is_empty() {
+            let mut w = BgzfWriter::new(Vec::new());
+            io::Write::write_all(&mut w, &tail)?;
+            out.extend_from_slice(&w.into_inner_without_terminator()?);
+        }
+        next_block_addr as usize
+    } else {
+        0
+    };
+
+    let skip_last = if term == FileTermination::HasTerminatorBlock && skip_terminator {
+        EMPTY_GZIP_BLOCK.len()
+    } else {
+        0
+    };
+    // htsjdk copies `length - skipLast - pos` bytes. For an input with no records the first-record
+    // pointer lands at EOF (`pos == length`), so with the terminator dropped this count goes
+    // negative and `transferByStream` copies nothing; guard the slice to match.
+    let end = input_bam.len() - skip_last;
+    if copy_start < end {
+        out.extend_from_slice(&input_bam[copy_start..end]);
+    }
+    Ok(out)
+}
+
 /// `reheaderBamFile(newHeader, input, skipHeader=true, skipTerminator=false)`: the whole reheadered
 /// BAM as bytes. `input_bam` is the raw BAM file (BGZF-framed, terminator included).
 pub fn reheader_bam(new_header: &SamHeader, input_bam: &[u8]) -> Result<Vec<u8>, ReheaderError> {
-    // 1. The new header as flushed BGZF block(s), no terminator.
+    // The new header as flushed BGZF block(s), no terminator, then the record blocks block-copied
+    // with the header dropped and the terminator kept.
     let mut out = write_bam_header_block(new_header)?;
-
-    // 2. Locate the first record: consume the input header, then read the virtual file pointer.
-    let mut finder = BgzfReader::new(input_bam);
-    consume_header(&mut finder)?;
-    let vptr = finder.virtual_pos();
-    let first_block_addr = vfp::block_address(vptr);
-    let first_offset = vfp::block_offset(vptr) as usize;
-
-    // Find the decoded block the first record starts in, to grab its tail and its successor's
-    // compressed address. A fresh reader is used because the finder consumed part of the stream.
-    let mut scan = BgzfReader::new(input_bam);
-    let mut tail: Vec<u8> = Vec::new();
-    let mut next_block_addr: Option<u64> = None;
-    while let Some(block) = scan.next_block()? {
-        if block.block_address == first_block_addr {
-            tail = block.data[first_offset..].to_vec();
-            next_block_addr = Some(block.block_address + block.block_compressed_size as u64);
-            break;
-        }
-    }
-    let next_block_addr = next_block_addr.ok_or(ReheaderError::BlockNotFound)?;
-
-    // 3. Re-compress the first-record tail as one flushed block (empty tail writes nothing, as
-    // htsjdk's flush() of a zero-byte BlockCompressedOutputStream writes no block).
-    if !tail.is_empty() {
-        let mut w = BgzfWriter::new(Vec::new());
-        io::Write::write_all(&mut w, &tail)?;
-        out.extend_from_slice(&w.into_inner_without_terminator()?);
-    }
-
-    // 4. Raw-copy the remaining compressed blocks, including the terminator (skipTerminator=false).
-    out.extend_from_slice(&input_bam[next_block_addr as usize..]);
+    out.extend_from_slice(&block_copy(input_bam, true, false)?);
     Ok(out)
 }
 
