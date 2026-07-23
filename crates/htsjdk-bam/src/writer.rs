@@ -34,30 +34,48 @@ pub struct BamWriter<W: Write> {
     indexer: Option<BamIndexer>,
 }
 
+/// `BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader)`: the BAM header binary content, written
+/// to any sink: `BAM\1` magic, the length-prefixed header text, then the binary sequence dictionary.
+/// Shared by [`BamWriter::new`] and [`write_bam_header_block`] so the two cannot drift.
+pub(crate) fn write_header_binary<W: Write>(w: &mut W, header: &SamHeader) -> io::Result<()> {
+    let text = header.encode();
+
+    w.write_all(&BAM_MAGIC)?;
+
+    // `writeString(headerText, true, false)`: length prefix, no null terminator. The
+    // length counts UTF-16 units, as everywhere else in htsjdk.
+    let text_bytes: Vec<u8> = text.encode_utf16().map(|u| (u & 0xFF) as u8).collect();
+    w.write_all(&(text_bytes.len() as i32).to_le_bytes())?;
+    w.write_all(&text_bytes)?;
+
+    // The dictionary again, in binary. Redundant with the text, and written anyway.
+    w.write_all(&(header.sequences.len() as i32).to_le_bytes())?;
+    for seq in &header.sequences {
+        let name: Vec<u8> = seq.name.encode_utf16().map(|u| (u & 0xFF) as u8).collect();
+        // `writeString(name, true, true)`: the length here DOES include the terminator.
+        w.write_all(&((name.len() + 1) as i32).to_le_bytes())?;
+        w.write_all(&name)?;
+        w.write_all(&[0])?;
+        w.write_all(&seq.length.to_le_bytes())?;
+    }
+    Ok(())
+}
+
+/// `BAMFileWriter.writeHeader(OutputStream, SAMFileHeader)`: the header binary content written to a
+/// fresh `BlockCompressedOutputStream` and `flush()`ed, so the result is complete BGZF block(s) with
+/// **no** EOF terminator (htsjdk never closes that stream). This is the leading segment of a
+/// block-copy reheader; the copied data blocks and the terminator follow it.
+pub fn write_bam_header_block(header: &SamHeader) -> io::Result<Vec<u8>> {
+    let mut bgzf = BgzfWriter::new(Vec::new());
+    write_header_binary(&mut bgzf, header)?;
+    bgzf.into_inner_without_terminator()
+}
+
 impl<W: Write> BamWriter<W> {
     /// `BAMFileWriter.writeHeader`: magic, header text, then the binary dictionary.
     pub fn new(inner: W, header: &SamHeader) -> io::Result<Self> {
         let mut bgzf = BgzfWriter::new(inner);
-        let text = header.encode();
-
-        bgzf.write_all(&BAM_MAGIC)?;
-
-        // `writeString(headerText, true, false)`: length prefix, no null terminator. The
-        // length counts UTF-16 units, as everywhere else in htsjdk.
-        let text_bytes: Vec<u8> = text.encode_utf16().map(|u| (u & 0xFF) as u8).collect();
-        bgzf.write_all(&(text_bytes.len() as i32).to_le_bytes())?;
-        bgzf.write_all(&text_bytes)?;
-
-        // The dictionary again, in binary. Redundant with the text, and written anyway.
-        bgzf.write_all(&(header.sequences.len() as i32).to_le_bytes())?;
-        for seq in &header.sequences {
-            let name: Vec<u8> = seq.name.encode_utf16().map(|u| (u & 0xFF) as u8).collect();
-            // `writeString(name, true, true)`: the length here DOES include the terminator.
-            bgzf.write_all(&((name.len() + 1) as i32).to_le_bytes())?;
-            bgzf.write_all(&name)?;
-            bgzf.write_all(&[0])?;
-            bgzf.write_all(&seq.length.to_le_bytes())?;
-        }
+        write_header_binary(&mut bgzf, header)?;
 
         Ok(BamWriter {
             bgzf,
