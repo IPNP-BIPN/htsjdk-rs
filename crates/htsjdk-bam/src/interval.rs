@@ -295,6 +295,54 @@ impl IntervalList {
         out
     }
 
+    /// `IntervalList.invert`: the complement of this list against the full dictionary, i.e. every
+    /// base of every contig that this list does **not** cover.
+    ///
+    /// `sequences` is the ordered `(contig name, length)` dictionary (the lengths htsjdk reads from
+    /// the `@SQ LN` fields, supplied here the way [`padded`](IntervalList::padded) takes them rather
+    /// than carried on the dictionary). The list is `uniqued` first (so sorted and merged), then for
+    /// each contig **in dictionary order** the gaps before, between, and after its intervals become
+    /// new positive-strand intervals. The new intervals are named `interval-1`, `interval-2`, ... by
+    /// a single counter that runs across all contigs, exactly as htsjdk numbers them.
+    pub fn invert(&self, sequences: &[(String, i32)]) -> IntervalList {
+        let names: Vec<String> = sequences.iter().map(|(n, _)| n.clone()).collect();
+        let uniq = IntervalList {
+            dictionary: names.clone(),
+            intervals: self.intervals.clone(),
+        }
+        .uniqued(true);
+
+        let mut out = IntervalList::new(names);
+        let mut counter = 0;
+        for (name, length) in sequences {
+            let mut last_covered = 0;
+            for i in uniq.intervals.iter().filter(|iv| iv.contig == *name) {
+                if i.start > last_covered + 1 {
+                    counter += 1;
+                    out.intervals.push(Interval::with_strand_and_name(
+                        name,
+                        last_covered + 1,
+                        i.start - 1,
+                        false,
+                        Some(&format!("interval-{counter}")),
+                    ));
+                }
+                last_covered = i.end;
+            }
+            if *length > last_covered {
+                counter += 1;
+                out.intervals.push(Interval::with_strand_and_name(
+                    name,
+                    last_covered + 1,
+                    *length,
+                    false,
+                    Some(&format!("interval-{counter}")),
+                ));
+            }
+        }
+        out
+    }
+
     /// The interval lines as `IntervalListWriter` emits them, in list order.
     ///
     /// The SAM header comes first in a real `.interval_list` and is written by the SAM header
@@ -381,6 +429,39 @@ mod tests {
 
     /// The finding: the two orderings htsjdk offers on `Interval` disagree on any dictionary
     /// that is not lexicographic, which is every real one.
+    #[test]
+    fn invert_fills_the_gaps_and_numbers_across_contigs() {
+        let sequences = vec![("chr1".to_string(), 20), ("chr2".to_string(), 10)];
+        let list = IntervalList {
+            dictionary: vec!["chr1".to_string(), "chr2".to_string()],
+            intervals: vec![iv("chr1", 5, 10), iv("chr1", 15, 18)],
+        };
+        let inv = list.invert(&sequences);
+        let lines: Vec<String> = inv.intervals.iter().map(|i| i.to_file_line()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "chr1\t1\t4\t+\tinterval-1".to_string(),
+                "chr1\t11\t14\t+\tinterval-2".to_string(),
+                "chr1\t19\t20\t+\tinterval-3".to_string(),
+                // chr2 has no intervals, so its whole length is one gap, and the counter carries over.
+                "chr2\t1\t10\t+\tinterval-4".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn invert_of_a_leading_interval_has_no_leading_gap() {
+        let sequences = vec![("chr1".to_string(), 20)];
+        let list = IntervalList {
+            dictionary: vec!["chr1".to_string()],
+            intervals: vec![iv("chr1", 1, 10)],
+        };
+        let inv = list.invert(&sequences);
+        let lines: Vec<String> = inv.intervals.iter().map(|i| i.to_file_line()).collect();
+        assert_eq!(lines, vec!["chr1\t11\t20\t+\tinterval-1".to_string()]);
+    }
+
     #[test]
     fn intersect_spans_the_overlap_and_names_it() {
         let a = Interval::with_strand_and_name("chr1", 10, 20, false, Some("A"));
