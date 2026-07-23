@@ -19,6 +19,7 @@
 pub mod alignment_block;
 pub mod bases;
 pub mod bin;
+pub mod build_index;
 pub mod cigar;
 pub mod coordinate;
 pub mod fasta;
@@ -44,6 +45,7 @@ pub mod text_parse;
 pub mod writer;
 
 pub use bin::compute_indexing_bin;
+pub use build_index::{build_bam_index, BuildIndexError};
 pub use cigar::{Cigar, CigarElement, Op};
 pub use gather::gather_bam_files;
 pub use header::SamHeader;
