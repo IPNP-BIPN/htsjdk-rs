@@ -49,6 +49,7 @@ pub use build_index::{build_bam_index, BuildIndexError};
 pub use cigar::{Cigar, CigarElement, Op};
 pub use gather::gather_bam_files;
 pub use header::SamHeader;
+pub use index::{parse_bai_metadata, BaiParseError, IndexStats, ReferenceMetadata};
 pub use reader::BamReader;
 pub use record::{BamRecord, DecodeError, EncodeError};
 pub use reheader::{block_copy, reheader_bam, ReheaderError};

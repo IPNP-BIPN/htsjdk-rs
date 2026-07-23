@@ -382,6 +382,80 @@ fn write_reference(out: &mut Vec<u8>, content: Option<&(IndexContent, IndexMetaD
     }
 }
 
+/// Per-reference index metadata: the aligned and unaligned record counts from the pseudo-bin, or
+/// `None` when the reference has no content (`writeNullContent`, so no pseudo-bin).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceMetadata {
+    pub aligned: i64,
+    pub unaligned: i64,
+}
+
+/// The statistics `BAMIndexMetaData.printIndexStats` reads back out of a `.bai`: per-reference
+/// aligned/unaligned counts (in reference order) and the total no-coordinate record count.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexStats {
+    pub references: Vec<Option<ReferenceMetadata>>,
+    pub no_coordinate_records: i64,
+}
+
+/// Why a `.bai` could not be parsed.
+#[derive(Debug)]
+pub enum BaiParseError {
+    NotABai,
+    Truncated,
+}
+
+/// Reads the metadata out of a `.bai`, the way `BAMIndexMetaData(List<Chunk>)` does: the pseudo-bin
+/// 37450 declares two "chunks" whose eight-byte slots are really four statistics; the second pair is
+/// `(alignedRecords, unalignedRecords)`. A reference written as null content has no pseudo-bin and so
+/// no metadata. The no-coordinate count is the trailing long.
+pub fn parse_bai_metadata(bai: &[u8]) -> Result<IndexStats, BaiParseError> {
+    let mut p = 0usize;
+    let take = |p: &mut usize, n: usize| -> Result<&[u8], BaiParseError> {
+        let s = bai.get(*p..*p + n).ok_or(BaiParseError::Truncated)?;
+        *p += n;
+        Ok(s)
+    };
+    let i32_at = |p: &mut usize| -> Result<i32, BaiParseError> {
+        Ok(i32::from_le_bytes(take(p, 4)?.try_into().unwrap()))
+    };
+    let i64_at = |p: &mut usize| -> Result<i64, BaiParseError> {
+        Ok(i64::from_le_bytes(take(p, 8)?.try_into().unwrap()))
+    };
+
+    if take(&mut p, 4)? != BAM_INDEX_MAGIC {
+        return Err(BaiParseError::NotABai);
+    }
+    let n_ref = i32_at(&mut p)?;
+    let mut references = Vec::with_capacity(n_ref.max(0) as usize);
+    for _ in 0..n_ref {
+        let n_bin = i32_at(&mut p)?;
+        let mut meta = None;
+        for _ in 0..n_bin {
+            let bin_number = i32_at(&mut p)?;
+            let n_chunk = i32_at(&mut p)?;
+            if bin_number == MAX_BINS && n_chunk == 2 {
+                let _first = i64_at(&mut p)?;
+                let _last = i64_at(&mut p)?;
+                let aligned = i64_at(&mut p)?;
+                let unaligned = i64_at(&mut p)?;
+                meta = Some(ReferenceMetadata { aligned, unaligned });
+            } else {
+                // Skip this bin's chunks (two eight-byte offsets each).
+                take(&mut p, 16 * n_chunk.max(0) as usize)?;
+            }
+        }
+        let n_intv = i32_at(&mut p)?;
+        take(&mut p, 8 * n_intv.max(0) as usize)?;
+        references.push(meta);
+    }
+    let no_coordinate_records = i64_at(&mut p)?;
+    Ok(IndexStats {
+        references,
+        no_coordinate_records,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,5 +638,63 @@ mod tests {
     fn the_first_offset_starts_at_minus_one_and_the_last_at_zero() {
         let meta = IndexMetaData::default();
         assert_eq!((meta.first_offset, meta.last_offset), (-1, 0));
+    }
+
+    #[test]
+    fn metadata_round_trips_through_a_built_index() {
+        use crate::build_index::build_bam_index;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        use crate::header::{SamHeader, SequenceRecord};
+        use crate::record::{BamRecord, READ_UNMAPPED_FLAG};
+        use crate::writer::BamWriter;
+
+        let mut h = SamHeader::new();
+        h.set_sort_order("coordinate");
+        h.sequences.push(SequenceRecord::new("chr1", 100_000));
+        h.sequences.push(SequenceRecord::new("chr2", 100_000));
+        let m10 = || {
+            Cigar::new(vec![CigarElement {
+                length: 10,
+                op: Op::M,
+            }])
+        };
+        let mut w = BamWriter::new(Vec::new(), &h).unwrap();
+        // chr1: two mapped reads. chr2: none. Then two unplaced (no-coordinate) reads.
+        for start in [10, 500] {
+            w.write(&BamRecord {
+                read_name: "m".into(),
+                reference_index: 0,
+                alignment_start: start,
+                mapping_quality: 60,
+                cigar: m10(),
+                ..BamRecord::default()
+            })
+            .unwrap();
+        }
+        for _ in 0..2 {
+            w.write(&BamRecord {
+                read_name: "u".into(),
+                reference_index: -1,
+                flags: READ_UNMAPPED_FLAG,
+                ..BamRecord::default()
+            })
+            .unwrap();
+        }
+        let bam = w.finish().unwrap();
+
+        let bai = build_bam_index(&bam).unwrap();
+        let stats = parse_bai_metadata(&bai).unwrap();
+
+        assert_eq!(stats.references.len(), 2);
+        assert_eq!(
+            stats.references[0],
+            Some(ReferenceMetadata {
+                aligned: 2,
+                unaligned: 0
+            })
+        );
+        // chr2 has no reads, so no pseudo-bin and no metadata.
+        assert_eq!(stats.references[1], None);
+        assert_eq!(stats.no_coordinate_records, 2);
     }
 }
