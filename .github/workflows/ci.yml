@@ -398,6 +398,41 @@ jobs:
           sys.exit(1 if bad else 0)
           PY
 
+      - name: Regenerate the BuildBamIndex (read-side BAI) goldens
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/build-index-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/BuildIndexDump.java . && javac -cp "$ORACLE_CP" -d . BuildIndexDump.java \
+             && java -cp ".:$ORACLE_CP" BuildIndexDump' > /tmp/buildindex_real.txt
+          wc -l /tmp/buildindex_real.txt
+
+      - name: Compare the BuildBamIndex goldens against the committed ones
+        # The read-side .bai carries compressed-stream virtual offsets, so it depends on the deflate
+        # pin (Decision 0001) exactly like the BAM goldens, and it differs from the write-side BAI.
+        run: |
+          python3 - <<'PY'
+          import sys, gzip
+          def parse(path, open_fn=open):
+              d = {}
+              for line in open_fn(path):
+                  if line.startswith('#'): continue
+                  parts = line.rstrip('\n').split('\t', 2)
+                  if len(parts) < 3: continue
+                  d[(parts[0], parts[1])] = parts[2]
+              return d
+          real = parse('/tmp/buildindex_real.txt')
+          committed = parse('crates/htsjdk-bam/tests/data/build_index.txt.gz',
+                            lambda p: gzip.open(p, 'rt'))
+          if set(real) != set(committed):
+              print(f"case sets differ: {sorted(set(real) ^ set(committed))[:5]}")
+              sys.exit(1)
+          bad = [k for k in real if real[k] != committed[k]]
+          print(f"compared={len(real)} mismatches={len(bad)}")
+          for k in bad[:10]:
+              print(f"  {k}")
+          sys.exit(1 if bad else 0)
+          PY
+
       - name: Regenerate the interval-list goldens
         run: |
           docker run --rm --platform linux/amd64 \
