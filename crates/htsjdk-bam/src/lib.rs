@@ -28,6 +28,7 @@ pub mod gather;
 pub mod header;
 pub mod index;
 pub mod interval;
+pub mod liftover;
 pub mod md_nm;
 pub mod murmur3;
 pub mod overlap;
