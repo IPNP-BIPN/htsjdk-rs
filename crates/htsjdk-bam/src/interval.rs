@@ -199,6 +199,56 @@ pub fn compare_coordinate(dictionary: &[String], lhs: &Interval, rhs: &Interval)
         .then_with(|| compare_strand_then_name(lhs, rhs))
 }
 
+/// `IntervalList.breakIntervalsAtBandMultiples`: split any interval that straddles an integer
+/// multiple of `band_multiple` so that no returned interval crosses such a boundary.
+///
+/// An interval whose start and end fall in the same band (`start / band == end / band`) is kept
+/// as-is; otherwise it is cut at each multiple. Each piece is named `"{name}.{k}"` where `k` is its
+/// 1-based position in the split (a `null` name renders as `"null"`). An empty interval
+/// (`end < start`) is passed through untouched. Ported from htsjdk 4.2.0.
+///
+/// Example: `(7200, 9300)` at band `1000` becomes `(7200, 7999) ".1"`, `(8000, 8999) ".2"`,
+/// `(9000, 9300) ".3"`.
+pub fn break_intervals_at_band_multiples(
+    intervals: &[Interval],
+    band_multiple: i32,
+) -> Vec<Interval> {
+    let mut out = Vec::new();
+    for interval in intervals {
+        if interval.end < interval.start {
+            out.push(interval.clone());
+            continue;
+        }
+        let start_index = interval.start / band_multiple;
+        let end_index = interval.end / band_multiple;
+        if start_index == end_index {
+            out.push(interval.clone());
+        } else {
+            let base_name = interval.name.as_deref().unwrap_or("null");
+            let start_of_interval_index = start_index;
+            let mut start_pos = interval.start;
+            let mut index = start_index;
+            while index <= end_index {
+                let mut end_pos = (index + 1) * band_multiple - 1;
+                if end_pos > interval.end {
+                    end_pos = interval.end;
+                }
+                let piece = index - start_of_interval_index + 1;
+                out.push(Interval::with_strand_and_name(
+                    &interval.contig,
+                    start_pos,
+                    end_pos,
+                    interval.negative_strand,
+                    Some(&format!("{base_name}.{piece}")),
+                ));
+                index += 1;
+                start_pos = index * band_multiple;
+            }
+        }
+    }
+    out
+}
+
 /// `IntervalList`: a SAM header plus intervals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IntervalList {
@@ -429,6 +479,29 @@ mod tests {
 
     /// The finding: the two orderings htsjdk offers on `Interval` disagree on any dictionary
     /// that is not lexicographic, which is every real one.
+    #[test]
+    fn break_bands_splits_straddling_intervals_and_names_the_pieces() {
+        let named = Interval::with_strand_and_name("chr1", 7200, 9300, false, Some("x"));
+        let pieces = break_intervals_at_band_multiples(&[named], 1000);
+        let lines: Vec<String> = pieces.iter().map(|i| i.to_file_line()).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "chr1\t7200\t7999\t+\tx.1".to_string(),
+                "chr1\t8000\t8999\t+\tx.2".to_string(),
+                "chr1\t9000\t9300\t+\tx.3".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn break_bands_keeps_an_interval_within_one_band() {
+        let inside = Interval::with_strand_and_name("chr1", 7200, 7800, false, Some("x"));
+        let pieces = break_intervals_at_band_multiples(&[inside], 1000);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].to_file_line(), "chr1\t7200\t7800\t+\tx");
+    }
+
     #[test]
     fn invert_fills_the_gaps_and_numbers_across_contigs() {
         let sequences = vec![("chr1".to_string(), 20), ("chr2".to_string(), 10)];
