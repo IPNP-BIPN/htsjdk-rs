@@ -93,6 +93,33 @@ impl Interval {
         self.contig == other.contig && self.start <= other.end && self.end >= other.start
     }
 
+    /// `intersect(that)`: the overlapping region of two intersecting intervals.
+    ///
+    /// The result keeps **this** interval's strand, spans `[max(starts), min(ends)]`, and is named
+    /// `"{this.name} intersection {that.name}"` (htsjdk concatenates the two `name` fields with the
+    /// literal ` intersection `, rendering a `null` name as the string `"null"`). Panics when the
+    /// two do not intersect, mirroring htsjdk's `IllegalArgumentException`.
+    pub fn intersect(&self, that: &Interval) -> Interval {
+        assert!(
+            self.intersects(that),
+            "{} does not intersect {}",
+            that.to_display_string(),
+            self.to_display_string()
+        );
+        let name = format!(
+            "{} intersection {}",
+            self.name.as_deref().unwrap_or("null"),
+            that.name.as_deref().unwrap_or("null")
+        );
+        Interval {
+            contig: self.contig.clone(),
+            start: self.start.max(that.start),
+            end: self.end.min(that.end),
+            negative_strand: self.negative_strand,
+            name: Some(name),
+        }
+    }
+
     /// `withinDistanceOf(other, distance)`, used by `uniqued` to combine abutting intervals.
     pub fn within_distance_of(&self, other: &Interval, distance: i32) -> bool {
         self.contig == other.contig
@@ -354,6 +381,36 @@ mod tests {
 
     /// The finding: the two orderings htsjdk offers on `Interval` disagree on any dictionary
     /// that is not lexicographic, which is every real one.
+    #[test]
+    fn intersect_spans_the_overlap_and_names_it() {
+        let a = Interval::with_strand_and_name("chr1", 10, 20, false, Some("A"));
+        let b = Interval::with_strand_and_name("chr1", 15, 30, true, Some("B"));
+        let hit = a.intersect(&b);
+        assert_eq!((hit.contig.as_str(), hit.start, hit.end), ("chr1", 15, 20));
+        // Result keeps THIS interval's strand and names it "A intersection B".
+        assert!(!hit.negative_strand);
+        assert_eq!(hit.name.as_deref(), Some("A intersection B"));
+        // Order matters for the name and the strand.
+        let hit2 = b.intersect(&a);
+        assert_eq!(hit2.name.as_deref(), Some("B intersection A"));
+        assert!(hit2.negative_strand);
+    }
+
+    #[test]
+    fn intersect_renders_a_null_name_as_the_string_null() {
+        let a = Interval::new("chr1", 10, 20);
+        let b = Interval::with_strand_and_name("chr1", 12, 14, false, Some("B"));
+        assert_eq!(a.intersect(&b).name.as_deref(), Some("null intersection B"));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not intersect")]
+    fn intersect_panics_when_they_do_not_overlap() {
+        let a = Interval::new("chr1", 10, 20);
+        let b = Interval::new("chr1", 30, 40);
+        let _ = a.intersect(&b);
+    }
+
     #[test]
     fn the_two_orderings_disagree_on_a_real_dictionary() {
         let dict: Vec<String> = ["chr1", "chr2", "chr10"]
