@@ -79,10 +79,7 @@ fn consume_header<R: Read>(reader: &mut BgzfReader<R>) -> Result<(), ReheaderErr
 
 /// `reheaderBamFile(newHeader, input, skipHeader=true, skipTerminator=false)`: the whole reheadered
 /// BAM as bytes. `input_bam` is the raw BAM file (BGZF-framed, terminator included).
-pub fn reheader_bam(
-    new_header: &SamHeader,
-    input_bam: &[u8],
-) -> Result<Vec<u8>, ReheaderError> {
+pub fn reheader_bam(new_header: &SamHeader, input_bam: &[u8]) -> Result<Vec<u8>, ReheaderError> {
     // 1. The new header as flushed BGZF block(s), no terminator.
     let mut out = write_bam_header_block(new_header)?;
 

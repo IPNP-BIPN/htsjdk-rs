@@ -100,10 +100,7 @@ fn every_reheader_case_is_byte_identical() {
             out.len(),
             case.reheadered.len()
         );
-        let at = out
-            .iter()
-            .zip(&case.reheadered)
-            .position(|(a, b)| a != b);
+        let at = out.iter().zip(&case.reheadered).position(|(a, b)| a != b);
         assert!(
             at.is_none(),
             "{}: first byte differs at {}",
