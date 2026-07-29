@@ -1,0 +1,318 @@
+{
+  "$comment": [
+    "The conformance suites, declared once. `generate_ci.py` emits the oracle jobs of",
+    ".github/workflows/ci.yml from this file, and `run_suite.py` runs the same steps locally.",
+    "",
+    "`status` is `oracle-backed` (CI regenerates the golden in the pinned container and compares",
+    "it on every run) or `unchecked` (the golden is committed and read by the Rust tests, but no",
+    "CI step has ever re-derived it). The distinction is part of the claim each suite supports.",
+    "",
+    "Jobs that are analysis rather than comparison stay hand-written in ci.template.yml: the",
+    "jmath corpus diff and the pow probe of decision 0007, and the JVM number-format sweep of",
+    "decision 0017, which asserts measured rates rather than byte equality."
+  ],
+  "oracle": {
+    "image": "htsjdk-rs-oracle:4.2.0",
+    "context": "tools/oracle",
+    "platform": "linux/amd64"
+  },
+  "ci": {
+    "suites_per_job": 5,
+    "$why": "Suites are grouped into jobs of this size: one job per suite would restore the oracle image once per suite, and one job for all of them is what the hand-written workflow did, where a failing suite hid every suite after it."
+  },
+  "default_java_props": [],
+  "suites": [
+    {
+      "id": "bgzf",
+      "title": "BGZF blocks",
+      "status": "oracle-backed",
+      "harness": "tools/bgzf-conformance",
+      "why": "The committed goldens were produced under Rosetta on Apple Silicon. If real silicon disagrees, every claim resting on them is void, so this must fail loudly.",
+      "compare": {
+        "mode": "regex",
+        "pattern": "\\(\"(\\w+)\", (\\d+), (\\d+), \"([0-9a-f]{32})\"\\)",
+        "key_groups": [0, 1],
+        "why": "The corpus is a literal array in the Rust test rather than a .txt.gz, so both sides are read with the same pattern; only the shared cases are compared, since the test carries cases the dump does not emit."
+      },
+      "cases": [
+        {
+          "dump": "B",
+          "golden": "crates/htsjdk-bgzf/tests/bgzf_conformance.rs"
+        }
+      ]
+    },
+    {
+      "id": "bgzf-termination",
+      "title": "BGZF file termination",
+      "status": "oracle-backed",
+      "harness": "tools/bgzf-conformance",
+      "compare": {
+        "mode": "regex",
+        "pattern": "\\(\"(\\w+)\", \"(\\w+)\", \"(\\w+)\"\\)",
+        "key_groups": [0, 1]
+      },
+      "cases": [
+        {
+          "dump": "Term",
+          "golden": "crates/htsjdk-bgzf/tests/termination_conformance.rs"
+        }
+      ]
+    },
+    {
+      "id": "bam-codec",
+      "title": "BAM record codec",
+      "status": "oracle-backed",
+      "harness": "tools/bam-conformance",
+      "why": "The BAM record codec is pure integer work, so unlike the math corpus there is no reason to expect emulation to change it. That is the hypothesis; this measures it, because \"no reason to expect\" is how decision 0004's wrong assumption got in.",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "BamCodecDump",
+          "golden": "crates/htsjdk-bam/tests/data/bam_codec.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "bam-file",
+      "title": "BAM file and header",
+      "status": "oracle-backed",
+      "harness": "tools/bam-conformance",
+      "why": "These carry compressed bytes, so unlike the record codec they do depend on the deflate implementation. Decision 0001 pins it; this is what would catch that pin coming loose.",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "BamFileDump",
+          "golden": "crates/htsjdk-bam/tests/data/bam_file.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "bam-reheader",
+      "title": "BAM reheader",
+      "status": "oracle-backed",
+      "harness": "tools/bam-reheader-conformance",
+      "why": "The reheadered BAM is block-copied, so it carries compressed bytes and depends on the deflate pin (decision 0001), exactly like the BAM file goldens. Comment rows share a (kind, case) key so only the last per case is diffed here, but the reheadered hex encodes every comment in its header, so any comment drift shows up there.",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "ReheaderDump",
+          "golden": "crates/htsjdk-bam/tests/data/bam_reheader.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "bam-gather",
+      "title": "BAM gather",
+      "status": "oracle-backed",
+      "harness": "tools/bam-gather-conformance",
+      "why": "The gathered BAM is block-copied, so it carries compressed bytes and depends on the deflate pin (decision 0001). Input rows share a (kind, case) key so only the last per case is diffed here, but the gathered hex is the concatenation of them all.",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "GatherDump",
+          "golden": "crates/htsjdk-bam/tests/data/bam_gather.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "histogram",
+      "title": "Histogram statistics",
+      "status": "oracle-backed",
+      "harness": "tools/histogram-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "HistogramDump",
+          "golden": "crates/htsjdk-metrics/tests/data/histogram.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "sam-text",
+      "title": "SAM text records",
+      "status": "oracle-backed",
+      "harness": "tools/sam-text-conformance",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "SamTextDump",
+          "golden": "crates/htsjdk-bam/tests/data/sam_text.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "sam-file",
+      "title": "Whole SAM files",
+      "status": "oracle-backed",
+      "harness": "tools/sam-text-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "SamFileDump",
+          "golden": "crates/htsjdk-bam/tests/data/sam_file.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "bai",
+      "title": "BAM index (write side)",
+      "status": "oracle-backed",
+      "harness": "tools/bam-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "BaiDump",
+          "golden": "crates/htsjdk-bam/tests/data/bai.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "build-index",
+      "title": "BuildBamIndex (read-side BAI)",
+      "status": "oracle-backed",
+      "harness": "tools/build-index-conformance",
+      "why": "The read-side .bai carries compressed-stream virtual offsets, so it depends on the deflate pin (decision 0001) exactly like the BAM goldens, and it differs from the write-side BAI.",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "BuildIndexDump",
+          "golden": "crates/htsjdk-bam/tests/data/build_index.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "interval-list",
+      "title": "Interval lists",
+      "status": "oracle-backed",
+      "harness": "tools/interval-conformance",
+      "why": "Some cases have an empty value: an empty interval list is a result, not a missing row, so valueless lines are kept rather than skipped.",
+      "compare": { "mode": "named", "allow_missing_value": true },
+      "cases": [
+        {
+          "dump": "IntervalListDump",
+          "golden": "crates/htsjdk-bam/tests/data/interval_list.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "vcf-header",
+      "title": "VCF headers",
+      "status": "oracle-backed",
+      "harness": "tools/vcf-conformance",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "VcfHeaderDump",
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_header.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "vcf-record",
+      "title": "VCF records",
+      "status": "oracle-backed",
+      "harness": "tools/vcf-conformance",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "VcfRecordDump",
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_record.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "vcf-file",
+      "title": "Whole VCF files",
+      "status": "oracle-backed",
+      "harness": "tools/vcf-conformance",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "VcfFileDump",
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_file.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "rg-checksum",
+      "title": "Read-group checksum",
+      "status": "oracle-backed",
+      "harness": "tools/rg-checksum-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "RgChecksumDump",
+          "golden": "crates/htsjdk-bam/tests/data/rg_checksum.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "cigar-clip",
+      "title": "CigarUtil soft clip",
+      "status": "oracle-backed",
+      "harness": "tools/cigar-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "CigarClipDump",
+          "golden": "crates/htsjdk-bam/tests/data/cigar_clip.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "mateinfo",
+      "title": "SamPairUtil.setMateInfo",
+      "status": "oracle-backed",
+      "harness": "tools/mateinfo-conformance",
+      "compare": { "mode": "keyed" },
+      "cases": [
+        {
+          "dump": "SetMateInfoDump",
+          "golden": "crates/htsjdk-bam/tests/data/set_mate_info.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "format",
+      "title": "FormatUtil number formatting",
+      "status": "unchecked",
+      "harness": "tools/metrics-conformance",
+      "why": "41,678 formatted doubles, and the corpus the README's 99.73% rests on. Its harness exists and its Rust test reads it, but no CI step has ever regenerated it against the oracle, so the rate is a property of the machine that produced the file rather than of the pinned reference. Decision 0011 makes this corpus locale-dependent, which is exactly the kind of thing the container pins and a developer machine does not.",
+      "compare": { "mode": "named" },
+      "cases": [
+        {
+          "dump": "FormatDump",
+          "golden": "crates/htsjdk-metrics/tests/data/format.txt.gz"
+        }
+      ]
+    }
+  ],
+  "probes": [
+    {
+      "id": "vcf-resort-stable",
+      "title": "Decision 0019: is re-sorting a sorted VCF header still a no-op?",
+      "harness": "tools/vcf-conformance",
+      "class": "ResortProbe",
+      "expect": "CYCLIC_RESORT_STABLE=true",
+      "expect_all": ["CYCLIC_RESORT_STABLE=true", "REALISTIC_RESORT_STABLE=true"],
+      "on_failure": "Re-sorting is no longer stable. Decision 0019 needs revisiting.",
+      "why": "The port relies on it: writing a header that has already been through the comparator once must not reorder it. Measured stable, not proven stable, so it is re-measured."
+    },
+    {
+      "id": "vcf-contig-order",
+      "title": "Decision 0016: is the VCF header comparator still inconsistent?",
+      "harness": "tools/vcf-conformance",
+      "class": "ContigOrderProbe",
+      "expect": "SAME_OUTPUT=false",
+      "on_failure": "The comparator is now consistent. Decision 0016 can be revisited.",
+      "why": "The cycle is the reason the port uses a total order where htsjdk has none. If a future htsjdk made the comparator consistent, this fails and the divergence can be removed."
+    }
+  ],
+  "goldens_handled_elsewhere": [
+    {
+      "path": "crates/jmath/tests/data/jmath.csv.gz",
+      "job": "pow-portability",
+      "why": "Compared function by function against a corpus regenerated on real silicon, with per-function pass conditions from decision 0007, rather than by byte equality."
+    }
+  ]
+}
