@@ -172,16 +172,23 @@ public class VcfRecordParseDump {
             System.out.printf("rec\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s%n",
                     label, vc.getContig(), vc.getStart(), vc.getEnd(), vc.getID(), alleles,
                     vc.hasLog10PError() ? Double.toString(vc.getLog10PError()) : "none",
-                    filters, attributes, oneLine(genotypeText(vc)));
+                    filters, attributes, sampleNames(codec));
         } catch (final Throwable t) {
             System.out.printf("recerror\t%s\t%s\t%s%n", label, t.getClass().getName(),
                     oneLine(t.getMessage()));
         }
     }
 
-    /** The samples in the record, names only: the genotype values are the next slice. */
-    static String genotypeText(final VariantContext vc) {
-        return String.join(",", vc.getSampleNamesOrderedByName());
+    /**
+     * The sample names from the header, not from the record.
+     *
+     * Asking the record forces LazyGenotypesContext to decode, which drags the genotype layer into
+     * a suite that is meant to stop at the site columns: an ALT of "." made GT 0/1 refer to an
+     * allele that does not exist and the row became an InternalCodecException instead of a record.
+     * That failure is real and belongs to the genotype slice, so it is measured there.
+     */
+    static String sampleNames(final VCFCodec codec) {
+        return String.join(",", codec.getHeader().getGenotypeSamples());
     }
 
     static String render(final Object value) {

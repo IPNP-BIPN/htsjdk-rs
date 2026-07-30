@@ -49,8 +49,11 @@ pub const NUM_STANDARD_FIELDS: usize = 8;
 pub enum RecordError {
     /// `TribbleException`, which `generateException` raises with a line number in front.
     Tribble(String),
-    /// `TribbleException.InternalCodecException`, which the allele checks raise.
+    /// `TribbleException.InternalCodecException`, which the genotype layer raises.
     InternalCodec(String),
+    /// `java.lang.NumberFormatException`, which `parseQual` lets through uncaught: a malformed
+    /// QUAL is not a malformed VCF, it is a raw JDK failure with no line number attached.
+    NumberFormat(String),
 }
 
 impl RecordError {
@@ -60,12 +63,15 @@ impl RecordError {
             RecordError::InternalCodec(_) => {
                 "htsjdk.tribble.TribbleException$InternalCodecException"
             }
+            RecordError::NumberFormat(_) => "java.lang.NumberFormatException",
         }
     }
 
     pub fn message(&self) -> &str {
         match self {
-            RecordError::Tribble(message) | RecordError::InternalCodec(message) => message,
+            RecordError::Tribble(message)
+            | RecordError::InternalCodec(message)
+            | RecordError::NumberFormat(message) => message,
         }
     }
 }
@@ -186,7 +192,9 @@ pub fn decode_line(
         )));
     }
 
-    parse_vcf_line(&parts, header, line_number).map(Some)
+    // `parseVCFLine` increments the line counter on entry, so every field error below reports one
+    // more than the column check above does.
+    parse_vcf_line(&parts, header, line_number + 1).map(Some)
 }
 
 /// `AbstractVCFCodec.parseVCFLine`.
@@ -222,7 +230,7 @@ fn parse_vcf_line(
     let reference = parts[3].to_uppercase();
     let alts = &parts[4];
 
-    let log10_p_error = parse_qual(&parts[5], line_number)?;
+    let log10_p_error = parse_qual(&parts[5])?;
     let filters = parse_filters(&parts[6], line_number)?;
     let attributes = parse_info(&parts[7], header, line_number)?;
 
@@ -249,22 +257,31 @@ fn parse_vcf_line(
     })
 }
 
-/// `generateException`, which prefixes the line number.
+/// `generateException`, whose wording is not the column check's.
+///
+/// Two different messages carry the line number in this one decoder: `generateException` writes
+/// "The provided VCF file is malformed at approximately line number N" and the column check writes
+/// "Line N". They are also **different numbers**: `parseVCFLine` increments the counter on entry,
+/// so a field error reports the record's own line while the column check, which runs before that
+/// increment, reports the line before it.
 fn generate_exception(line_number: usize, message: &str) -> RecordError {
-    RecordError::Tribble(format!("Line {line_number}: {message}"))
+    RecordError::Tribble(format!(
+        "The provided VCF file is malformed at approximately line number {line_number}: {message}"
+    ))
 }
 
 /// `AbstractVCFCodec.parseQual`.
 ///
 /// Three answers, not two: `.` is "no quality", a VCF 3 style `-1` is *also* "no quality" (within
 /// an epsilon, so `-1.0` and `-0.9999999` both qualify), and anything else is divided by -10.
-fn parse_qual(text: &str, line_number: usize) -> Result<f64, RecordError> {
+fn parse_qual(text: &str) -> Result<f64, RecordError> {
     if text == MISSING_VALUE {
         return Ok(NO_LOG10_PERROR);
     }
     let value: f64 = text.parse().map_err(|_| {
-        // `VCFUtils.parseVcfDouble` throws a NumberFormatException, which the codec does not catch.
-        RecordError::Tribble(format!("Line {line_number}: For input string: \"{text}\""))
+        // `VCFUtils.parseVcfDouble` throws a NumberFormatException, which nothing catches: it
+        // reaches the caller as a raw JDK failure with no line number and no "malformed VCF".
+        RecordError::NumberFormat(format!("For input string: \"{text}\""))
     })?;
     // `VCFConstants.MISSING_QUALITY_v3_DOUBLE` is -1 and the epsilon is 1e-6.
     if value < 0.0 && (value - -1.0).abs() < 1e-6 {
