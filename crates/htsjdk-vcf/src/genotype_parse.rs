@@ -156,9 +156,10 @@ pub fn parse_genotypes(
                         let parsed: f64 = value.parse().map_err(|_| {
                             RecordError::NumberFormat(format!("For input string: \"{value}\""))
                         })?;
-                        // `Math.round` is floor(x + 0.5), which is not "round half away from zero":
-                        // -1.5 rounds to -1, not to -2.
-                        genotype.gq = Some((parsed + 0.5).floor() as i32);
+                        // `Math.round`, which is not `floor(x + 0.5)` however much its javadoc
+                        // says so: see [`crate::genotype_likelihoods::java_round`]. It still
+                        // rounds half **up** rather than half away from zero, so -1.5 gives -1.
+                        genotype.gq = Some(crate::genotype_likelihoods::java_round(parsed) as i32);
                     }
                 }
                 "AD" => genotype.ad = decode_ints(value),
