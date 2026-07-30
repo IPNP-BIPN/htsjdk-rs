@@ -34,9 +34,11 @@ RUN set -eux; \
     fetch $M/commons-logging/commons-logging/1.2/commons-logging-1.2.jar \
           commons-logging.jar daddea1ea0be0f56978ab3006b8ac92834afeefbd9b7e4e6316fca57df0fa636; \
     fetch $M/commons-io/commons-io/2.16.1/commons-io-2.16.1.jar \
-          commons-io.jar f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f
+          commons-io.jar f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f; \
+    fetch $M/org/apache/commons/commons-jexl/2.1.1/commons-jexl-2.1.1.jar \
+          commons-jexl.jar 03c9a9fae5da78ce52c0bf24467cc37355b7e23196dff4839e2c0ff018a01306
 
-ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/classes
+ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/jars/commons-jexl.jar:/opt/oracle/classes
 
 WORKDIR /opt/oracle
 COPY OracleProbe.java .
