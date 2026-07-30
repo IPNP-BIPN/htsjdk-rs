@@ -46,13 +46,18 @@ pub enum LikelihoodError {
     PartialMissing,
     /// `Double.parseDouble` refusing a value, after `parseVcfDouble` has tried its pattern.
     NumberFormat(String),
+    /// The same exception with the message Java uses for an empty string, which is not the
+    /// `For input string` form. Measured from the golden.
+    EmptyString,
 }
 
 impl LikelihoodError {
     pub fn class(&self) -> &'static str {
         match self {
             LikelihoodError::PartialMissing => "htsjdk.tribble.TribbleException",
-            LikelihoodError::NumberFormat(_) => "java.lang.NumberFormatException",
+            LikelihoodError::NumberFormat(_) | LikelihoodError::EmptyString => {
+                "java.lang.NumberFormatException"
+            }
         }
     }
 
@@ -60,6 +65,7 @@ impl LikelihoodError {
         match self {
             LikelihoodError::PartialMissing => "partial missing values for GL field".to_string(),
             LikelihoodError::NumberFormat(value) => format!("For input string: \"{value}\""),
+            LikelihoodError::EmptyString => "empty String".to_string(),
         }
     }
 }
@@ -194,8 +200,13 @@ pub fn parse_gl_field(text: &str) -> Result<Option<Vec<f64>>, LikelihoodError> {
         if *part == MISSING_VALUE {
             missing += 1;
         } else {
-            values[index] = parse_vcf_double(part)
-                .ok_or_else(|| LikelihoodError::NumberFormat((*part).to_string()))?;
+            values[index] = parse_vcf_double(part).ok_or_else(|| {
+                if part.trim().is_empty() {
+                    LikelihoodError::EmptyString
+                } else {
+                    LikelihoodError::NumberFormat((*part).to_string())
+                }
+            })?;
         }
     }
     if missing == 0 {
@@ -207,14 +218,21 @@ pub fn parse_gl_field(text: &str) -> Result<Option<Vec<f64>>, LikelihoodError> {
     }
 }
 
-/// `String.split(",")`: trailing empty strings are removed, leading and interior ones are kept.
+/// `String.split(",")`, whose three rules all show up in this field and none of which is Rust's.
+///
+/// Trailing empty strings are removed, leading and interior ones are kept, and a string containing
+/// no delimiter at all is returned whole **even when it is empty**. The last rule is why `""` and
+/// `","` differ: `"".split(",")` is a one-element array holding the empty string, which then fails
+/// to parse, while `",".split(",")` is an array of length zero, which parses to no likelihoods at
+/// all. The golden carries both, as `E:java.lang.NumberFormatException:empty String` and as an
+/// empty PL list.
 fn java_split_on_comma(text: &str) -> Vec<&str> {
-    let mut parts: Vec<&str> = text.split(',').collect();
-    while parts.len() > 1 && parts.last() == Some(&"") {
-        parts.pop();
+    if !text.contains(',') {
+        return vec![text];
     }
-    if parts.len() == 1 && parts[0].is_empty() {
-        parts.clear();
+    let mut parts: Vec<&str> = text.split(',').collect();
+    while !parts.is_empty() && parts.last() == Some(&"") {
+        parts.pop();
     }
     parts
 }
@@ -230,7 +248,7 @@ pub fn gls_to_pls(likelihoods: &[f64]) -> Vec<i32> {
     likelihoods
         .iter()
         .map(|likelihood| {
-            let scaled = (-10.0 * (likelihood - adjust)).min(MAX_PL);
+            let scaled = java_math_min(-10.0 * (likelihood - adjust), MAX_PL);
             java_round(scaled) as i32
         })
         .collect()
@@ -272,23 +290,83 @@ fn java_math_max(left: f64, right: f64) -> f64 {
     }
 }
 
-/// `Math.round(double)`: `floor(x + 0.5)` as a `long`, with the saturating edges Java specifies.
+/// `Math.min(double, double)`, which returns NaN when either argument is NaN.
 ///
-/// The half-up rule is the visible part: -1.5 rounds to -1, not to -2. The saturation matters at
-/// the other end, where an infinity becomes `Long.MAX_VALUE` and truncating that to `int` gives
-/// -1, which is why the clamp to `MAX_PL` has to happen first.
-pub fn java_round(value: f64) -> i64 {
-    if value.is_nan() {
-        return 0;
+/// Rust's `f64::min` returns the **other** operand instead, and the golden is what caught it. A GL
+/// field containing a positive infinity makes the adjustment infinite, so that element's own
+/// shifted value is `inf - inf`, which is NaN. Java clamps NaN to NaN and rounds it to 0; Rust's
+/// `min` would have returned `MAX_PL` and produced 2147483647 there. The golden row is
+/// `0,inf,-1` giving `2147483647,0,2147483647`: the infinite element is the one that comes out
+/// zero, and the finite ones are the ones that saturate.
+fn java_math_min(left: f64, right: f64) -> f64 {
+    if left.is_nan() || right.is_nan() {
+        return f64::NAN;
     }
-    let shifted = (value + 0.5).floor();
-    if shifted >= i64::MAX as f64 {
-        i64::MAX
-    } else if shifted <= i64::MIN as f64 {
-        i64::MIN
+    if left < right {
+        left
+    } else if right < left {
+        right
+    } else if left == 0.0 && right == 0.0 {
+        // Math.min(-0.0, 0.0) is -0.0.
+        if left.is_sign_negative() {
+            left
+        } else {
+            right
+        }
     } else {
-        shifted as i64
+        left
     }
+}
+
+/// `Math.round(double)`, which is **not** `floor(x + 0.5)`.
+///
+/// The javadoc says `floor(x + 0.5)` and the implementation has not done that since Java 7. The
+/// golden is what caught it, on the one input that separates them:
+///
+/// ```text
+/// round  <0.49999999999999994>  0
+/// ```
+///
+/// `0.49999999999999994` is the double just below a half. Adding `0.5` to it rounds **up** to
+/// exactly `1.0` in floating point, so `floor(x + 0.5)` answers 1 where the correct half-up answer
+/// is 0. JDK-8010430 replaced the arithmetic with bit manipulation that cannot round twice, and
+/// this is that code: extract the significand, shift it into place by the unbiased exponent, add
+/// one and shift once more, so the half-up decision is made on the exact bits.
+///
+/// The half-up rule itself survives and is still visible: -1.5 rounds to -1, not to -2. Values too
+/// large to shift fall through to a plain cast, which saturates.
+pub fn java_round(value: f64) -> i64 {
+    /// `DoubleConsts.SIGNIFICAND_WIDTH`.
+    const SIGNIFICAND_WIDTH: i64 = 53;
+    /// `DoubleConsts.EXP_BIAS`.
+    const EXP_BIAS: i64 = 1023;
+    const EXP_BIT_MASK: i64 = 0x7FF0_0000_0000_0000u64 as i64;
+    const SIGNIF_BIT_MASK: i64 = 0x000F_FFFF_FFFF_FFFF;
+
+    let long_bits = value.to_bits() as i64;
+    let biased_exp = (long_bits & EXP_BIT_MASK) >> (SIGNIFICAND_WIDTH - 1);
+    let shift = (SIGNIFICAND_WIDTH - 2 + EXP_BIAS) - biased_exp;
+    if (shift & -64) == 0 {
+        // shift is in [0, 64): the value is representable and the significand can be shifted.
+        let mut r = (long_bits & SIGNIF_BIT_MASK) | (SIGNIF_BIT_MASK + 1);
+        if long_bits < 0 {
+            r = -r;
+        }
+        ((r >> shift) + 1) >> 1
+    } else {
+        // Too large, too small, NaN or infinite: a plain narrowing cast, which saturates and
+        // answers zero for NaN.
+        java_double_to_long(value)
+    }
+}
+
+/// `(long) someDouble`: saturating at both ends, zero for NaN.
+///
+/// Rust's `as` conversion has had exactly these semantics since 1.45, so this is a name rather than
+/// an implementation; it is written out because the saturation is load-bearing here and reading
+/// `as i64` does not say so.
+fn java_double_to_long(value: f64) -> i64 {
+    value as i64
 }
 
 /// `GenotypeLikelihoods.fromGLField().getAsPLs()`, which is what the record decoder calls.

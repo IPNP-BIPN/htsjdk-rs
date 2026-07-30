@@ -121,16 +121,13 @@ jobs:
             suites: "build-index interval-list vcf-header vcf-header-parse vcf-header-lines"
           - group: oracle-backed
             index: "4/5"
-            suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse rg-checksum"
+            suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods"
           - group: oracle-backed
             index: "5/5"
-            suites: "cigar-clip mateinfo"
+            suites: "rg-checksum cigar-clip mateinfo"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "vcf-genotype-likelihoods"
     steps:
       - uses: actions/checkout@v4
 
