@@ -318,6 +318,20 @@
       ]
     },
     {
+      "id": "vcf-genotype-type",
+      "title": "The genotype type ladder",
+      "status": "oracle-backed",
+      "harness": "tools/vcf-conformance",
+      "why": "Genotype.determineType decides what every consumer downstream means by het and by called, and three of its answers contradict the javadoc above them. HET is two called alleles that are not equal, so C/G with no reference allele in it is HET, which is why isHetNonRef exists as a separate question and why a port defining HET as one ref and one alt disagrees on every multiallelic site. Equality is Allele.equals, which is bases and the reference flag, so a genotype holding the reference A and a non-reference A is HET while printing as A/A. And ploidy is not two: a haploid call is HOM_REF or HOM_VAR and never HET, a triploid A/A/C is HET, and MIXED is any genotype with at least one call and one no-call whatever its ploidy. VariantContext.isMonomorphicInSamples is measured alongside because it is the guard on GATK's SampleList annotation and it is not every genotype is hom-ref: a site carrying alternate alleles and no genotypes is not monomorphic, since the first disjunct needs no alternate allele and the second needs genotypes. The name order is measured because getGenotypesOrderedByName sorts with Collections.sort, which is String.compareTo, which is UTF-16 code units: uppercase before lowercase, 10 before 2, and a supplementary character BELOW U+FFFF because the first unit of its surrogate pair is 0xD83D, which is the opposite of code-point order and therefore the opposite of what Rust str comparison gives.",
+      "compare": { "mode": "lines" },
+      "cases": [
+        {
+          "dump": "GenotypeTypeDump",
+          "golden": "crates/htsjdk-vcf/tests/data/genotype_type.txt.gz"
+        }
+      ]
+    },
+    {
       "id": "rg-checksum",
       "title": "Read-group checksum",
       "status": "oracle-backed",
