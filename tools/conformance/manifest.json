@@ -210,14 +210,14 @@
     {
       "id": "vcf-header-parse",
       "title": "Reading a VCF header",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "Everything else here writes VCF; nothing reads one, and GATK's VariantWalker cannot exist without a reader. Two layers are measured. VCFHeaderLineTranslator's VCF4Parser is a hand-written scanner whose switch falls through from the '<' case into the '>' case, so an unquoted '<' away from position 0 is dropped, an unquoted '>' anywhere is dropped, and a line that does not end in '>' loses its last field entirely and silently: a port written from the VCF specification would keep those characters and store that field. Quotes are a toggle rather than a delimiter, because the quote test precedes the in-quote test, so a quote in the middle of an unquoted value opens a quoted region and the comma after it stops separating fields; inside a quote a backslash before anything but a quote or a backslash is kept together with the character. VCFCodec.readActualHeader is the second layer: it splits the version line on every '=' and records a version only when that yields exactly two fields, so a line with an extra '=' records nothing and fails later with a different message. The refusals carry their messages because the messages separate two failures of the same file. Only unstructured meta lines are fed to the frame; turning an INFO line into a typed compound header line is the next layer and is measured on its own, since mixing them would leave a failure ambiguous between the two.",
       "compare": { "mode": "lines" },
       "cases": [
         {
           "dump": "VcfHeaderParseDump",
-          "golden": null
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_header_parse.txt.gz"
         }
       ]
     },

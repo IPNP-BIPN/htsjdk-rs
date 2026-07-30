@@ -108,9 +108,19 @@ impl VcfVersion {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidHeader(pub String);
 
+/// The prefix `TribbleException.InvalidHeader` puts in front of every message it is given.
+pub const INVALID_HEADER_PREFIX: &str = "Your input file has a malformed header: ";
+
+impl InvalidHeader {
+    /// What `getMessage()` returns: the reason with the exception's own prefix in front.
+    pub fn message(&self) -> String {
+        format!("{INVALID_HEADER_PREFIX}{}", self.0)
+    }
+}
+
 impl fmt::Display for InvalidHeader {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{}", self.message())
     }
 }
 
@@ -261,9 +271,11 @@ impl HeaderFrame {
     ///  * the lines go into a `LinkedHashSet`, and `VCFHeaderLine.equals` is over key **and**
     ///    value, so a line repeated exactly collapses and one repeated with a different value does
     ///    not;
-    ///  * `VCFHeader.removeVCFVersionLines` then strips every `fileformat` (or `format`) line, so
-    ///    the version survives as a field and not as a line. The writer puts a constant one back,
-    ///    which is why a file can declare 4.3 and be written as 4.2.
+    ///  * the `fileformat` line **stays**. `VCFHeader.removeVCFVersionLines` exists, but the
+    ///    constructor the codec calls does not reach it, so the header carries the version both as
+    ///    a field and as the line it came from. Measured rather than assumed: the golden's
+    ///    `minimal` frame lists `fileformat` among its keys. Nothing appears twice on output,
+    ///    because the writer skips every line whose key is a format string and writes its own.
     pub fn meta_keys(&self) -> Vec<String> {
         let mut seen: Vec<(String, String)> = Vec::new();
         for line in &self.meta_lines {
@@ -272,9 +284,6 @@ impl HeaderFrame {
                 continue;
             };
             let (key, value) = (rest[..equals].to_string(), rest[equals + 1..].to_string());
-            if VcfVersion::is_format_string(&key) {
-                continue;
-            }
             if !seen
                 .iter()
                 .any(|pair| *pair == (key.clone(), value.clone()))
