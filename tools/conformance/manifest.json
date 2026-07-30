@@ -278,14 +278,14 @@
     {
       "id": "vcf-genotype-parse",
       "title": "Reading the genotype columns",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "The vcf-record-parse suite stops at the eight site columns; this is the rest, which htsjdk defers through LazyGenotypesContext until something asks for it. Four behaviours decide what a genotype contains and none is in the VCF specification. The GT separators are three characters, not two: VCFConstants.PHASING_TOKENS is a slash, a pipe and a backslash, and the split is a StringTokenizer, which drops empty tokens, so a backslash separates alleles like a slash does and 0//1, /0/1 and 0/1/ all yield the same two alleles as 0/1. A malformed AD or PL is silently dropped, because decodeInts catches NumberFormatException and returns null, which the builder stores as no-AD, while two lines further down the same method DP goes through a bare Integer.parseInt whose failure is not caught at all: the same malformed integer either disappears or aborts the record, decided by which key it was under. GT must be at position 0 when present and, before VCF 4.1, must be present at all, so the same record is valid or invalid depending on a header line. And a key with no value is skipped just as a value of \".\" is, but only the second had to be looked at, which shows in FT where \".\" means unfiltered rather than absent. GL is excluded: converting it to PL runs through GenotypeLikelihoods.fromGLField, which is floating-point work with its own rounding, and folding it in here would mix a numeric question into a parsing one.",
       "compare": { "mode": "lines" },
       "cases": [
         {
           "dump": "VcfGenotypeParseDump",
-          "golden": null
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_genotype_parse.txt.gz"
         }
       ]
     },

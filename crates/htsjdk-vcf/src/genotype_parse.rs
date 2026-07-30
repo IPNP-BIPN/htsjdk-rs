@@ -38,6 +38,20 @@ use crate::variant::{Genotype, Value};
 /// `VCFConstants.PHASING_TOKENS`.
 const PHASING_TOKENS: [char; 3] = ['/', '|', '\\'];
 
+/// Everything the genotype layer needs from the record around it.
+///
+/// `site_parts` is there for one reason: the "too many keys" message quotes the **site** columns
+/// rather than the genotype ones, so reproducing it needs the record's own tokens.
+#[derive(Clone, Copy)]
+pub struct GenotypeContext<'a> {
+    pub site_parts: &'a [String],
+    pub header: &'a VcfHeader,
+    pub version: VcfVersion,
+    pub contig: &'a str,
+    pub pos: i64,
+    pub line_number: usize,
+}
+
 /// `AbstractVCFCodec.createGenotypeMap`.
 ///
 /// `block` is `parts[8]`: the FORMAT column and every sample column, joined by tabs, exactly as the
@@ -45,12 +59,16 @@ const PHASING_TOKENS: [char; 3] = ['/', '|', '\\'];
 pub fn parse_genotypes(
     block: &str,
     alleles: &[Allele],
-    header: &VcfHeader,
-    version: VcfVersion,
-    contig: &str,
-    pos: i64,
-    line_number: usize,
+    context: &GenotypeContext<'_>,
 ) -> Result<Vec<Genotype>, RecordError> {
+    let GenotypeContext {
+        site_parts,
+        header,
+        version,
+        contig,
+        pos,
+        line_number,
+    } = *context;
     // The array is sized from the header, and this split does **not** condense, so an extra column
     // is a count mismatch rather than a joined last field.
     let expected = crate::record_parse::column_count(header) - NUM_STANDARD_FIELDS;
@@ -82,11 +100,20 @@ pub fn parse_genotypes(
         let values: Vec<&str> = column.split(':').collect();
 
         if keys.len() < values.len() {
+            // The message is wrong upstream and reproduced as it is: `values` is
+            // `parts[genotypeOffset]` over the **site** columns, not over the genotype ones, so
+            // the first sample's failure quotes the record's POS. `keys` is `parts[8]`, the whole
+            // genotype block rather than the FORMAT column.
+            let quoted_values = site_parts.get(offset + 1).cloned().unwrap_or_default();
             return Err(malformed(
                 line_number,
                 &format!(
-                    "There are too many keys for the sample {sample}, keys = {}, values = {column}",
-                    parts[0]
+                    "There are too many keys for the sample {sample}, keys = {}, values = \
+                     {quoted_values}",
+                    site_parts
+                        .get(NUM_STANDARD_FIELDS)
+                        .cloned()
+                        .unwrap_or_default()
                 ),
             ));
         }
@@ -119,7 +146,9 @@ pub fn parse_genotypes(
             }
             match *key {
                 "GQ" => {
-                    // The VCF 3 encoding of a missing GQ is the literal -1.
+                    // The VCF 3 encoding of a missing GQ, tested on the **string**: "-1.0"
+                    // takes the other path, rounds to -1, and is then indistinguishable from
+                    // absent because -1 is `Genotype`'s own sentinel for "no GQ".
                     if value == "-1" {
                         genotype.gq = None;
                     } else {
