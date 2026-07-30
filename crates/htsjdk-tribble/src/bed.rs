@@ -77,12 +77,13 @@ pub enum Strand {
 }
 
 impl Strand {
-    /// `Strand.toString()`, which is what a dump can compare.
+    /// `Strand.toString()`. `NONE` prints `.`, not `NONE`, so an unstranded feature and one whose
+    /// strand column held `.` are written the same way.
     pub fn name(self) -> &'static str {
         match self {
             Strand::Positive => "+",
             Strand::Negative => "-",
-            Strand::None => "NONE",
+            Strand::None => ".",
         }
     }
 }
@@ -98,38 +99,72 @@ pub struct Exon {
 }
 
 /// `FullBEDFeature`, with only the fields the codec sets.
+///
+/// Three fields have **defaults** rather than being absent, which the golden settles and a port
+/// modelling them as optional gets wrong: an unnamed feature carries the empty string, an unscored
+/// one carries `NaN`, and one with no strand column carries `Strand.NONE`, which prints `.`. Only
+/// the colour is genuinely absent when its column is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BedFeature {
     pub contig: String,
     pub start: i32,
     pub end: i32,
-    pub name: Option<String>,
-    pub score: Option<f32>,
-    pub strand: Option<Strand>,
-    /// `ParsingUtils.parseColor`'s answer, as `(r, g, b)`.
+    /// `SimpleBEDFeature.name`, which starts as `""`.
+    pub name: String,
+    /// `SimpleBEDFeature.score`, which starts as `Float.NaN`.
+    pub score: f32,
+    /// `SimpleBEDFeature.strand`, which starts as `Strand.NONE`.
+    pub strand: Strand,
+    /// `ParsingUtils.parseColor`'s answer, as `(r, g, b)`. Null until column nine.
     pub color: Option<(u8, u8, u8)>,
     pub exons: Vec<Exon>,
 }
 
-/// What the codec throws, which is Java's own parse failure with its own message.
+/// What the codec throws. All four are reachable from one line of a BED file, and they are not
+/// the same exception: a caller catching `NumberFormatException` still loses on a colour.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NumberFormat {
-    pub input: String,
+pub enum BedError {
+    /// `Integer.parseInt` on a field that is not an integer.
+    NumberFormat { input: String },
+    /// `Integer.parseInt(null)`, which the exon path reaches when the declared exon count is
+    /// larger than the lists: `ParsingUtils.split` leaves the tail of its fixed array null.
+    NullNumber,
+    /// `new Color(r, g, b)` with a component outside `0..=255`. The message names the first
+    /// offending component in red, green, blue order.
+    ColorRange { component: &'static str },
+    /// `ParsingUtils.split` writing into a zero-length array, which a declared exon count of zero
+    /// produces however empty the lists are.
+    ArrayIndex { index: usize, length: usize },
 }
 
-impl NumberFormat {
+impl BedError {
     pub fn class(&self) -> &'static str {
-        "java.lang.NumberFormatException"
+        match self {
+            BedError::NumberFormat { .. } | BedError::NullNumber => {
+                "java.lang.NumberFormatException"
+            }
+            BedError::ColorRange { .. } => "java.lang.IllegalArgumentException",
+            BedError::ArrayIndex { .. } => "java.lang.ArrayIndexOutOfBoundsException",
+        }
     }
 
     pub fn message(&self) -> String {
-        format!("For input string: \"{}\"", self.input)
+        match self {
+            BedError::NumberFormat { input } => format!("For input string: \"{input}\""),
+            BedError::NullNumber => "Cannot parse null string".to_string(),
+            BedError::ColorRange { component } => {
+                format!("Color parameter outside of expected range: {component}")
+            }
+            BedError::ArrayIndex { index, length } => {
+                format!("Index {index} out of bounds for length {length}")
+            }
+        }
     }
 }
 
 /// `Integer.parseInt`, which takes a leading `+` and refuses everything else Rust refuses.
-fn parse_int(text: &str) -> Result<i32, NumberFormat> {
-    text.parse::<i32>().map_err(|_| NumberFormat {
+fn parse_int(text: &str) -> Result<i32, BedError> {
+    text.parse::<i32>().map_err(|_| BedError::NumberFormat {
         input: text.to_string(),
     })
 }
@@ -178,7 +213,7 @@ fn is_blank(line: &str) -> bool {
 /// `Ok(None)` is the codec's `null`: a blank line, a header line, or a line with fewer than two
 /// fields. None of the three is an error, and a reader that treated them as one would stop at the
 /// first comment.
-pub fn decode(line: &str, start_offset: StartOffset) -> Result<Option<BedFeature>, NumberFormat> {
+pub fn decode(line: &str, start_offset: StartOffset) -> Result<Option<BedFeature>, BedError> {
     if is_blank(line) {
         return Ok(None);
     }
@@ -192,7 +227,7 @@ pub fn decode(line: &str, start_offset: StartOffset) -> Result<Option<BedFeature
 pub fn decode_tokens(
     tokens: &[&str],
     start_offset: StartOffset,
-) -> Result<Option<BedFeature>, NumberFormat> {
+) -> Result<Option<BedFeature>, BedError> {
     if tokens.len() < 2 {
         return Ok(None);
     }
@@ -210,21 +245,21 @@ pub fn decode_tokens(
         contig: tokens[0].to_string(),
         start,
         end,
-        name: None,
-        score: None,
-        strand: None,
+        name: String::new(),
+        score: f32::NAN,
+        strand: Strand::None,
         color: None,
         exons: Vec::new(),
     };
 
     if tokens.len() > 3 {
         // `replaceAll("\"", "")`: every quote anywhere, not a surrounding pair.
-        feature.name = Some(tokens[3].replace('"', ""));
+        feature.name = tokens[3].replace('"', "");
     }
 
     if tokens.len() > 4 {
         match parse_float(tokens[4]) {
-            Some(score) => feature.score = Some(score),
+            Some(score) => feature.score = score,
             // The early return: everything after column five is dropped, however well formed.
             None => return Ok(Some(feature)),
         }
@@ -233,15 +268,15 @@ pub fn decode_tokens(
     if tokens.len() > 5 {
         let trimmed = tokens[5].trim_matches(|c: char| c <= ' ');
         let strand = trimmed.chars().next().unwrap_or(' ');
-        feature.strand = Some(match strand {
+        feature.strand = match strand {
             '-' => Strand::Negative,
             '+' => Strand::Positive,
             _ => Strand::None,
-        });
+        };
     }
 
     if tokens.len() > 8 {
-        feature.color = parse_color(tokens[8]);
+        feature.color = Some(parse_color(tokens[8])?);
     }
 
     if tokens.len() > 11 {
@@ -261,13 +296,25 @@ fn parse_float(text: &str) -> Option<f32> {
     if trimmed.is_empty() {
         return None;
     }
+    // Java spells its specials exactly, and case-sensitively: `NaN`, `Infinity`, `-Infinity`,
+    // `+Infinity`. Rust's parser instead takes `inf`, `infinity` and `nan` in any case, so the two
+    // alphabets overlap without matching and each accepts spellings the other refuses.
+    match trimmed {
+        "NaN" => return Some(f32::NAN),
+        "Infinity" | "+Infinity" => return Some(f32::INFINITY),
+        "-Infinity" => return Some(f32::NEG_INFINITY),
+        _ => {}
+    }
     let lowered = trimmed.to_ascii_lowercase();
-    // Java takes a type suffix; Rust does not, and Rust takes `inf`/`nan`, which Java does not.
+    if lowered.contains("inf") || lowered.contains("nan") {
+        return None;
+    }
+    // Java takes a trailing type suffix, which Rust does not.
     let body = lowered
         .strip_suffix('f')
         .or_else(|| lowered.strip_suffix('d'))
         .unwrap_or(&lowered);
-    if body.is_empty() || body.contains("inf") || body.contains("nan") {
+    if body.is_empty() {
         return None;
     }
     body.parse::<f32>().ok()
@@ -278,29 +325,32 @@ fn parse_float(text: &str) -> Option<f32> {
 /// A comma-separated triple is RGB; a `#rrggbb` string is hex. Anything else falls through the
 /// named-colour table and, failing that, comes back **black** rather than absent, which is why an
 /// unparsable colour is not distinguishable from a black one.
-fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
+fn parse_color(text: &str) -> Result<(u8, u8, u8), BedError> {
     if text.contains(',') {
         let parts: Vec<&str> = text.split(',').collect();
         if parts.len() < 3 {
-            return Some((0, 0, 0));
+            return Ok((0, 0, 0));
         }
         let mut rgb = [0i32; 3];
         for (slot, part) in rgb.iter_mut().zip(&parts) {
             match part.trim().parse::<i32>() {
                 Ok(value) => *slot = value,
-                Err(_) => return Some((0, 0, 0)),
+                Err(_) => return Ok((0, 0, 0)),
             }
         }
-        if rgb.iter().any(|v| !(0..=255).contains(v)) {
-            // `new Color(r, g, b)` throws for a component out of range, and the caller catches it.
-            return Some((0, 0, 0));
+        // `new Color(r, g, b)` throws rather than clamping, and the codec does not catch it, so a
+        // component of 300 fails the whole line.
+        for (value, name) in rgb.iter().zip(["Red", "Green", "Blue"]) {
+            if !(0..=255).contains(value) {
+                return Err(BedError::ColorRange { component: name });
+            }
         }
-        return Some((rgb[0] as u8, rgb[1] as u8, rgb[2] as u8));
+        return Ok((rgb[0] as u8, rgb[1] as u8, rgb[2] as u8));
     }
     if let Some(hex) = text.strip_prefix('#') {
         if hex.len() == 6 {
             if let Ok(value) = u32::from_str_radix(hex, 16) {
-                return Some((
+                return Ok((
                     ((value >> 16) & 0xFF) as u8,
                     ((value >> 8) & 0xFF) as u8,
                     (value & 0xFF) as u8,
@@ -308,8 +358,43 @@ fn parse_color(text: &str) -> Option<(u8, u8, u8)> {
             }
         }
     }
-    Some((0, 0, 0))
+    if let Some(hex) = COLOR_SYMBOLS
+        .iter()
+        .find(|(name, _)| *name == text.to_lowercase())
+        .map(|(_, hex)| *hex)
+    {
+        let value = u32::from_str_radix(hex, 16).expect("a six-digit constant");
+        return Ok((
+            ((value >> 16) & 0xFF) as u8,
+            ((value >> 8) & 0xFF) as u8,
+            (value & 0xFF) as u8,
+        ));
+    }
+    // Anything the table does not hold comes back BLACK rather than absent, so an unparsable
+    // colour and a black one are indistinguishable downstream.
+    Ok((0, 0, 0))
 }
+
+/// `ParsingUtils.colorSymbols`, the sixteen HTML names plus orange.
+const COLOR_SYMBOLS: [(&str, &str); 17] = [
+    ("white", "FFFFFF"),
+    ("silver", "C0C0C0"),
+    ("gray", "808080"),
+    ("black", "000000"),
+    ("red", "FF0000"),
+    ("maroon", "800000"),
+    ("yellow", "FFFF00"),
+    ("olive", "808000"),
+    ("lime", "00FF00"),
+    ("green", "008000"),
+    ("aqua", "00FFFF"),
+    ("teal", "008080"),
+    ("blue", "0000FF"),
+    ("navy", "000080"),
+    ("fuchsia", "FF00FF"),
+    ("purple", "800080"),
+    ("orange", "FFA500"),
+];
 
 /// `createExons`.
 ///
@@ -321,27 +406,29 @@ fn create_exons(
     tokens: &[&str],
     feature: &mut BedFeature,
     start_offset: StartOffset,
-) -> Result<(), NumberFormat> {
+) -> Result<(), BedError> {
     let cd_start = parse_int(tokens[6])? + start_offset.value();
     let cd_end = parse_int(tokens[7])?;
     let exon_count = parse_int(tokens[9])?;
 
-    let sizes = split_fixed(tokens[10], exon_count as usize);
-    let starts = split_fixed(tokens[11], exon_count as usize);
+    let sizes = split_fixed(tokens[10], exon_count as usize)?;
+    let starts = split_fixed(tokens[11], exon_count as usize)?;
     if starts.len() != sizes.len() {
         return Ok(());
     }
 
-    let negative = feature.strand == Some(Strand::Negative);
+    let negative = feature.strand == Strand::Negative;
     let mut number = if negative { exon_count } else { 1 };
     for (offset, size) in starts.iter().zip(&sizes) {
-        let exon_start = start + parse_int(offset)?;
-        let exon_end = exon_start + parse_int(size)? - 1;
+        let exon_start = start + parse_int(offset.ok_or(BedError::NullNumber)?)?;
+        let exon_end = exon_start + parse_int(size.ok_or(BedError::NullNumber)?)? - 1;
         feature.exons.push(Exon {
             start: exon_start,
             end: exon_end,
-            cd_start,
-            cd_end,
+            // `setCodingStart`/`setCodingEnd` clamp to the exon, so the coding bounds a feature
+            // reports are never wider than the exon that carries them.
+            cd_start: cd_start.max(exon_start),
+            cd_end: cd_end.min(exon_end),
             number,
         });
         if negative {
@@ -353,13 +440,26 @@ fn create_exons(
     Ok(())
 }
 
-/// `ParsingUtils.split(string, array, delim)`: fills a fixed-size array, so a list longer than the
-/// declared exon count is truncated and a shorter one leaves nulls the caller then parses.
+/// `ParsingUtils.split(string, array, delim)`: fills a fixed-size array whose length is the
+/// declared exon count.
 ///
-/// The port returns only the fields that exist, and the caller's length test then behaves as the
-/// reference's does for the mismatched case.
-fn split_fixed(text: &str, expected: usize) -> Vec<&str> {
-    text.split(',').take(expected).collect()
+/// Two consequences the signature hides. A list shorter than the count leaves the tail of the
+/// array **null**, and the caller then parses those nulls, so a declared count of 3 over two sizes
+/// throws `NumberFormatException: Cannot parse null string` rather than yielding two exons. And a
+/// count of **zero** makes the array zero-length, into which the split still writes position 0, so
+/// it throws `ArrayIndexOutOfBoundsException` however empty the list is.
+fn split_fixed(text: &str, expected: usize) -> Result<Vec<Option<&str>>, BedError> {
+    if expected == 0 {
+        return Err(BedError::ArrayIndex {
+            index: 0,
+            length: 0,
+        });
+    }
+    let mut out: Vec<Option<&str>> = vec![None; expected];
+    for (slot, field) in out.iter_mut().zip(text.split(',')) {
+        *slot = Some(field);
+    }
+    Ok(out)
 }
 
 /// `canDecode(path)`: a block-compressed extension is stripped first, then the name is lowercased

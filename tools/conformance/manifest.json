@@ -25,14 +25,14 @@
     {
       "id": "tribble-bed",
       "title": "The BED codec",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/tribble-conformance",
       "why": "BEDCodec is what GATK's -L regions.bed runs through, so its coordinate convention is the one a whole interval argument inherits, and five of its decisions are not what a BED parser suggests. The start is shifted by a constructor argument, StartOffset.ONE being the default, so a file's 0-based start becomes 1-based on the way in and the feature carries the shifted number without carrying the shift. A two-token line is a point rather than a zero-length interval, because with no end column the end is the shifted start: one base at a coordinate the file never mentions. The separator is the regex tab-or-a-run-of-spaces with limit -1, so a run of spaces however long is one separator, a tab beside a space is two, and a trailing separator produces an empty field rather than being dropped. A blank line and a header line decode to null rather than to an error, and the header prefixes are matched on the raw line so a leading space makes them data. And a score that does not parse returns the feature early, so a line whose score is a dot keeps its name and silently loses its strand, its colour and its exons even though those columns are present and well formed, while every other malformed number in the same line throws instead.",
       "compare": { "mode": "lines" },
       "cases": [
         {
           "dump": "BedCodecDump",
-          "golden": null
+          "golden": "crates/htsjdk-tribble/tests/data/bed_codec.txt.gz"
         }
       ]
     },

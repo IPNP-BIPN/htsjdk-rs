@@ -111,26 +111,26 @@ jobs:
       matrix:
         include:
           - group: oracle-backed
-            index: "1/5"
-            suites: "bgzf bgzf-termination bam-codec bam-file bam-reheader"
+            index: "1/6"
+            suites: "tribble-bed bgzf bgzf-termination bam-codec bam-file"
           - group: oracle-backed
-            index: "2/5"
-            suites: "bam-gather histogram sam-text sam-file bai"
+            index: "2/6"
+            suites: "bam-reheader bam-gather histogram sam-text sam-file"
           - group: oracle-backed
-            index: "3/5"
-            suites: "build-index interval-list vcf-header vcf-header-parse vcf-header-lines"
+            index: "3/6"
+            suites: "bai build-index interval-list vcf-header vcf-header-parse"
           - group: oracle-backed
-            index: "4/5"
-            suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods"
+            index: "4/6"
+            suites: "vcf-header-lines vcf-record vcf-file vcf-record-parse vcf-genotype-parse"
           - group: oracle-backed
-            index: "5/5"
-            suites: "vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip mateinfo"
+            index: "5/6"
+            suites: "vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip"
+          - group: oracle-backed
+            index: "6/6"
+            suites: "mateinfo"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "tribble-bed"
     steps:
       - uses: actions/checkout@v4
 
