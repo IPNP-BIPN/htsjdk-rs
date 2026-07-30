@@ -92,6 +92,22 @@ compiler will never catch any of them.
 | [0021](docs/decisions/0021-the-coordinate-comparator-is-total-so-byte-identity-needs-a-stable-sort.md) | The coordinate comparator is a total order, so byte-identity needs a stable in-memory sort (resolves R5) |
 | [0020](docs/decisions/0020-the-interval-tree-need-not-be-byte-exact.md) | The interval tree need not be byte-exact: the overlap set's order does not escape |
 | [0019](docs/decisions/0019-re-sorting-a-sorted-header-is-stable-measured-not-proven.md) | Re-sorting an already-sorted VCF header is stable: measured, not proven |
+| [0022](docs/decisions/0022-the-format-corpus-was-never-checked-against-the-oracle.md) | The format corpus was never checked against the oracle |
+
+## Conformance suites
+
+Every suite is declared once in [`tools/conformance/manifest.json`](tools/conformance/manifest.json):
+the harness that regenerates it, the golden it produces, and how the two sides are compared. The
+oracle jobs of `.github/workflows/ci.yml` are generated from it, and the same run happens locally:
+
+```sh
+python3 tools/conformance/run_suite.py --list
+python3 tools/conformance/run_suite.py --suites bgzf
+```
+
+A suite's `status` is part of the claim it supports: **oracle-backed** means CI re-derives the
+golden in the pinned container on every run; **unchecked** means it has never been re-derived.
+Decision 0022 records the one corpus in the second category.
 
 ## Part of a three-repository program
 
