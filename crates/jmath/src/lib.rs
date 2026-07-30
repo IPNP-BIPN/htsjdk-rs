@@ -45,6 +45,55 @@ pub mod math {
         crate::log::log10(x)
     }
 
+    /// `Math.round(double)`, which is **not** `floor(x + 0.5)` however much its own javadoc says
+    /// so.
+    ///
+    /// The javadoc has said `floor(x + 0.5)` since Java 1.0 and the implementation stopped doing
+    /// that in Java 7. The two disagree on exactly one class of input, and the conformance golden
+    /// in `htsjdk-vcf` carries the witness:
+    ///
+    /// ```text
+    /// round  <0.49999999999999994>  0
+    /// ```
+    ///
+    /// `0.49999999999999994` is the double immediately below a half. Adding `0.5` to it rounds
+    /// **up** to exactly `1.0`, so the arithmetic version rounds twice and answers 1 where the
+    /// correct half-up answer is 0. JDK-8010430 replaced the arithmetic with bit manipulation that
+    /// cannot round twice, and this is that code: take the significand, shift it into place by the
+    /// unbiased exponent, add one and shift once more, so the half-up decision is made on the exact
+    /// bits and never on a sum that has already been rounded.
+    ///
+    /// The half-up rule itself is unchanged and is what makes the two look alike on ordinary
+    /// input: -1.5 rounds to -1, not to -2.
+    ///
+    /// It lives here rather than beside its callers because it is a `java.lang.Math` function and
+    /// a second copy of it would be a second definition of what rounding means.
+    pub fn round(value: f64) -> i64 {
+        /// `DoubleConsts.SIGNIFICAND_WIDTH`.
+        const SIGNIFICAND_WIDTH: i64 = 53;
+        /// `DoubleConsts.EXP_BIAS`.
+        const EXP_BIAS: i64 = 1023;
+        const EXP_BIT_MASK: i64 = 0x7FF0_0000_0000_0000u64 as i64;
+        const SIGNIF_BIT_MASK: i64 = 0x000F_FFFF_FFFF_FFFF;
+
+        let long_bits = value.to_bits() as i64;
+        let biased_exp = (long_bits & EXP_BIT_MASK) >> (SIGNIFICAND_WIDTH - 1);
+        let shift = (SIGNIFICAND_WIDTH - 2 + EXP_BIAS) - biased_exp;
+        if (shift & -64) == 0 {
+            // shift is in [0, 64): the value is representable and the significand can be shifted.
+            let mut r = (long_bits & SIGNIF_BIT_MASK) | (SIGNIF_BIT_MASK + 1);
+            if long_bits < 0 {
+                r = -r;
+            }
+            ((r >> shift) + 1) >> 1
+        } else {
+            // Too large, too small, NaN or infinite: `(long) someDouble`, which saturates at both
+            // ends and answers zero for NaN. Rust's `as` has had exactly those semantics since
+            // 1.45.
+            value as i64
+        }
+    }
+
     // `Math.exp` is WITHDRAWN, not missing. It was implemented as an operation-by-operation
     // transcription of HotSpot's x86 intrinsic, and that source file is GPL2 *only*, with no
     // Classpath Exception, so the transcription could not be published under this crate's MIT
