@@ -58,7 +58,16 @@ def docker_run(manifest, harness, cls, props, stdout):
     ]
     print("+ " + " ".join(cmd[:-1]) + f" '{cmd[-1][:60]}...'", flush=True)
     with open(stdout, "w") as fh:
-        return subprocess.run(cmd, stdout=fh).returncode
+        result = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, text=True)
+    # A compile failure used to report itself as "0 rows" and nothing else, because javac's
+    # diagnostics went to the container's stderr and the run only kept stdout. The dump's own
+    # chatter is already dropped inside the container by `2>/dev/null`, so anything arriving here
+    # is the harness failing to build or to start, and it is the only thing that says why.
+    if result.returncode != 0 and result.stderr.strip():
+        print(f"--- {cls}: the container wrote to stderr:", flush=True)
+        for line in result.stderr.rstrip("\n").split("\n"):
+            print("   ", line, flush=True)
+    return result.returncode
 
 
 PENDING_DIR = REPO / "tools" / "conformance" / "pending"
