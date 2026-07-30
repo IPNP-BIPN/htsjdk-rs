@@ -294,6 +294,13 @@ fn parse_qual(text: &str) -> Result<f64, RecordError> {
 ///
 /// `None` is "no filters were applied", which is a different file from `Some(vec![])`, "filters
 /// were applied and passed".
+pub fn parse_filters_public(
+    text: &str,
+    line_number: usize,
+) -> Result<Option<Vec<String>>, RecordError> {
+    parse_filters(text, line_number)
+}
+
 fn parse_filters(text: &str, line_number: usize) -> Result<Option<Vec<String>>, RecordError> {
     if text == MISSING_VALUE {
         return Ok(None);
