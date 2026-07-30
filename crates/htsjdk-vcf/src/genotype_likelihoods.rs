@@ -318,56 +318,12 @@ fn java_math_min(left: f64, right: f64) -> f64 {
     }
 }
 
-/// `Math.round(double)`, which is **not** `floor(x + 0.5)`.
+/// `Math.round(double)`, re-exported from [`jmath::math::round`].
 ///
-/// The javadoc says `floor(x + 0.5)` and the implementation has not done that since Java 7. The
-/// golden is what caught it, on the one input that separates them:
-///
-/// ```text
-/// round  <0.49999999999999994>  0
-/// ```
-///
-/// `0.49999999999999994` is the double just below a half. Adding `0.5` to it rounds **up** to
-/// exactly `1.0` in floating point, so `floor(x + 0.5)` answers 1 where the correct half-up answer
-/// is 0. JDK-8010430 replaced the arithmetic with bit manipulation that cannot round twice, and
-/// this is that code: extract the significand, shift it into place by the unbiased exponent, add
-/// one and shift once more, so the half-up decision is made on the exact bits.
-///
-/// The half-up rule itself survives and is still visible: -1.5 rounds to -1, not to -2. Values too
-/// large to shift fall through to a plain cast, which saturates.
-pub fn java_round(value: f64) -> i64 {
-    /// `DoubleConsts.SIGNIFICAND_WIDTH`.
-    const SIGNIFICAND_WIDTH: i64 = 53;
-    /// `DoubleConsts.EXP_BIAS`.
-    const EXP_BIAS: i64 = 1023;
-    const EXP_BIT_MASK: i64 = 0x7FF0_0000_0000_0000u64 as i64;
-    const SIGNIF_BIT_MASK: i64 = 0x000F_FFFF_FFFF_FFFF;
-
-    let long_bits = value.to_bits() as i64;
-    let biased_exp = (long_bits & EXP_BIT_MASK) >> (SIGNIFICAND_WIDTH - 1);
-    let shift = (SIGNIFICAND_WIDTH - 2 + EXP_BIAS) - biased_exp;
-    if (shift & -64) == 0 {
-        // shift is in [0, 64): the value is representable and the significand can be shifted.
-        let mut r = (long_bits & SIGNIF_BIT_MASK) | (SIGNIF_BIT_MASK + 1);
-        if long_bits < 0 {
-            r = -r;
-        }
-        ((r >> shift) + 1) >> 1
-    } else {
-        // Too large, too small, NaN or infinite: a plain narrowing cast, which saturates and
-        // answers zero for NaN.
-        java_double_to_long(value)
-    }
-}
-
-/// `(long) someDouble`: saturating at both ends, zero for NaN.
-///
-/// Rust's `as` conversion has had exactly these semantics since 1.45, so this is a name rather than
-/// an implementation; it is written out because the saturation is load-bearing here and reading
-/// `as i64` does not say so.
-fn java_double_to_long(value: f64) -> i64 {
-    value as i64
-}
+/// It is a `java.lang.Math` function, so it lives in jmath; it is named here because this is where
+/// the golden that measures it lives, and because reading `jmath::math::round` at the call site
+/// would not say that it is deliberately not `floor(x + 0.5)`.
+pub use jmath::math::round as java_round;
 
 /// `GenotypeLikelihoods.fromGLField().getAsPLs()`, which is what the record decoder calls.
 ///

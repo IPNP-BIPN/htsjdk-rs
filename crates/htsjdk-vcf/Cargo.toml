@@ -6,5 +6,9 @@ license.workspace = true
 repository.workspace = true
 description = "Port of htsjdk's VCF support"
 
+[dependencies]
+# For `Math.round`, which is a `java.lang.Math` function and belongs there rather than here.
+jmath.workspace = true
+
 [dev-dependencies]
 flate2.workspace = true
