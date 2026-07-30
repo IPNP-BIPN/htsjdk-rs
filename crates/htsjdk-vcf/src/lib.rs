@@ -8,6 +8,7 @@ pub mod chromosome_counts;
 pub mod encoder;
 pub mod genotype_likelihoods;
 pub mod genotype_parse;
+pub mod genotype_type;
 pub mod header;
 pub mod header_lines;
 pub mod header_parse;
