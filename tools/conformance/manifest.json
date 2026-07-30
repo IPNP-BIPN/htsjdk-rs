@@ -290,6 +290,20 @@
       ]
     },
     {
+      "id": "vcf-genotype-likelihoods",
+      "title": "GL to PL, and the double parser under it",
+      "status": "oracle-backed",
+      "harness": "tools/vcf-conformance",
+      "why": "A genotype carrying GL and no PL gets its PL computed here and every downstream tool reads the PL, so this is the last thing between a VCF with likelihoods in it and a port that can decode it. Three layers, and each has a decision a port gets wrong by default. Double.parseDouble is not Rust's f64 parser: Java accepts a trailing type suffix, hexadecimal floating point with a mandatory p exponent, leading and trailing whitespace up to and including the space character, and the spelled-out Infinity, while Rust accepts none of those and accepts inf and nan, which Java does not. VCFUtils.parseVcfDouble then catches the failure and retries against a case-insensitive infinity-or-NaN pattern, so inf and -INFINITY and nan parse after all, but only after the plain parse has failed. And GLsToPLs is one line with three decisions: the adjustment is the maximum of the likelihoods so the conversion re-normalises and the best genotype always comes out at zero whatever the input scale; MAX_PL is Integer.MAX_VALUE and the clamp is applied to the double before the rounding; and Math.round is floor of x plus a half, so it rounds half up rather than half away from zero, answers zero for a NaN, and returns a long that is then truncated to int. Reordering any of the three agrees on every ordinary genotype. The parsed doubles travel as raw bits, because a decimal rendering of a parse result hides exactly the disagreements this suite exists to find.",
+      "compare": { "mode": "lines" },
+      "cases": [
+        {
+          "dump": "GenotypeLikelihoodsDump",
+          "golden": "crates/htsjdk-vcf/tests/data/genotype_likelihoods.txt.gz"
+        }
+      ]
+    },
+    {
       "id": "rg-checksum",
       "title": "Read-group checksum",
       "status": "oracle-backed",

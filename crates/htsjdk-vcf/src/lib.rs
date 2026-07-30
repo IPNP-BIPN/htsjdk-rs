@@ -5,6 +5,7 @@
 
 pub mod allele;
 pub mod encoder;
+pub mod genotype_likelihoods;
 pub mod genotype_parse;
 pub mod header;
 pub mod header_lines;
