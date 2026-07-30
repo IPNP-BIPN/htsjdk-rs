@@ -32,12 +32,16 @@ REPO = Path(__file__).resolve().parents[2]
 def container_command(cls, props):
     """The in-container script: compile the harness against the pinned jar, then run it.
 
-    `2>/dev/null` drops htsjdk's chatter on stderr; the dump itself goes to stdout.
+    htsjdk chatters on stderr, so a successful run's stderr is dropped. It is kept aside rather
+    than discarded outright and replayed when the run fails: an exception thrown out of a dump's
+    main used to leave nothing behind at all, which reads exactly like a dump that produced no
+    rows, and the two need different fixes.
     """
     prop_str = (" ".join(props) + " ") if props else ""
     return (
         f'cp /harness/{cls}.java . && javac -cp "$ORACLE_CP" -d . {cls}.java '
-        f'&& java {prop_str}-cp ".:$ORACLE_CP" {cls} 2>/dev/null'
+        f'&& {{ java {prop_str}-cp ".:$ORACLE_CP" {cls} 2>/tmp/dump-stderr '
+        f'|| {{ cat /tmp/dump-stderr >&2; exit 1; }}; }}'
     )
 
 
@@ -61,8 +65,9 @@ def docker_run(manifest, harness, cls, props, stdout):
         result = subprocess.run(cmd, stdout=fh, stderr=subprocess.PIPE, text=True)
     # A compile failure used to report itself as "0 rows" and nothing else, because javac's
     # diagnostics went to the container's stderr and the run only kept stdout. The dump's own
-    # chatter is already dropped inside the container by `2>/dev/null`, so anything arriving here
-    # is the harness failing to build or to start, and it is the only thing that says why.
+    # chatter is only dropped on the success path inside the container, so anything arriving here
+    # is the harness failing to build, to start or to finish, and it is the only thing that says
+    # why.
     if result.returncode != 0 and result.stderr.strip():
         print(f"--- {cls}: the container wrote to stderr:", flush=True)
         for line in result.stderr.rstrip("\n").split("\n"):
