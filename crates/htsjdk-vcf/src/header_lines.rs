@@ -26,11 +26,13 @@
 //! `IllegalArgumentException` under the other. And a `Flag` with a non-zero count is **silently
 //! rewritten to 0** rather than refused, which is a value change rather than an error.
 //!
-//! # `Source` and `Version` are version-gated
+//! # `Source` and `Version` are version-gated, and the gate is silent
 //!
-//! They are read only for VCF 4.2 and later. Under 4.0 or 4.1 they are not recommended tags either,
-//! so the tag-order validation rejects them outright: the same line is a valid 4.2 header line and
-//! an invalid 4.1 one.
+//! They are read only for VCF 4.2 and later. Under 4.1 they are not recommended tags either, so a
+//! guess would be that the tag-order check rejects them. It does not: that check only walks as far
+//! as the *expected* list, and `Source` sits past its end. So the same line parses under both
+//! versions and the 4.1 one silently **loses the tags**, which the golden shows as a rendered line
+//! two fields shorter rather than as an error.
 
 use crate::header::{Cardinality, HeaderLine, LineType};
 use crate::header_parse::{parse_structured_value, InvalidHeader, VcfVersion};
@@ -118,7 +120,8 @@ pub const UNBOUND_DESCRIPTION: &str = "Not provided in original VCF header";
 /// The JVM's helpful-NullPointerException text for the unguarded `Number` dereference. Measured
 /// from the pinned oracle rather than written from the source: the wording is the JVM's, not
 /// htsjdk's, so it is an observable of the pinned image.
-pub const NUMBER_IS_NULL: &str = "MEASURE-ME";
+pub const NUMBER_IS_NULL: &str =
+    "Cannot invoke \"String.equals(Object)\" because \"numberStr\" is null";
 
 /// `AbstractVCFCodec.parseHeaderFromLines`, for one line: which prefix decides which type.
 ///
@@ -300,20 +303,17 @@ fn type_render(line_type: LineType) -> &'static str {
 
 /// `VCFFilterHeaderLine(String line, VCFHeaderVersion version)`, whose expected tags are `ID` and
 /// `Description` and which admits no recommended tags at any version.
+///
+/// The result is a [`HeaderLine::Structured`] rather than a [`HeaderLine::Filter`], and that is a
+/// measured decision: `VCFSimpleHeaderLine` renders only the fields it was given, so
+/// `##FILTER=<ID=LowQual>` renders back without a `Description`, while the `Filter` variant always
+/// renders both. A parsed FILTER line therefore has to keep exactly what the file carried.
 fn filter(value: &str) -> Result<HeaderLine, HeaderLineError> {
     let mapping = parse_structured_value(value, Some(&["ID", "Description"]), &[])?;
-    let fields = simple_fields("FILTER", &mapping)?;
-    let id = fields
-        .iter()
-        .find(|(k, _)| k == "ID")
-        .map(|(_, v)| v.clone())
-        .expect("simple_fields refuses a line with no ID");
-    let description = fields
-        .iter()
-        .find(|(k, _)| k == "Description")
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-    Ok(HeaderLine::Filter { id, description })
+    Ok(HeaderLine::Structured {
+        key: "FILTER".to_string(),
+        fields: simple_fields("FILTER", &mapping)?,
+    })
 }
 
 /// `VCFContigHeaderLine(String line, VCFHeaderVersion version, String key, int contigIndex)`, whose
@@ -357,5 +357,10 @@ fn simple_fields(
             "VCFHeaderLine: ID cannot contain an equals sign".to_string(),
         ));
     }
-    Ok(mapping.to_vec())
+    // `toStringEncoding` does `map.put("ID", name)` and then `map.putAll(genericFields)`, so ID is
+    // rendered **first** whatever position it held in the file, and the rest keep their order. A
+    // contig written as `<length=1000,ID=chr1>` reads back as `<ID=chr1,length=1000>`.
+    let mut fields = vec![("ID".to_string(), name.clone())];
+    fields.extend(mapping.iter().filter(|(k, _)| k != "ID").cloned());
+    Ok(fields)
 }

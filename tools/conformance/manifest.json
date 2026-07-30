@@ -224,14 +224,14 @@
     {
       "id": "vcf-header-lines",
       "title": "One ## line into a typed header line",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "The scanner suite says which pairs a line carries; this says what they mean, and it is where the refusals are. Four different exception classes come out of this layer and which one a file gets is a property of the field that is wrong: Number=x throws java.lang.NumberFormatException because nothing wraps Integer.parseInt, Number=-1 throws TribbleException$InvalidHeader, Number=0 on a non-Flag type throws java.lang.IllegalArgumentException from validate(), and Type=integer throws a plain TribbleException without the malformed-header prefix. Two of those are unchecked Java exceptions that no catch in the codec touches, so a malformed Number does not report a malformed header at all, and a port that funnelled every failure into one error type would answer a different question. Three asymmetries make the same line valid or invalid depending on context rather than on the line: INFO allows Type=Flag and FORMAT does not; a Flag with a non-zero count is silently rewritten to zero rather than refused, which is a value change and not an error; and Source and Version are read only from VCF 4.2, while under 4.1 they are not recommended tags either, so the tag-order check rejects the same line the 4.2 codec accepts. The rendered line is compared rather than the fields, because the rendering is what a writer emits and it carries the quoting rule as well as the values.",
       "compare": { "mode": "lines" },
       "cases": [
         {
           "dump": "VcfHeaderLineDump",
-          "golden": null
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_header_lines.txt.gz"
         }
       ]
     },
