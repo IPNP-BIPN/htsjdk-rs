@@ -35,7 +35,15 @@ def committed_goldens():
 
 def main():
     manifest = comparator.load_manifest()
-    declared = {case["golden"] for suite in manifest["suites"] for case in suite["cases"]}
+    # A `golden-pending` case declares `golden: null` on purpose: its dump has never been produced
+    # by CI, and committing one from a developer machine is what decision 0008 is about. Naming a
+    # path the repository does not have would be a claim about a file that does not exist.
+    declared = {
+        case["golden"]
+        for suite in manifest["suites"]
+        for case in suite["cases"]
+        if case["golden"] is not None
+    }
     elsewhere = {
         entry["path"]: entry["job"] for entry in manifest.get("goldens_handled_elsewhere", [])
     }

@@ -91,7 +91,14 @@ def oracle_jobs(manifest):
     # Grouped by status, so a green run never lets an `unchecked` suite read as the stronger
     # claim, and chunked, because every job pays the oracle image restore once: one job per suite
     # would download the image forty-odd times per run for no extra information.
-    for status in ("oracle-backed", "unchecked"):
+    statuses = ("oracle-backed", "unchecked", "golden-pending")
+    # A status missing from that tuple used to drop its suites out of the matrix entirely, and the
+    # run went green without them: the first golden-pending suite declared here never ran and no
+    # step said so. An unknown status is now a generation failure rather than a silent omission.
+    unknown = sorted({s["status"] for s in suites} - set(statuses))
+    if unknown:
+        raise SystemExit(f"unknown suite status {unknown}: add it to generate_ci.py or fix it")
+    for status in statuses:
         group = [s for s in suites if s["status"] == status]
         chunks = [group[i : i + per_job] for i in range(0, len(group), per_job)]
         for n, chunk in enumerate(chunks, 1):
@@ -132,6 +139,18 @@ def oracle_jobs(manifest):
         # them. Run the same thing locally with:
         #   python3 tools/conformance/run_suite.py --suites "${{{{ matrix.suites }}}}"
         run: python3 tools/conformance/run_suite.py --suites "${{{{ matrix.suites }}}}"
+
+      - name: Publish what the container produced
+        # A `golden-pending` suite has no golden to compare against, and one may not be committed
+        # from a developer machine (decision 0008). Its dump lands in tools/conformance/pending/
+        # and is uploaded here; downloading it from this run and committing it is what turns the
+        # suite into an oracle-backed one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-goldens-${{{{ matrix.group }}}}-${{{{ strategy.job-index }}}}
+          path: tools/conformance/pending/
+          if-no-files-found: ignore
 """
     )
 
