@@ -124,13 +124,10 @@ jobs:
             suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods"
           - group: oracle-backed
             index: "5/5"
-            suites: "vcf-chromosome-counts rg-checksum cigar-clip mateinfo"
+            suites: "vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip mateinfo"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "vcf-genotype-type"
     steps:
       - uses: actions/checkout@v4
 

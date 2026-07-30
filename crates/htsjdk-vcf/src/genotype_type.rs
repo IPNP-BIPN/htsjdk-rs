@@ -44,9 +44,17 @@
 //! # The name order is `String.compareTo`
 //!
 //! `getGenotypesOrderedByName` sorts the names with `Collections.sort`, which is UTF-16 code-unit
-//! order: uppercase before lowercase, digits before letters, `"10"` before `"2"`, and a
-//! supplementary character above every character in the basic plane. It is not any locale's
-//! collation, and it is not byte order over UTF-8 either.
+//! order: uppercase before lowercase, digits before letters, and `"10"` before `"2"`. It is not any
+//! locale's collation, and it is not code-point order either. The golden settles the second half:
+//!
+//! ```text
+//! order  supplementary  a,😀,￿
+//! ```
+//!
+//! `U+1F600` is a supplementary character, so a port comparing code points (which is what Rust's
+//! `str` ordering does) puts it **above** `U+FFFF`. Java compares UTF-16 code units, and the first
+//! unit of the pair is the surrogate `0xD83D`, which is below `0xFFFF`. The two orders disagree,
+//! and the reference's is the one that reaches the file.
 
 use std::cmp::Ordering;
 
