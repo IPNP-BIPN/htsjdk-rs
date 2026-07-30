@@ -61,7 +61,50 @@ def docker_run(manifest, harness, cls, props, stdout):
         return subprocess.run(cmd, stdout=fh).returncode
 
 
+PENDING_DIR = REPO / "tools" / "conformance" / "pending"
+
+
+def run_pending(manifest, suite, workdir):
+    """A suite with no golden yet: run it, check the shape, and leave the dump for CI to publish.
+
+    The alternative was to generate the golden here and commit it. That is exactly what produced
+    the goldens of decision 0008, whose provenance turned out to be a laptop rather than the pinned
+    container, so it is refused: this prints what the reference did, asserts only what the suite
+    declares it must contain, and says plainly that nothing was compared.
+    """
+    props = suite.get("java_props", manifest.get("default_java_props", []))
+    PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    failed = 0
+    for case in suite["cases"]:
+        dump = case["dump"]
+        out = PENDING_DIR / f"{suite['id']}.{dump}.txt"
+        rc = docker_run(manifest, suite["harness"], dump, props, out)
+        rows = [line for line in open(out) if line.strip() and not line.startswith("#")]
+        print(f"--- {suite['id']}/{dump}: {len(rows)} rows, nothing compared (no golden yet)")
+        for line in rows:
+            print("   ", line.rstrip("\n")[:200])
+        expected = suite.get("expect_rows")
+        if rc != 0 or (expected is not None and len(rows) != expected):
+            print(f"FAIL {suite['id']}/{dump}: exit {rc}, {len(rows)} rows, expected {expected}")
+            failed += 1
+            continue
+        # A row count is not evidence: a dump whose every row says "cannot read file" has the
+        # right count. The behaviours the suite exists for are named, and each must appear.
+        body = "".join(rows)
+        for phrase in suite.get("expect_contains", []):
+            if phrase not in body:
+                print(f"FAIL {suite['id']}/{dump}: expected a row containing {phrase!r}")
+                failed += 1
+    print(
+        f"suite={suite['id']} status=golden-pending cases={len(suite['cases'])} failed={failed}; "
+        f"dumps in {PENDING_DIR} are the candidate goldens, valid only from a real x86-64 run"
+    )
+    return failed
+
+
 def run_suite(manifest, suite, workdir):
+    if suite["status"] == "golden-pending":
+        return run_pending(manifest, suite, workdir)
     props = suite.get("java_props", manifest.get("default_java_props", []))
     failed = 0
     reals = {}

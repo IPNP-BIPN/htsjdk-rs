@@ -132,6 +132,18 @@ def oracle_jobs(manifest):
         # them. Run the same thing locally with:
         #   python3 tools/conformance/run_suite.py --suites "${{{{ matrix.suites }}}}"
         run: python3 tools/conformance/run_suite.py --suites "${{{{ matrix.suites }}}}"
+
+      - name: Publish what the container produced
+        # A `golden-pending` suite has no golden to compare against, and one may not be committed
+        # from a developer machine (decision 0008). Its dump lands in tools/conformance/pending/
+        # and is uploaded here; downloading it from this run and committing it is what turns the
+        # suite into an oracle-backed one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-goldens-${{{{ matrix.group }}}}-${{{{ strategy.job-index }}}}
+          path: tools/conformance/pending/
+          if-no-files-found: ignore
 """
     )
 
