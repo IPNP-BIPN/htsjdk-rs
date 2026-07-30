@@ -306,14 +306,14 @@
     {
       "id": "vcf-chromosome-counts",
       "title": "AC, AF and AN",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "GATK's ChromosomeCounts annotation is two lines that delegate straight to VariantContextUtils.calculateChromosomeCounts, so this is where the three commonest INFO fields in any VCF are decided, and four of its behaviours do not follow from the field names. AC and AF change type with the number of alternate alleles, one alt giving a scalar and two or more a list, so a consumer that fetched AC gets an Integer in one case and an ArrayList in the other even though both render the same way. A genotype whose FT is set contributes nothing and so does a no-call allele, for different reasons, which means AN is not the ploidy times the sample count. AF is not AC over AN: the numerator is the founders count for that allele and the denominator the founders total called count, while the AC reported alongside is the whole cohort's, so a port computing AF from the AC it has just written agrees on every unrelated cohort and disagrees on every pedigree. And the function removes keys as well as adding them, deleting AC and AF at a site with no alternate allele and all three where nobody is called, but only when removeStaleValues is on, which the annotation hard-codes to true. AF travels as raw bits because it is a division and a decimal rendering would hide a divergence in the last place.",
       "compare": { "mode": "lines" },
       "cases": [
         {
           "dump": "ChromosomeCountsDump",
-          "golden": null
+          "golden": "crates/htsjdk-vcf/tests/data/chromosome_counts.txt.gz"
         }
       ]
     },
