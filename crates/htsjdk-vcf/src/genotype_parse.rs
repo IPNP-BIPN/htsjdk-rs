@@ -22,12 +22,13 @@
 //! A `GT` anywhere but position 0 is a refusal. A record with no `GT` at all is fine from VCF 4.1
 //! and a refusal before it, so the same file is valid or not depending on a header line.
 //!
-//! # What is not here
+//! # `GL` becomes `PL`, unless a `PL` was seen first
 //!
-//! `GL` is not converted to `PL`. That conversion runs through
-//! `GenotypeLikelihoods.fromGLField().getAsPLs()`, which is floating-point work with its own
-//! rounding, and folding it in here would mix a numeric question into a parsing one. It is its own
-//! slice, and until it lands a `GL` key is refused rather than approximated.
+//! A `GL` field is converted through `GenotypeLikelihoods.fromGLField().getAsPLs()`, which lives in
+//! [`crate::genotype_likelihoods`] because it is floating-point work with its own rounding rather
+//! than parsing. The gate on it is record-wide and not per sample: `plIsSet` is set by the first
+//! `PL` in *any* sample and suppresses the conversion in every sample after it, so a record whose
+//! first sample has a `PL` and whose second has only a `GL` leaves the second sample without one.
 
 use crate::allele::Allele;
 use crate::header::VcfHeader;
@@ -166,12 +167,18 @@ pub fn parse_genotypes(
                     pl_is_set = true;
                 }
                 "GL" => {
+                    // `plIsSet` is checked, not `genotype.pl`: a PL seen in an *earlier sample*
+                    // suppresses this sample's conversion, which is the record-wide flag doing
+                    // something a per-sample one would not.
                     if !pl_is_set {
-                        return Err(RecordError::Tribble(
-                            "GL is not converted to PL yet: GenotypeLikelihoods.fromGLField is its \
-                             own slice"
-                                .to_string(),
-                        ));
+                        genotype.pl = crate::genotype_likelihoods::gl_field_to_pls(value).map_err(
+                            |error| match error {
+                                crate::genotype_likelihoods::LikelihoodError::PartialMissing => {
+                                    RecordError::Tribble(error.message())
+                                }
+                                other => RecordError::NumberFormat(other.message()),
+                            },
+                        )?;
                     }
                 }
                 "DP" => {
