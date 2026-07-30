@@ -9,6 +9,7 @@ pub mod header;
 pub mod header_lines;
 pub mod header_parse;
 pub mod jformat;
+pub mod record_parse;
 pub mod variant;
 pub mod vcf_file;
 

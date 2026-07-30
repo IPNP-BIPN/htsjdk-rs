@@ -159,6 +159,9 @@ impl Genotype {
 pub struct VariantContext {
     pub contig: String,
     pub start: i64,
+    /// `getEnd()`. It is `start + ref.length() - 1` unless the INFO field carried `END`, which
+    /// overrides it without any check, so a decoded record can end before it starts.
+    pub stop: i64,
     pub id: String,
     /// The reference allele first, then the alternates, as htsjdk stores them. The GT indices
     /// are positions in this list.
@@ -179,6 +182,7 @@ impl VariantContext {
         Self {
             contig: contig.to_string(),
             start,
+            stop: start + alleles.first().map_or(0, |a| a.len() as i64) - 1,
             id: ".".to_string(),
             alleles,
             log10_p_error: NO_LOG10_PERROR,
