@@ -155,13 +155,27 @@ public class BedCodecDump {
             final List<FullBEDFeature.Exon> list = ((FullBEDFeature) feature).getExons();
             if (list != null) {
                 for (final FullBEDFeature.Exon exon : list) {
-                    exons.add(String.format("%d-%d#%d", exon.getStart(), exon.getEnd(),
-                            exon.getNumber()));
+                    // Exon.start and Exon.end are package-private fields with no accessor, so
+                    // reflection is the only way to observe what addExon recorded. Everything
+                    // else about the exon has a getter.
+                    exons.add(String.format("%d-%d#%d#%d-%d", intField(exon, "start"),
+                            intField(exon, "end"), exon.getNumber(), exon.getCdStart(),
+                            exon.getCdEnd()));
                 }
             }
         }
         joiner.add(exons.toString());
         return joiner.toString();
+    }
+
+    static int intField(final Object target, final String name) {
+        try {
+            final java.lang.reflect.Field field = target.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.getInt(target);
+        } catch (final ReflectiveOperationException e) {
+            throw new IllegalStateException("no field " + name + " on " + target.getClass(), e);
+        }
     }
 
     /** Tabs and spaces are the subject here, so they travel escaped. */
