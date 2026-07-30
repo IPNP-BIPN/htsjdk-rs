@@ -6,6 +6,7 @@
 pub mod allele;
 pub mod encoder;
 pub mod header;
+pub mod header_lines;
 pub mod header_parse;
 pub mod jformat;
 pub mod variant;
