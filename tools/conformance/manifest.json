@@ -262,6 +262,20 @@
       ]
     },
     {
+      "id": "vcf-record-parse",
+      "title": "Reading one VCF data line",
+      "status": "golden-pending",
+      "harness": "tools/vcf-conformance",
+      "why": "The vcf-record suite measures writing a record; this measures reading one, which is what GATK's VariantWalker needs and what nothing here has done before. Genotypes are excluded on purpose: htsjdk defers them through LazyGenotypesContext and the deferral is itself observable, so it is its own slice, and this stops at the eight site columns. Five behaviours decide what a record means and none is in the VCF specification. The splitter is not String.split: ParsingUtils.split fills a fixed-size array, steps over a delimiter at position zero instead of producing an empty first token, and condenses every trailing column into the last slot, so a line starting with a tab loses its first character and every genotype column after the first arrives joined back together in parts[8], which is why the column check compares against nine whatever the sample count. END overrides the stop and nothing validates it, so a record can end before it starts. A declared Flag written as KEY=0 is dropped from the attributes entirely rather than stored as false, and a bare key whose header type is not Flag becomes the string \".\" rather than a flag, so the header changes what a record contains. REF is upper-cased silently, so a lower-case REF is a rewrite and not an error. And an ALT of \".\" is checked and then not added, so the record carries one allele rather than two. The refusals are compared with their classes because parseQual throws a NumberFormatException that nothing catches while the neighbouring failures are TribbleExceptions carrying a line number. Attributes and filters are sorted in the dump: they live in a HashMap and a HashSet upstream, so their iteration order is not a property of the file and comparing it would compare the JDK.",
+      "compare": { "mode": "lines" },
+      "cases": [
+        {
+          "dump": "VcfRecordParseDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "rg-checksum",
       "title": "Read-group checksum",
       "status": "oracle-backed",

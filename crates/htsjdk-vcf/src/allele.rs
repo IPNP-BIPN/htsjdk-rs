@@ -109,7 +109,8 @@ pub fn would_be_symbolic(bases: &[u8]) -> bool {
     }
 }
 
-fn acceptable_bases(bases: &[u8], is_reference: bool) -> bool {
+/// `Allele.acceptableAlleleBases`, which the record decoder needs as well as `create`.
+pub fn acceptable_bases(bases: &[u8], is_reference: bool) -> bool {
     if would_be_null(bases) {
         return false;
     }
