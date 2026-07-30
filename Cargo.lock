@@ -122,6 +122,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "htsjdk-tribble"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "htsjdk-vcf"
 version = "0.1.0"
 dependencies = [
