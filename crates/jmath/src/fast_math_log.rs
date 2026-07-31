@@ -113,14 +113,12 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
         // runs instead. Note the guard: a caller wanting high precision does not take this path.
         let mut xa = x - 1.0;
         // The reference computes `xb = xa - x + 1.0` here and overwrites it three lines later
-        // with `ab`. Kept as the overwrite it is rather than as a value, since the intermediate
-        // is dead in the reference too.
-        let xb;
+        // with `ab`, so the first value is dead in the reference too and is not reproduced.
         let mut tmp = xa * HEX_40000000;
         let mut aa = xa + tmp - tmp;
         let mut ab = xa - aa;
         xa = aa;
-        xb = ab;
+        let mut xb = ab;
 
         let last = LN_QUICK_COEF[LN_QUICK_COEF.len() - 1];
         let mut ya = last[0];
