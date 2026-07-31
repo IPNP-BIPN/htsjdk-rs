@@ -130,7 +130,7 @@ jobs:
             suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
           - group: oracle-backed
             index: "7/7"
-            suites: "gamma-erf-normal"
+            suites: "gamma-erf-normal saddle-point"
           - group: unchecked
             index: "1/1"
             suites: "format"
