@@ -112,22 +112,22 @@ jobs:
         include:
           - group: oracle-backed
             index: "1/6"
-            suites: "tribble-bed bgzf bgzf-termination bam-codec bam-file"
+            suites: "tribble-bed tribble-interval-list bgzf bgzf-termination bam-codec"
           - group: oracle-backed
             index: "2/6"
-            suites: "bam-reheader bam-gather histogram sam-text sam-file"
+            suites: "bam-file bam-reheader bam-gather histogram sam-text"
           - group: oracle-backed
             index: "3/6"
-            suites: "bai build-index interval-list vcf-header vcf-header-parse"
+            suites: "sam-file bai build-index interval-list vcf-header"
           - group: oracle-backed
             index: "4/6"
-            suites: "vcf-header-lines vcf-record vcf-file vcf-record-parse vcf-genotype-parse"
+            suites: "vcf-header-parse vcf-header-lines vcf-record vcf-file vcf-record-parse"
           - group: oracle-backed
             index: "5/6"
-            suites: "vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip"
+            suites: "vcf-genotype-parse vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type rg-checksum"
           - group: oracle-backed
             index: "6/6"
-            suites: "mateinfo"
+            suites: "cigar-clip mateinfo"
           - group: unchecked
             index: "1/1"
             suites: "format"

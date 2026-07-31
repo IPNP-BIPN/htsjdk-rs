@@ -6,5 +6,8 @@ license.workspace = true
 repository.workspace = true
 description = "Port of htsjdk's Tribble feature codecs"
 
+[dependencies]
+htsjdk-bam = { path = "../htsjdk-bam" }
+
 [dev-dependencies]
 flate2.workspace = true
