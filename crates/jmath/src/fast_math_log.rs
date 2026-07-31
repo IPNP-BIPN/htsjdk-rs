@@ -164,7 +164,7 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
         let mut aa = epsilon + tmp - tmp;
         let ab = epsilon - aa;
         let xa = aa;
-        let xb = ab;
+        let mut xb = ab;
 
         // The division is redone at higher precision, which is why this branch is not just the
         // other one with extra bookkeeping.
