@@ -12,3 +12,4 @@ flate2.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }

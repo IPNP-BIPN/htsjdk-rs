@@ -57,7 +57,7 @@
     {
       "id": "tribble-vcf-candecode",
       "title": "VCFCodec.canDecode, the codec that opens the file",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/tribble-conformance",
       "why": "VCFCodec is the third codec GATK's -L reaches and the only one that decides by content rather than by path. BEDCodec and IntervalListCodec answer canDecode on the extension, so a .list holding a BED body is not a Feature file and dies in the interval reader; a .list holding a VCF body is one, because this codec reads the first eighteen bytes and finds the magic. Two files with the same extension and different contents therefore take different branches of -L, and only this codec makes that true. It tries plain, then GZIPInputStream, then BlockCompressedInputStream, and since a BGZF file is a gzip file the second attempt already answers for the third. The read's return value is computed and never used, so a file shorter than the magic leaves zero bytes in the tail of the buffer and answers false rather than throwing, and an absent path answers false through a caught IOException. The magic carries no minor version, so 4.0 through 4.3 all match and 3.3 does not; VCF3Codec carries the other magic and GATK registers both.",
       "compare": {
@@ -66,7 +66,7 @@
       "cases": [
         {
           "dump": "VcfCanDecodeDump",
-          "golden": null
+          "golden": "crates/htsjdk-tribble/tests/data/vcf_candecode.txt.gz"
         }
       ]
     },

@@ -112,28 +112,25 @@ jobs:
         include:
           - group: oracle-backed
             index: "1/6"
-            suites: "tribble-bed tribble-interval-list bgzf bgzf-termination bam-codec"
+            suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
             index: "2/6"
-            suites: "bam-file bam-reheader bam-gather histogram sam-text"
+            suites: "bam-codec bam-file bam-reheader bam-gather histogram"
           - group: oracle-backed
             index: "3/6"
-            suites: "sam-file bai build-index interval-list vcf-header"
+            suites: "sam-text sam-file bai build-index interval-list"
           - group: oracle-backed
             index: "4/6"
-            suites: "vcf-header-parse vcf-header-lines vcf-record vcf-file vcf-record-parse"
+            suites: "vcf-header vcf-header-parse vcf-header-lines vcf-record vcf-file"
           - group: oracle-backed
             index: "5/6"
-            suites: "vcf-genotype-parse vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type rg-checksum"
+            suites: "vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
             index: "6/6"
-            suites: "cigar-clip mateinfo percentile"
+            suites: "rg-checksum cigar-clip mateinfo percentile"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "tribble-vcf-candecode"
     steps:
       - uses: actions/checkout@v4
 
