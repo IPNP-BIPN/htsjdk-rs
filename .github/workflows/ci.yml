@@ -127,7 +127,7 @@ jobs:
             suites: "vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
             index: "6/6"
-            suites: "rg-checksum cigar-clip mateinfo percentile"
+            suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
           - group: unchecked
             index: "1/1"
             suites: "format"
