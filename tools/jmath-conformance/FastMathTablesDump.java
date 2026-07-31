@@ -18,6 +18,9 @@
  * And exp() itself, on the boundaries the algorithm's own branches name: -746 (underflow), -709
  * (the two shifted recursive cases), 709 and 710 (overflow), plus the subnormal range.
  *
+ * The logarithm's own table, LN_MANT, is here too: 1024 entries of two doubles each, over the
+ * mantissa range, in both the shipped and the recomputed form.
+ *
  * Output:
  *
  *     table\t<name>\t<index>\t<raw long bits>
@@ -48,6 +51,7 @@ public class FastMathTablesDump {
         // RECOMPUTE_TABLES_AT_RUNTIME. Whether the two branches agree is a claim nothing in the
         // reference checks, and the port takes the computing one, so it is measured here.
         emitRecomputed();
+        emitLnMant();
 
         // The branch boundaries, named by the algorithm itself.
         for (final double x : new double[] {
@@ -119,6 +123,54 @@ public class FastMathTablesDump {
         for (int i = 0; i < values.length; i++) {
             System.out.printf("table\t%s\t%d\t%d%n", name, i, Double.doubleToRawLongBits(values[i]));
         }
+    }
+
+    /** LN_MANT, shipped and recomputed. It is a double[1024][2], so both halves are emitted. */
+    static void emitLnMant() throws Exception {
+        final Class<?> owner = Class.forName("org.apache.commons.math3.util.FastMath$lnMant");
+        final Field declared = owner.getDeclaredField("LN_MANT");
+        declared.setAccessible(true);
+        final double[][] shipped = (double[][]) declared.get(null);
+        for (int i = 0; i < shipped.length; i++) {
+            System.out.printf("table\tLN_MANT_A\t%d\t%d%n", i,
+                    Double.doubleToRawLongBits(shipped[i][0]));
+            System.out.printf("table\tLN_MANT_B\t%d\t%d%n", i,
+                    Double.doubleToRawLongBits(shipped[i][1]));
+        }
+
+        final Class<?> calc = Class.forName("org.apache.commons.math3.util.FastMathCalc");
+        final java.lang.reflect.Method slowLog = calc.getDeclaredMethod("slowLog", double.class);
+        slowLog.setAccessible(true);
+        for (int i = 0; i < shipped.length; i++) {
+            final double d = Double.longBitsToDouble((((long) i) << 42) | 0x3ff0000000000000L);
+            final double[] value = (double[]) slowLog.invoke(null, d);
+            System.out.printf("table\tRECOMPUTED_LN_MANT_A\t%d\t%d%n", i,
+                    Double.doubleToRawLongBits(value[0]));
+            System.out.printf("table\tRECOMPUTED_LN_MANT_B\t%d\t%d%n", i,
+                    Double.doubleToRawLongBits(value[1]));
+        }
+
+        // log() on the boundaries its own branches name: the [0.99, 1.01] quick path, the
+        // subnormal renormalisation, and the specials.
+        for (final double x : new double[] {
+                0.0, -0.0, 1.0, -1.0, 2.0, 0.5, Math.E, 10.0,
+                0.99, 0.990001, 1.0, 1.01, 1.009999, 0.995, 1.005,
+                1.0 + Math.pow(2, -10), 1.0 - Math.pow(2, -10),
+                Double.MIN_VALUE, Double.MIN_NORMAL, Double.MIN_NORMAL / 2, 4.9e-324,
+                Double.MAX_VALUE, Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY,
+                1e-300, 1e300, 1e-10, 123456.789,
+        }) {
+            emitLog(x);
+        }
+        for (int i = 0; i < 1024; i += 37) {
+            emitLog(Double.longBitsToDouble((((long) i) << 42) | 0x3ff0000000000000L));
+            emitLog(Double.longBitsToDouble((((long) i) << 42) | 0x4000000000000000L));
+        }
+    }
+
+    static void emitLog(final double x) {
+        System.out.printf("log\t%d\t%d%n", Double.doubleToRawLongBits(x),
+                Double.doubleToRawLongBits(FastMath.log(x)));
     }
 
     static void emitExp(final double x) {
