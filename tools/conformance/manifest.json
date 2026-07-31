@@ -470,6 +470,22 @@
           "golden": "crates/htsjdk-metrics/tests/data/format.txt.gz"
         }
       ]
+    },
+    {
+      "id": "percentile",
+      "title": "Percentile, Median and FastMath.round",
+      "status": "oracle-backed",
+      "harness": "tools/jmath-conformance",
+      "why": "MathUtils.median in GATK goes through commons-math3 Percentile, which is Apache 2.0 and therefore transcribable where the JDK's own math is not (decision 0023). Four things here are not what the median suggests. The estimator interpolates, and its arithmetic is lower + dif * (upper - lower) rather than the mean of the two central values, which is a different double when they are far apart. The default NaN strategy is REMOVED, so a NaN shortens the array instead of ranking to an end, and an array of nothing but NaN answers NaN by way of an empty array. A single value is returned before the NaN strategy runs at all, so one NaN and two NaNs reach the same answer down different paths. And MathUtils.median finishes with FastMath.round, which is (long) floor(x + 0.5): the definition java.lang.Math.round stopped using in Java 7, so the two are one apart on 0.49999999999999994 and a port that reused the Math.round already in this crate would be wrong there. The jar is pinned to 3.5 because GATK's build.gradle declares strictly 3.5; the jmath corpus job downloads 3.6.1 for its FastMath columns, and that disagreement between two pins in this repository is open. Sixteen of its 312 percentile rows are an invalid operation's NaN, produced by the interpolation over infinities; x86-64 sets the sign bit and AArch64 does not, so the test exempts a NaN-sign-only difference off x86-64 and counts it, and asserts zero exemptions on the oracle's own architecture. That is decision 0012 reached by a second route.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "PercentileDump",
+          "golden": "crates/jmath/tests/data/percentile.txt.gz"
+        }
+      ]
     }
   ],
   "probes": [

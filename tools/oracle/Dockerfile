@@ -36,9 +36,15 @@ RUN set -eux; \
     fetch $M/commons-io/commons-io/2.16.1/commons-io-2.16.1.jar \
           commons-io.jar f41f7baacd716896447ace9758621f62c1c6b0a91d89acee488da26fc477c84f; \
     fetch $M/org/apache/commons/commons-jexl/2.1.1/commons-jexl-2.1.1.jar \
-          commons-jexl.jar 03c9a9fae5da78ce52c0bf24467cc37355b7e23196dff4839e2c0ff018a01306
+          commons-jexl.jar 03c9a9fae5da78ce52c0bf24467cc37355b7e23196dff4839e2c0ff018a01306; \
+    fetch $M/org/apache/commons/commons-math3/3.5/commons-math3-3.5.jar \
+          commons-math3.jar dcf9768726b82e8d7b8a928447b08bca7cfe2773d5120a63a41ec224207c1a29
 
-ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/jars/commons-jexl.jar:/opt/oracle/classes
+# commons-math3 is pinned to 3.5, not to the 3.6.1 the jmath corpus job downloads for its
+# FastMath columns. 3.5 is what GATK pins (`strictly '3.5'` in its build.gradle), so it is the
+# version whose numbers reach a golden downstream. The two pins disagreeing is a real gap and is
+# recorded in the manifest rather than papered over.
+ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/jars/commons-jexl.jar:/opt/oracle/jars/commons-math3.jar:/opt/oracle/classes
 
 WORKDIR /opt/oracle
 COPY OracleProbe.java .
