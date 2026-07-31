@@ -22,6 +22,7 @@
 
 pub mod dd;
 pub mod fast_math_exp;
+pub mod fast_math_tables;
 mod log;
 pub mod percentile;
 
@@ -126,6 +127,11 @@ pub mod fast_math {
     /// ships, which is what makes "computed rather than transcribed" a measured claim.
     pub fn exp_tables() -> &'static crate::fast_math_exp::Tables {
         crate::fast_math_exp::tables()
+    }
+
+    /// The tables the reference's *other* branch would compute, which differ. See decision 0024.
+    pub fn recomputed_exp_tables() -> &'static crate::fast_math_exp::Tables {
+        crate::fast_math_exp::recomputed_tables()
     }
 
     /// `FastMath.exp`, table-driven and pure Java, which is **not** `java.lang.Math.exp`.

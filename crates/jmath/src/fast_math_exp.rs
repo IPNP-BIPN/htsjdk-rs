@@ -8,19 +8,22 @@
 //! Two exponentials, two licences, two different answers on the same input: a call site that
 //! names `FastMath` must reach this one.
 //!
-//! # The tables are computed, not transcribed
+//! # The reference has two sources for its tables and they do not agree
 //!
 //! ```java
 //! private static final boolean RECOMPUTE_TABLES_AT_RUNTIME = false;
 //! ...
-//! EXP_INT_TABLE_A = FastMathLiteralArrays.loadExpIntA();
+//! EXP_INT_TABLE_A = FastMathLiteralArrays.loadExpIntA();     // 6,175 lines of literals
 //! ```
 //!
-//! The reference ships 6,175 lines of literal doubles and can regenerate them with `FastMathCalc`
-//! instead; the flag choosing between the two is a constant. This port takes the **computing**
-//! branch, because 3,550 transcribed literals are 3,550 chances to typo one and no reader would
-//! catch it. That makes the two branches' agreement a claim rather than an assumption, so the
-//! golden carries every table entry and the test compares all of them.
+//! The port was written on the computing branch, to avoid transcribing 3,550 literals by hand,
+//! and the oracle was asked whether the two branches agree. **They do not: 577 of 5,050 entries
+//! differ**, all in the integer table, which is the reciprocal path. See
+//! `docs/decisions/0024-fastmaths-two-table-branches-do-not-agree.md`.
+//!
+//! So the port carries the **literals**, in [`crate::fast_math_tables`], generated from the
+//! oracle's own arrays rather than typed in, and keeps [`recomputed_tables`] beside them so the
+//! disagreement stays measured rather than becoming a story about it.
 //!
 //! # `FastMathCalc` is double-double arithmetic with its own conventions
 //!
@@ -245,7 +248,7 @@ fn exp_int(mut p: i32, result: &mut [f64; 2]) {
     resplit(result);
 }
 
-/// The four tables, computed once, exactly as `RECOMPUTE_TABLES_AT_RUNTIME` computes them.
+/// The four tables, however they were obtained.
 pub struct Tables {
     pub exp_int_a: Vec<f64>,
     pub exp_int_b: Vec<f64>,
@@ -254,9 +257,27 @@ pub struct Tables {
 }
 
 static TABLES: OnceLock<Tables> = OnceLock::new();
+static RECOMPUTED: OnceLock<Tables> = OnceLock::new();
 
+/// The tables `FastMath` actually uses: the shipped literals.
 pub fn tables() -> &'static Tables {
     TABLES.get_or_init(|| {
+        let widen = |bits: &[u64]| bits.iter().map(|b| f64::from_bits(*b)).collect();
+        Tables {
+            exp_int_a: widen(&crate::fast_math_tables::EXP_INT_A),
+            exp_int_b: widen(&crate::fast_math_tables::EXP_INT_B),
+            exp_frac_a: widen(&crate::fast_math_tables::EXP_FRAC_A),
+            exp_frac_b: widen(&crate::fast_math_tables::EXP_FRAC_B),
+        }
+    })
+}
+
+/// The tables `RECOMPUTE_TABLES_AT_RUNTIME` would produce, which are not the same tables.
+///
+/// Kept so the disagreement is exercised rather than described: the suite asserts the exact
+/// number of entries on which the reference's two branches differ.
+pub fn recomputed_tables() -> &'static Tables {
+    RECOMPUTED.get_or_init(|| {
         let mut exp_int_a = vec![0.0; EXP_INT_TABLE_LEN];
         let mut exp_int_b = vec![0.0; EXP_INT_TABLE_LEN];
         let mut tmp = [0.0f64; 2];

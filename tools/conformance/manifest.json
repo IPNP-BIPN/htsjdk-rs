@@ -506,16 +506,16 @@
     {
       "id": "fastmath-exp",
       "title": "FastMath.exp and its tables",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/jmath-conformance",
-      "why": "FastMath.exp is not java.lang.Math.exp. It is table-driven, pure Java and Apache 2.0, so unlike the HotSpot intrinsic withdrawn in decision 0014 it can be ported, and everything in commons-math3 that needs an exponential goes through it: Gamma, Erf, NormalDistribution, and therefore GATK's MannWhitneyU and every rank-sum annotation. The reference ships 6,175 lines of literal doubles for the four exponential tables and can also regenerate them with FastMathCalc, the choice being a compile-time constant set to the literals; the port takes the computing branch, because 3,550 transcribed literals are 3,550 chances to typo one that no reader would catch. Every table entry therefore travels in this golden as raw bits, which turns the two branches' agreement into a measurement. The function itself is measured on the boundaries its own branches name: below -746 it underflows to zero, below -709 and at -709 it recurses on a shifted argument and divides by a magic constant so a subnormal result keeps its precision, and above 709 it overflows.",
+      "why": "FastMath.exp is not java.lang.Math.exp. It is table-driven, pure Java and Apache 2.0, so unlike the HotSpot intrinsic withdrawn in decision 0014 it can be ported, and everything in commons-math3 that needs an exponential goes through it: Gamma, Erf, NormalDistribution, and therefore GATK's MannWhitneyU and every rank-sum annotation. The reference ships 6,175 lines of literal doubles for the four exponential tables and can also regenerate them with FastMathCalc, the choice being a compile-time constant set to the literals; the port was written on the computing branch and the oracle was asked whether the two branches agree. They do not: 577 of the 5,050 entries differ, all of them in the integer table, which is the only one built through splitReciprocal. That is decision 0024, and it means the port must carry the literals, since the literals are the branch that runs upstream. The golden carries both columns, read out of the same JVM, so the disagreement stays measured; 160 of the recomputed entries are an invalid operation's NaN, whose sign is the FPU's, which is decision 0012 arriving by a third route. The function itself is measured on the boundaries its own branches name: below -746 it underflows to zero, below -709 and at -709 it recurses on a shifted argument and divides by a magic constant so a subnormal result keeps its precision, and above 709 it overflows.",
       "compare": {
         "mode": "lines"
       },
       "cases": [
         {
           "dump": "FastMathTablesDump",
-          "golden": null
+          "golden": "crates/jmath/tests/data/fastmath_exp.txt.gz"
         }
       ]
     }

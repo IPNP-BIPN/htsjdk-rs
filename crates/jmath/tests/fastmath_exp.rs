@@ -3,12 +3,11 @@
 //! Golden from `tools/jmath-conformance/FastMathTablesDump.java`, against the pinned
 //! commons-math3 **3.5**, whose tables are read out of the JVM by reflection.
 //!
-//! Two claims, and the first is what makes the second checkable:
+//! Three claims:
 //!
-//! - every one of the 3,550 table entries the port **computes** with `FastMathCalc` equals the
-//!   literal the reference **ships**. The reference can do either and picks the literals with a
-//!   compile-time constant; the port picks the computation, so this is where the two branches are
-//!   shown to agree;
+//! - every one of the 5,050 table entries the port carries equals the literal the reference ships;
+//! - the reference's **other** branch, `RECOMPUTE_TABLES_AT_RUNTIME`, produces different tables:
+//!   577 entries differ, which is decision 0024 and the reason the port carries literals;
 //! - `exp` itself is bit-identical on the boundaries its own branches name, including the two
 //!   shifted recursions that keep a subnormal result precise.
 //!
@@ -29,12 +28,24 @@ fn golden() -> String {
     text
 }
 
+/// The recomputed entries whose value is an invalid operation's NaN.
+///
+/// The reciprocal path divides by an overflowed exponential, so the far end of the integer table
+/// is `inf / inf` and its NaN carries whichever sign the FPU chose. 160 entries off x86-64, none
+/// on it.
+const EXPECTED_NAN_SIGN_EXEMPTIONS: usize = 160;
+
+/// Decision 0012: the two differ in the sign bit of a NaN and in nothing else.
+fn is_nan_sign_only(a: f64, b: f64) -> bool {
+    a.is_nan() && b.is_nan() && (a.to_bits() ^ b.to_bits()) == 1 << 63
+}
+
 fn from_bits(field: &str) -> f64 {
     f64::from_bits(field.parse::<i64>().expect("raw bits") as u64)
 }
 
 #[test]
-fn every_table_entry_the_port_computes_equals_the_literal_the_reference_ships() {
+fn every_table_entry_equals_the_literal_the_reference_ships() {
     let text = golden();
     let tables = jmath::fast_math::exp_tables();
     let mut count = 0;
@@ -46,6 +57,9 @@ fn every_table_entry_the_port_computes_equals_the_literal_the_reference_ships() 
         let name = fields.next().expect("a table name");
         let index: usize = fields.next().expect("an index").parse().expect("a number");
         let expected = from_bits(fields.next().expect("the value"));
+        if name.starts_with("RECOMPUTED_") {
+            continue;
+        }
         let ours = match name {
             "EXP_INT_TABLE_A" => tables.exp_int_a[index],
             "EXP_INT_TABLE_B" => tables.exp_int_b[index],
@@ -56,12 +70,100 @@ fn every_table_entry_the_port_computes_equals_the_literal_the_reference_ships() 
         assert_eq!(
             ours.to_bits(),
             expected.to_bits(),
-            "{name}[{index}]: computed {ours:e}, reference {expected:e}"
+            "{name}[{index}]: ours {ours:e}, reference {expected:e}"
         );
         count += 1;
     }
-    assert_eq!(count, 3550, "the golden should carry every table entry");
-    println!("{count} table entries identical, all computed rather than transcribed");
+    assert_eq!(count, 5050, "the golden should carry every table entry");
+    println!("{count} table entries identical to the shipped literals");
+}
+
+/// Decision 0024: the reference's two ways of obtaining the same tables disagree.
+///
+/// The count is asserted exactly, in both directions. If a future commons-math3 made the branches
+/// agree, this fails and the decision can be retired; if the port's `FastMathCalc` transcription
+/// drifted, it fails too, and the golden says which entries moved.
+#[test]
+fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
+    let text = golden();
+    let ours = jmath::fast_math::recomputed_exp_tables();
+    let mut compared = 0;
+    let mut differ_from_literals = 0;
+    let mut nan_sign_exemptions = 0;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("table\t") else {
+            continue;
+        };
+        let mut fields = rest.split('\t');
+        let name = fields.next().expect("a table name");
+        let Some(bare) = name.strip_prefix("RECOMPUTED_") else {
+            continue;
+        };
+        let index: usize = fields.next().expect("an index").parse().expect("a number");
+        let expected = from_bits(fields.next().expect("the value"));
+        let (recomputed, literal) = match bare {
+            "EXP_INT_TABLE_A" => (
+                ours.exp_int_a[index],
+                f64::from_bits(jmath::fast_math_tables::EXP_INT_A[index]),
+            ),
+            "EXP_INT_TABLE_B" => (
+                ours.exp_int_b[index],
+                f64::from_bits(jmath::fast_math_tables::EXP_INT_B[index]),
+            ),
+            "EXP_FRAC_TABLE_A" => (
+                ours.exp_frac_a[index],
+                f64::from_bits(jmath::fast_math_tables::EXP_FRAC_A[index]),
+            ),
+            "EXP_FRAC_TABLE_B" => (
+                ours.exp_frac_b[index],
+                f64::from_bits(jmath::fast_math_tables::EXP_FRAC_B[index]),
+            ),
+            other => panic!("unknown table {other}"),
+        };
+        // The port's recomputation matches the reference's recomputation, entry for entry, up to
+        // the sign of a NaN. Overflowing entries divide infinity by infinity, and which NaN that
+        // produces is the FPU's choice: decision 0012, reached here by a third route.
+        if recomputed.to_bits() != expected.to_bits() {
+            if is_nan_sign_only(recomputed, expected) && !cfg!(target_arch = "x86_64") {
+                nan_sign_exemptions += 1;
+            } else {
+                panic!(
+                    "recomputed {bare}[{index}]: ours {:016x}, reference {:016x}",
+                    recomputed.to_bits(),
+                    expected.to_bits()
+                );
+            }
+        }
+        // Counted against the reference's own recomputed column, so the count is the reference's
+        // disagreement with itself rather than this architecture's NaN signs.
+        if expected.to_bits() != literal.to_bits() {
+            differ_from_literals += 1;
+        }
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 5050,
+        "the golden should carry both columns in full"
+    );
+    assert_eq!(
+        differ_from_literals, 577,
+        "the number of entries on which the reference's two branches disagree changed"
+    );
+    if cfg!(target_arch = "x86_64") {
+        assert_eq!(
+            nan_sign_exemptions, 0,
+            "on x86-64 there is nothing to exempt; the FPU produces the same NaN as the oracle"
+        );
+    } else {
+        assert_eq!(
+            nan_sign_exemptions, EXPECTED_NAN_SIGN_EXEMPTIONS,
+            "the NaN-sign exemption count changed; see decision 0012"
+        );
+    }
+    println!(
+        "{differ_from_literals} of {compared} entries differ between the two branches, \
+         {nan_sign_exemptions} NaN-sign exemptions"
+    );
 }
 
 #[test]
@@ -111,7 +213,8 @@ fn the_corpus_agrees_with_the_port_on_every_exponential() {
     }
     assert!(total > 40_000, "the corpus lost its exp rows: {total}");
     assert_eq!(
-        matched, total,
+        matched,
+        total,
         "FastMath.exp diverges on {} of {total} corpus points",
         total - matched
     );
