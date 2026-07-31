@@ -21,6 +21,7 @@
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
 pub mod dd;
+mod fast_math_exp;
 mod log;
 pub mod percentile;
 
@@ -117,6 +118,12 @@ pub mod fast_math {
     #[inline]
     pub fn sqrt(x: f64) -> f64 {
         x.sqrt()
+    }
+
+    /// `FastMath.exp`, table-driven and pure Java, which is **not** `java.lang.Math.exp`.
+    #[inline]
+    pub fn exp(x: f64) -> f64 {
+        crate::fast_math_exp::exp(x)
     }
 
     /// `FastMath.round(double)`, which is literally `(long) floor(x + 0.5)`.

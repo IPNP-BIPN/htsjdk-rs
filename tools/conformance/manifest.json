@@ -502,6 +502,22 @@
           "golden": "crates/jmath/tests/data/percentile.txt.gz"
         }
       ]
+    },
+    {
+      "id": "fastmath-exp",
+      "title": "FastMath.exp and its tables",
+      "status": "golden-pending",
+      "harness": "tools/jmath-conformance",
+      "why": "FastMath.exp is not java.lang.Math.exp. It is table-driven, pure Java and Apache 2.0, so unlike the HotSpot intrinsic withdrawn in decision 0014 it can be ported, and everything in commons-math3 that needs an exponential goes through it: Gamma, Erf, NormalDistribution, and therefore GATK's MannWhitneyU and every rank-sum annotation. The reference ships 6,175 lines of literal doubles for the four exponential tables and can also regenerate them with FastMathCalc, the choice being a compile-time constant set to the literals; the port takes the computing branch, because 3,550 transcribed literals are 3,550 chances to typo one that no reader would catch. Every table entry therefore travels in this golden as raw bits, which turns the two branches' agreement into a measurement. The function itself is measured on the boundaries its own branches name: below -746 it underflows to zero, below -709 and at -709 it recurses on a shifted argument and divides by a magic constant so a subnormal result keeps its precision, and above 709 it overflows.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "FastMathTablesDump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [
