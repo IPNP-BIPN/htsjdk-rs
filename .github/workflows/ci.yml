@@ -134,6 +134,9 @@ jobs:
           - group: unchecked
             index: "1/1"
             suites: "format"
+          - group: golden-pending
+            index: "1/1"
+            suites: "saddle-point"
     steps:
       - uses: actions/checkout@v4
 

@@ -535,6 +535,22 @@
           "why": "From the pinned container on a real x86-64 runner. 1,226 answers, 34 of them refusals, and the golden corrected the port on one: inverseCumulativeProbability guards with p < 0 || p > 1, both of which are false for NaN, so a NaN probability is not out of range to the reference and flows through to come back as NaN. The port had used a range check, which refuses it. Three rows are an invalid operation's NaN whose sign is the FPU's, exempted off x86-64 and counted, which is decision 0012."
         }
       ]
+    },
+    {
+      "id": "saddle-point",
+      "title": "The saddle-point expansion and the hypergeometric log probability",
+      "status": "golden-pending",
+      "harness": "tools/jmath-conformance",
+      "why": "GATK's FisherExactTest builds a HypergeometricDistribution and asks it for the log probability of every point of the support, so this is the arithmetic under FS, the Fisher-strand annotation. getStirlingError has three algorithms: below fifteen and on a half-integer it reads a table of literals, below fifteen and off a half-integer it goes through logGamma, and at fifteen and above it is a five-term asymptotic series, with the boundaries as exact comparisons on a double. The table's last entry is dead code, because the guard is z below fifteen and fifteen itself takes the series; the two disagree in the thirteenth digit, which is the size of the discontinuity the table exists to avoid. getDeviancePart iterates until an addition stops moving the double, so it terminates on the rounding rather than on a tolerance. And logBinomialProbability has four branches at the ends of its range, chosen by comparing p or q against a tenth, of which only the middle one uses the Stirling error.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "SaddlePointDump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [

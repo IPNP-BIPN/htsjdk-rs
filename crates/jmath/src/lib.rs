@@ -28,6 +28,7 @@ pub mod gamma;
 mod log;
 pub mod normal;
 pub mod percentile;
+pub mod saddle_point;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
