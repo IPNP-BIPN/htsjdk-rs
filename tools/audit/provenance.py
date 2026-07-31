@@ -22,6 +22,10 @@ ALLOWED = {
     "htsjdk": "htsjdk, MIT",
     "picard": "Picard, MIT",
     "org.broadinstitute.hellbender": "GATK, Apache 2.0",
+    # Apache 2.0 permits redistribution under other terms provided the notice is kept, which is
+    # what makes commons-math3 portable where the JDK is not. See decision 0023.
+    "org.apache.commons.math3": "commons-math3, Apache 2.0",
+    "commons-math3": "commons-math3, Apache 2.0",
 }
 
 # Anything matching these is GPL2 and must not be transcribed. Listed explicitly rather than

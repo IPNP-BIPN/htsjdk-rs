@@ -22,6 +22,7 @@
 
 pub mod dd;
 mod log;
+pub mod percentile;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
@@ -116,5 +117,28 @@ pub mod fast_math {
     #[inline]
     pub fn sqrt(x: f64) -> f64 {
         x.sqrt()
+    }
+
+    /// `FastMath.round(double)`, which is literally `(long) floor(x + 0.5)`.
+    ///
+    /// That is the definition [`crate::math::round`] **stopped** using in Java 7, and the two are
+    /// still one apart on `0.49999999999999994`. Both live in this crate because both are reached
+    /// from ported code: `MathUtils.median` ends in this one, `htsjdk` ends in the other.
+    ///
+    /// The cast is Java's `(long)` narrowing, which clamps rather than wrapping and answers 0 for
+    /// `NaN`.
+    #[inline]
+    pub fn round(x: f64) -> i64 {
+        let shifted = (x + 0.5).floor();
+        if shifted.is_nan() {
+            return 0;
+        }
+        if shifted >= i64::MAX as f64 {
+            return i64::MAX;
+        }
+        if shifted <= i64::MIN as f64 {
+            return i64::MIN;
+        }
+        shifted as i64
     }
 }
