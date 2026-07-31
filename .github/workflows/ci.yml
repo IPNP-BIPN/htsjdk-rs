@@ -111,23 +111,26 @@ jobs:
       matrix:
         include:
           - group: oracle-backed
-            index: "1/6"
+            index: "1/7"
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
-            index: "2/6"
+            index: "2/7"
             suites: "bam-codec bam-file bam-reheader bam-gather histogram"
           - group: oracle-backed
-            index: "3/6"
+            index: "3/7"
             suites: "sam-text sam-file bai build-index interval-list"
           - group: oracle-backed
-            index: "4/6"
+            index: "4/7"
             suites: "vcf-header vcf-header-parse vcf-header-lines vcf-record vcf-file"
           - group: oracle-backed
-            index: "5/6"
+            index: "5/7"
             suites: "vcf-record-parse vcf-genotype-parse vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
-            index: "6/6"
+            index: "6/7"
             suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
+          - group: oracle-backed
+            index: "7/7"
+            suites: "gamma-erf-normal"
           - group: unchecked
             index: "1/1"
             suites: "format"

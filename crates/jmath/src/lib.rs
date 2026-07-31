@@ -24,7 +24,9 @@ pub mod dd;
 pub mod fast_math_exp;
 pub mod fast_math_log;
 pub mod fast_math_tables;
+pub mod gamma;
 mod log;
+pub mod normal;
 pub mod percentile;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
@@ -145,6 +147,12 @@ pub mod fast_math {
     #[inline]
     pub fn log(x: f64) -> f64 {
         crate::fast_math_log::log(x)
+    }
+
+    /// `FastMath.log1p`, which is `log(1 + x)` computed two ways around |x| = 1e-6.
+    #[inline]
+    pub fn log1p(x: f64) -> f64 {
+        crate::fast_math_log::log1p(x)
     }
 
     /// `FastMath.round(double)`, which is literally `(long) floor(x + 0.5)`.

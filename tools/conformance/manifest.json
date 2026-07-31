@@ -518,6 +518,23 @@
           "golden": "crates/jmath/tests/data/fastmath_exp.txt.gz"
         }
       ]
+    },
+    {
+      "id": "gamma-erf-normal",
+      "title": "Gamma, Erf and the normal distribution",
+      "status": "oracle-backed",
+      "harness": "tools/jmath-conformance",
+      "why": "Erf is the whole of NormalDistribution.cumulativeProbability, which is the whole of the normal approximation in GATK's MannWhitneyU, which is what every rank-sum annotation reports, so these three files decide the last digit of MQRankSum. Four of their decisions are not what the names suggest. erf is not a polynomial approximation but an incomplete gamma function evaluated by series or continued fraction, stopped by a relative tolerance of 1e-15 or by ten thousand iterations, so where the iteration stops is part of the result. regularizedGammaP delegates to regularizedGammaQ when x is at least a plus one and Q delegates back to P below that, so the pair is one function with a switch in the middle and the two sides are computed by different algorithms. erf and erfInv are inverses in mathematics and unrelated in code, one being a gamma integral and the other a rational approximation, so a round trip does not return its input, and MannWhitneyU makes exactly that round trip. And both erf and cumulativeProbability shortcut beyond forty, returning exactly zero, one or minus one without computing anything, so each is discontinuous at a value the author chose.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "GammaErfNormalDump",
+          "golden": "crates/jmath/tests/data/gamma_erf_normal.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner. 1,226 answers, 34 of them refusals, and the golden corrected the port on one: inverseCumulativeProbability guards with p < 0 || p > 1, both of which are false for NaN, so a NaN probability is not out of range to the reference and flows through to come back as NaN. The port had used a range check, which refuses it. Three rows are an invalid operation's NaN whose sign is the FPU's, exempted off x86-64 and counted, which is decision 0012."
+        }
+      ]
     }
   ],
   "probes": [
