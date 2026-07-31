@@ -28,11 +28,29 @@
       "status": "oracle-backed",
       "harness": "tools/tribble-conformance",
       "why": "BEDCodec is what GATK's -L regions.bed runs through, so its coordinate convention is the one a whole interval argument inherits, and five of its decisions are not what a BED parser suggests. The start is shifted by a constructor argument, StartOffset.ONE being the default, so a file's 0-based start becomes 1-based on the way in and the feature carries the shifted number without carrying the shift. A two-token line is a point rather than a zero-length interval, because with no end column the end is the shifted start: one base at a coordinate the file never mentions. The separator is the regex tab-or-a-run-of-spaces with limit -1, so a run of spaces however long is one separator, a tab beside a space is two, and a trailing separator produces an empty field rather than being dropped. A blank line and a header line decode to null rather than to an error, and the header prefixes are matched on the raw line so a leading space makes them data. And a score that does not parse returns the feature early, so a line whose score is a dot keeps its name and silently loses its strand, its colour and its exons even though those columns are present and well formed, while every other malformed number in the same line throws instead.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "BedCodecDump",
           "golden": "crates/htsjdk-tribble/tests/data/bed_codec.txt.gz"
+        }
+      ]
+    },
+    {
+      "id": "tribble-interval-list",
+      "title": "The IntervalList codec",
+      "status": "golden-pending",
+      "harness": "tools/tribble-conformance",
+      "why": "IntervalListCodec is what GATK's -L regions.interval_list runs through, and it is a stricter parser than the reader htsjdk uses on the same file, so whether an interval list is valid depends on which door it came through. The field count is checked against five exactly and is counted after String.split has dropped trailing empty fields, so a line ending in a tab is refused for its count rather than for its empty name. The strand column is decoded by Strand.decode, which answers NONE for anything that is not a single plus or minus, and NONE is then rejected, so a dot is a legal strand in the BED codec of the same package and an error here. An interval on a contig the dictionary does not hold is dropped with a warning and the file still loads, while an interval past the end of a contig it does hold fails the whole read, and that length check is switched off by a declared length of zero. And start equal to end plus one is a legal empty interval while start equal to end plus two is refused with a message quoting a film, which is observable output and therefore part of the port.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "IntervalListCodecDump",
+          "golden": null
         }
       ]
     },
@@ -45,7 +63,10 @@
       "compare": {
         "mode": "regex",
         "pattern": "\\(\"(\\w+)\", (\\d+), (\\d+), \"([0-9a-f]{32})\"\\)",
-        "key_groups": [0, 1],
+        "key_groups": [
+          0,
+          1
+        ],
         "why": "The corpus is a literal array in the Rust test rather than a .txt.gz, so both sides are read with the same pattern; only the shared cases are compared, since the test carries cases the dump does not emit."
       },
       "cases": [
@@ -63,7 +84,10 @@
       "compare": {
         "mode": "regex",
         "pattern": "\\(\"(\\w+)\", \"(\\w+)\", \"(\\w+)\"\\)",
-        "key_groups": [0, 1]
+        "key_groups": [
+          0,
+          1
+        ]
       },
       "cases": [
         {
@@ -78,7 +102,9 @@
       "status": "oracle-backed",
       "harness": "tools/bam-conformance",
       "why": "The BAM record codec is pure integer work, so unlike the math corpus there is no reason to expect emulation to change it. That is the hypothesis; this measures it, because \"no reason to expect\" is how decision 0004's wrong assumption got in.",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "BamCodecDump",
@@ -92,7 +118,9 @@
       "status": "oracle-backed",
       "harness": "tools/bam-conformance",
       "why": "These carry compressed bytes, so unlike the record codec they do depend on the deflate implementation. Decision 0001 pins it; this is what would catch that pin coming loose.",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "BamFileDump",
@@ -106,7 +134,9 @@
       "status": "oracle-backed",
       "harness": "tools/bam-reheader-conformance",
       "why": "The reheadered BAM is block-copied, so it carries compressed bytes and depends on the deflate pin (decision 0001), exactly like the BAM file goldens. Comment rows share a (kind, case) key so only the last per case is diffed here, but the reheadered hex encodes every comment in its header, so any comment drift shows up there.",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "ReheaderDump",
@@ -120,7 +150,9 @@
       "status": "oracle-backed",
       "harness": "tools/bam-gather-conformance",
       "why": "The gathered BAM is block-copied, so it carries compressed bytes and depends on the deflate pin (decision 0001). Input rows share a (kind, case) key so only the last per case is diffed here, but the gathered hex is the concatenation of them all.",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "GatherDump",
@@ -133,7 +165,9 @@
       "title": "Histogram statistics",
       "status": "oracle-backed",
       "harness": "tools/histogram-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "HistogramDump",
@@ -146,7 +180,9 @@
       "title": "SAM text records",
       "status": "oracle-backed",
       "harness": "tools/sam-text-conformance",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "SamTextDump",
@@ -159,7 +195,9 @@
       "title": "Whole SAM files",
       "status": "oracle-backed",
       "harness": "tools/sam-text-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "SamFileDump",
@@ -172,7 +210,9 @@
       "title": "BAM index (write side)",
       "status": "oracle-backed",
       "harness": "tools/bam-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "BaiDump",
@@ -186,7 +226,9 @@
       "status": "oracle-backed",
       "harness": "tools/build-index-conformance",
       "why": "The read-side .bai carries compressed-stream virtual offsets, so it depends on the deflate pin (decision 0001) exactly like the BAM goldens, and it differs from the write-side BAI.",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "BuildIndexDump",
@@ -200,7 +242,10 @@
       "status": "oracle-backed",
       "harness": "tools/interval-conformance",
       "why": "Some cases have an empty value: an empty interval list is a result, not a missing row, so valueless lines are kept rather than skipped.",
-      "compare": { "mode": "named", "allow_missing_value": true },
+      "compare": {
+        "mode": "named",
+        "allow_missing_value": true
+      },
       "cases": [
         {
           "dump": "IntervalListDump",
@@ -213,7 +258,9 @@
       "title": "VCF headers",
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "VcfHeaderDump",
@@ -227,7 +274,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "Everything else here writes VCF; nothing reads one, and GATK's VariantWalker cannot exist without a reader. Two layers are measured. VCFHeaderLineTranslator's VCF4Parser is a hand-written scanner whose switch falls through from the '<' case into the '>' case, so an unquoted '<' away from position 0 is dropped, an unquoted '>' anywhere is dropped, and a line that does not end in '>' loses its last field entirely and silently: a port written from the VCF specification would keep those characters and store that field. Quotes are a toggle rather than a delimiter, because the quote test precedes the in-quote test, so a quote in the middle of an unquoted value opens a quoted region and the comma after it stops separating fields; inside a quote a backslash before anything but a quote or a backslash is kept together with the character. VCFCodec.readActualHeader is the second layer: it splits the version line on every '=' and records a version only when that yields exactly two fields, so a line with an extra '=' records nothing and fails later with a different message. The refusals carry their messages because the messages separate two failures of the same file. Only unstructured meta lines are fed to the frame; turning an INFO line into a typed compound header line is the next layer and is measured on its own, since mixing them would leave a failure ambiguous between the two.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "VcfHeaderParseDump",
@@ -241,7 +290,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "The scanner suite says which pairs a line carries; this says what they mean, and it is where the refusals are. Four different exception classes come out of this layer and which one a file gets is a property of the field that is wrong: Number=x throws java.lang.NumberFormatException because nothing wraps Integer.parseInt, Number=-1 throws TribbleException$InvalidHeader, Number=0 on a non-Flag type throws java.lang.IllegalArgumentException from validate(), and Type=integer throws a plain TribbleException without the malformed-header prefix. Two of those are unchecked Java exceptions that no catch in the codec touches, so a malformed Number does not report a malformed header at all, and a port that funnelled every failure into one error type would answer a different question. Three asymmetries make the same line valid or invalid depending on context rather than on the line: INFO allows Type=Flag and FORMAT does not; a Flag with a non-zero count is silently rewritten to zero rather than refused, which is a value change and not an error; and Source and Version are read only from VCF 4.2, while under 4.1 they are not recommended tags either, so the tag-order check rejects the same line the 4.2 codec accepts. The rendered line is compared rather than the fields, because the rendering is what a writer emits and it carries the quoting rule as well as the values.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "VcfHeaderLineDump",
@@ -254,7 +305,9 @@
       "title": "VCF records",
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "VcfRecordDump",
@@ -267,7 +320,9 @@
       "title": "Whole VCF files",
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "VcfFileDump",
@@ -281,7 +336,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "The vcf-record suite measures writing a record; this measures reading one, which is what GATK's VariantWalker needs and what nothing here has done before. Genotypes are excluded on purpose: htsjdk defers them through LazyGenotypesContext and the deferral is itself observable, so it is its own slice, and this stops at the eight site columns. Five behaviours decide what a record means and none is in the VCF specification. The splitter is not String.split: ParsingUtils.split fills a fixed-size array, steps over a delimiter at position zero instead of producing an empty first token, and condenses every trailing column into the last slot, so a line starting with a tab loses its first character and every genotype column after the first arrives joined back together in parts[8], which is why the column check compares against nine whatever the sample count. END overrides the stop and nothing validates it, so a record can end before it starts. A declared Flag written as KEY=0 is dropped from the attributes entirely rather than stored as false, and a bare key whose header type is not Flag becomes the string \".\" rather than a flag, so the header changes what a record contains. REF is upper-cased silently, so a lower-case REF is a rewrite and not an error. And an ALT of \".\" is checked and then not added, so the record carries one allele rather than two. The refusals are compared with their classes because parseQual throws a NumberFormatException that nothing catches while the neighbouring failures are TribbleExceptions carrying a line number. Attributes and filters are sorted in the dump: they live in a HashMap and a HashSet upstream, so their iteration order is not a property of the file and comparing it would compare the JDK.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "VcfRecordParseDump",
@@ -295,7 +352,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "The vcf-record-parse suite stops at the eight site columns; this is the rest, which htsjdk defers through LazyGenotypesContext until something asks for it. Four behaviours decide what a genotype contains and none is in the VCF specification. The GT separators are three characters, not two: VCFConstants.PHASING_TOKENS is a slash, a pipe and a backslash, and the split is a StringTokenizer, which drops empty tokens, so a backslash separates alleles like a slash does and 0//1, /0/1 and 0/1/ all yield the same two alleles as 0/1. A malformed AD or PL is silently dropped, because decodeInts catches NumberFormatException and returns null, which the builder stores as no-AD, while two lines further down the same method DP goes through a bare Integer.parseInt whose failure is not caught at all: the same malformed integer either disappears or aborts the record, decided by which key it was under. GT must be at position 0 when present and, before VCF 4.1, must be present at all, so the same record is valid or invalid depending on a header line. And a key with no value is skipped just as a value of \".\" is, but only the second had to be looked at, which shows in FT where \".\" means unfiltered rather than absent. GL is excluded: converting it to PL runs through GenotypeLikelihoods.fromGLField, which is floating-point work with its own rounding, and folding it in here would mix a numeric question into a parsing one.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "VcfGenotypeParseDump",
@@ -309,7 +368,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "A genotype carrying GL and no PL gets its PL computed here and every downstream tool reads the PL, so this is the last thing between a VCF with likelihoods in it and a port that can decode it. Three layers, and each has a decision a port gets wrong by default. Double.parseDouble is not Rust's f64 parser: Java accepts a trailing type suffix, hexadecimal floating point with a mandatory p exponent, leading and trailing whitespace up to and including the space character, and the spelled-out Infinity, while Rust accepts none of those and accepts inf and nan, which Java does not. VCFUtils.parseVcfDouble then catches the failure and retries against a case-insensitive infinity-or-NaN pattern, so inf and -INFINITY and nan parse after all, but only after the plain parse has failed. And GLsToPLs is one line with three decisions: the adjustment is the maximum of the likelihoods so the conversion re-normalises and the best genotype always comes out at zero whatever the input scale; MAX_PL is Integer.MAX_VALUE and the clamp is applied to the double before the rounding; and Math.round is floor of x plus a half, so it rounds half up rather than half away from zero, answers zero for a NaN, and returns a long that is then truncated to int. Reordering any of the three agrees on every ordinary genotype. The parsed doubles travel as raw bits, because a decimal rendering of a parse result hides exactly the disagreements this suite exists to find.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "GenotypeLikelihoodsDump",
@@ -323,7 +384,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "GATK's ChromosomeCounts annotation is two lines that delegate straight to VariantContextUtils.calculateChromosomeCounts, so this is where the three commonest INFO fields in any VCF are decided, and four of its behaviours do not follow from the field names. AC and AF change type with the number of alternate alleles, one alt giving a scalar and two or more a list, so a consumer that fetched AC gets an Integer in one case and an ArrayList in the other even though both render the same way. A genotype whose FT is set contributes nothing and so does a no-call allele, for different reasons, which means AN is not the ploidy times the sample count. AF is not AC over AN: the numerator is the founders count for that allele and the denominator the founders total called count, while the AC reported alongside is the whole cohort's, so a port computing AF from the AC it has just written agrees on every unrelated cohort and disagrees on every pedigree. And the function removes keys as well as adding them, deleting AC and AF at a site with no alternate allele and all three where nobody is called, but only when removeStaleValues is on, which the annotation hard-codes to true. AF travels as raw bits because it is a division and a decimal rendering would hide a divergence in the last place.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "ChromosomeCountsDump",
@@ -337,7 +400,9 @@
       "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
       "why": "Genotype.determineType decides what every consumer downstream means by het and by called, and three of its answers contradict the javadoc above them. HET is two called alleles that are not equal, so C/G with no reference allele in it is HET, which is why isHetNonRef exists as a separate question and why a port defining HET as one ref and one alt disagrees on every multiallelic site. Equality is Allele.equals, which is bases and the reference flag, so a genotype holding the reference A and a non-reference A is HET while printing as A/A. And ploidy is not two: a haploid call is HOM_REF or HOM_VAR and never HET, a triploid A/A/C is HET, and MIXED is any genotype with at least one call and one no-call whatever its ploidy. VariantContext.isMonomorphicInSamples is measured alongside because it is the guard on GATK's SampleList annotation and it is not every genotype is hom-ref: a site carrying alternate alleles and no genotypes is not monomorphic, since the first disjunct needs no alternate allele and the second needs genotypes. The name order is measured because getGenotypesOrderedByName sorts with Collections.sort, which is String.compareTo, which is UTF-16 code units: uppercase before lowercase, 10 before 2, and a supplementary character BELOW U+FFFF because the first unit of its surrogate pair is 0xD83D, which is the opposite of code-point order and therefore the opposite of what Rust str comparison gives.",
-      "compare": { "mode": "lines" },
+      "compare": {
+        "mode": "lines"
+      },
       "cases": [
         {
           "dump": "GenotypeTypeDump",
@@ -350,7 +415,9 @@
       "title": "Read-group checksum",
       "status": "oracle-backed",
       "harness": "tools/rg-checksum-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "RgChecksumDump",
@@ -363,7 +430,9 @@
       "title": "CigarUtil soft clip",
       "status": "oracle-backed",
       "harness": "tools/cigar-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "CigarClipDump",
@@ -376,7 +445,9 @@
       "title": "SamPairUtil.setMateInfo",
       "status": "oracle-backed",
       "harness": "tools/mateinfo-conformance",
-      "compare": { "mode": "keyed" },
+      "compare": {
+        "mode": "keyed"
+      },
       "cases": [
         {
           "dump": "SetMateInfoDump",
@@ -390,7 +461,9 @@
       "status": "unchecked",
       "harness": "tools/metrics-conformance",
       "why": "41,678 formatted doubles, and the corpus the README's 99.73% rests on. Its harness exists and its Rust test reads it, but no CI step has ever regenerated it against the oracle, so the rate is a property of the machine that produced the file rather than of the pinned reference. Decision 0011 makes this corpus locale-dependent, which is exactly the kind of thing the container pins and a developer machine does not.",
-      "compare": { "mode": "named" },
+      "compare": {
+        "mode": "named"
+      },
       "cases": [
         {
           "dump": "FormatDump",
@@ -406,7 +479,10 @@
       "harness": "tools/vcf-conformance",
       "class": "ResortProbe",
       "expect": "CYCLIC_RESORT_STABLE=true",
-      "expect_all": ["CYCLIC_RESORT_STABLE=true", "REALISTIC_RESORT_STABLE=true"],
+      "expect_all": [
+        "CYCLIC_RESORT_STABLE=true",
+        "REALISTIC_RESORT_STABLE=true"
+      ],
       "on_failure": "Re-sorting is no longer stable. Decision 0019 needs revisiting.",
       "why": "The port relies on it: writing a header that has already been through the comparator once must not reorder it. Measured stable, not proven stable, so it is re-measured."
     },
