@@ -44,6 +44,11 @@ public class FastMathTablesDump {
         emitTable("EXP_FRAC_TABLE_B", "org.apache.commons.math3.util.FastMath$ExpFracTable",
                 "EXP_FRAC_TABLE_B");
 
+        // The same four tables, RECOMPUTED with FastMathCalc, which is the other branch of
+        // RECOMPUTE_TABLES_AT_RUNTIME. Whether the two branches agree is a claim nothing in the
+        // reference checks, and the port takes the computing one, so it is measured here.
+        emitRecomputed();
+
         // The branch boundaries, named by the algorithm itself.
         for (final double x : new double[] {
                 0.0, -0.0, 1.0, -1.0, 0.5, -0.5,
@@ -63,6 +68,56 @@ public class FastMathTablesDump {
             emitExp(i / 1024.0);
             emitExp(-(i / 1024.0));
             emitExp(5.0 + i / 1024.0);
+        }
+    }
+
+    /** The tables as FastMathCalc computes them, reached by reflection on package-private statics. */
+    static void emitRecomputed() throws Exception {
+        final Class<?> calc = Class.forName("org.apache.commons.math3.util.FastMathCalc");
+        final java.lang.reflect.Method expint =
+                calc.getDeclaredMethod("expint", int.class, double[].class);
+        final java.lang.reflect.Method splitReciprocal =
+                calc.getDeclaredMethod("splitReciprocal", double[].class, double[].class);
+        final java.lang.reflect.Method slowexp =
+                calc.getDeclaredMethod("slowexp", double.class, double[].class);
+        expint.setAccessible(true);
+        splitReciprocal.setAccessible(true);
+        slowexp.setAccessible(true);
+
+        final int maxIndex = 750;
+        final double[] intA = new double[maxIndex * 2];
+        final double[] intB = new double[maxIndex * 2];
+        final double[] tmp = new double[2];
+        final double[] recip = new double[2];
+        for (int i = 0; i < maxIndex; i++) {
+            expint.invoke(null, i, tmp);
+            intA[i + maxIndex] = tmp[0];
+            intB[i + maxIndex] = tmp[1];
+            if (i != 0) {
+                splitReciprocal.invoke(null, tmp, recip);
+                intA[maxIndex - i] = recip[0];
+                intB[maxIndex - i] = recip[1];
+            }
+        }
+        emitArray("RECOMPUTED_EXP_INT_TABLE_A", intA);
+        emitArray("RECOMPUTED_EXP_INT_TABLE_B", intB);
+
+        final int fracLen = 1025;
+        final double[] fracA = new double[fracLen];
+        final double[] fracB = new double[fracLen];
+        final double factor = 1d / (fracLen - 1);
+        for (int i = 0; i < fracLen; i++) {
+            slowexp.invoke(null, i * factor, tmp);
+            fracA[i] = tmp[0];
+            fracB[i] = tmp[1];
+        }
+        emitArray("RECOMPUTED_EXP_FRAC_TABLE_A", fracA);
+        emitArray("RECOMPUTED_EXP_FRAC_TABLE_B", fracB);
+    }
+
+    static void emitArray(final String name, final double[] values) {
+        for (int i = 0; i < values.length; i++) {
+            System.out.printf("table\t%s\t%d\t%d%n", name, i, Double.doubleToRawLongBits(values[i]));
         }
     }
 

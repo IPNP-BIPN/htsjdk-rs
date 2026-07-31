@@ -21,7 +21,7 @@
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
 pub mod dd;
-mod fast_math_exp;
+pub mod fast_math_exp;
 mod log;
 pub mod percentile;
 
@@ -118,6 +118,14 @@ pub mod fast_math {
     #[inline]
     pub fn sqrt(x: f64) -> f64 {
         x.sqrt()
+    }
+
+    /// The four exponential tables, computed as `FastMathCalc` computes them.
+    ///
+    /// Public so the conformance suite can compare every entry against the literals the reference
+    /// ships, which is what makes "computed rather than transcribed" a measured claim.
+    pub fn exp_tables() -> &'static crate::fast_math_exp::Tables {
+        crate::fast_math_exp::tables()
     }
 
     /// `FastMath.exp`, table-driven and pure Java, which is **not** `java.lang.Math.exp`.
