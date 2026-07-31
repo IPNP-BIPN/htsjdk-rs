@@ -50,6 +50,22 @@ public class GammaErfNormalDump {
             one("erfInv", x, () -> Erf.erfInv(x));
             one("invGamma1pm1", x, () -> Gamma.invGamma1pm1(x));
             one("logGamma1p", x, () -> Gamma.logGamma1p(x));
+            one("digamma", x, () -> Gamma.digamma(x));
+            one("trigamma", x, () -> Gamma.trigamma(x));
+        }
+
+        // digamma and trigamma have three branches each, at 1e-5 and at 49, and the middle one
+        // recurses until it reaches the upper branch. Cross both boundaries and both signs.
+        for (final double x : new double[] {
+                1e-6, 1e-5, 1.0000001e-5, 0.1, 1.0, 48.0, 48.999999, 49.0, 49.000001, 50.0,
+                1000.0, -0.5, -1.5, -2.5, -48.5, -49.5, -0.0000001}) {
+            one("digamma", x, () -> Gamma.digamma(x));
+            one("trigamma", x, () -> Gamma.trigamma(x));
+        }
+        for (int i = 1; i <= 120; i++) {
+            final double x = i / 2.0;
+            one("digamma", x, () -> Gamma.digamma(x));
+            one("trigamma", x, () -> Gamma.trigamma(x));
         }
 
         // A sweep, so the branch boundaries of each are crossed rather than sampled at round
@@ -96,11 +112,14 @@ public class GammaErfNormalDump {
         double get();
     }
 
+    // Throwable, not Exception: Gamma.digamma has no NaN guard in 3.5, so digamma(NaN) and
+    // digamma(-Infinity) recurse forever and raise a StackOverflowError, which is an Error. Caught
+    // here so the run completes and the golden records which inputs do not terminate.
     static void one(final String name, final double x, final Call call) {
         try {
             System.out.printf("gamma\t%s\t%d\t%d%n", name, Double.doubleToRawLongBits(x),
                     Double.doubleToRawLongBits(call.get()));
-        } catch (final Exception | AssertionError e) {
+        } catch (final Throwable e) {
             System.out.printf("gamma\t%s\t%d\tE:%s%n", name, Double.doubleToRawLongBits(x),
                     e.getClass().getName());
         }
@@ -110,7 +129,7 @@ public class GammaErfNormalDump {
         try {
             System.out.printf("gamma\t%s\t%d,%d\t%d%n", name, Double.doubleToRawLongBits(a),
                     Double.doubleToRawLongBits(x), Double.doubleToRawLongBits(call.get()));
-        } catch (final Exception | AssertionError e) {
+        } catch (final Throwable e) {
             System.out.printf("gamma\t%s\t%d,%d\tE:%s%n", name, Double.doubleToRawLongBits(a),
                     Double.doubleToRawLongBits(x), e.getClass().getName());
         }

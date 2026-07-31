@@ -63,6 +63,14 @@ fn call(name: &str, inputs: &[f64]) -> String {
         "erf" => render(gamma::erf(inputs[0])),
         "erfc" => render(gamma::erfc(inputs[0])),
         "erfInv" => render(gamma::erf_inv(inputs[0])),
+        "digamma" => match gamma::digamma(inputs[0]) {
+            Ok(value) => render(value),
+            Err(error) => exception(&error),
+        },
+        "trigamma" => match gamma::trigamma(inputs[0]) {
+            Ok(value) => render(value),
+            Err(error) => exception(&error),
+        },
         "invGamma1pm1" => match gamma::inv_gamma1pm1(inputs[0]) {
             Ok(value) => render(value),
             Err(error) => exception(&error),
@@ -108,6 +116,7 @@ fn exception(error: &gamma::GammaError) -> String {
         gamma::GammaError::MaxCountExceeded { .. } => {
             "org.apache.commons.math3.exception.MaxCountExceededException"
         }
+        gamma::GammaError::NonTerminating => "java.lang.StackOverflowError",
         gamma::GammaError::ContinuedFractionDiverged { .. } => {
             "org.apache.commons.math3.exception.ConvergenceException"
         }
