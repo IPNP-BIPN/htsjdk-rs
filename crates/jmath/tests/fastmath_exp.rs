@@ -57,7 +57,7 @@ fn every_table_entry_equals_the_literal_the_reference_ships() {
         let name = fields.next().expect("a table name");
         let index: usize = fields.next().expect("an index").parse().expect("a number");
         let expected = from_bits(fields.next().expect("the value"));
-        if name.starts_with("RECOMPUTED_") {
+        if name.starts_with("RECOMPUTED_") || name.contains("LN_MANT") {
             continue;
         }
         let ours = match name {
@@ -74,7 +74,10 @@ fn every_table_entry_equals_the_literal_the_reference_ships() {
         );
         count += 1;
     }
-    assert_eq!(count, 5050, "the golden should carry every table entry");
+    assert_eq!(
+        count, 5050,
+        "the golden should carry every exponential table entry"
+    );
     println!("{count} table entries identical to the shipped literals");
 }
 
@@ -99,6 +102,9 @@ fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
         let Some(bare) = name.strip_prefix("RECOMPUTED_") else {
             continue;
         };
+        if bare.contains("LN_MANT") {
+            continue;
+        }
         let index: usize = fields.next().expect("an index").parse().expect("a number");
         let expected = from_bits(fields.next().expect("the value"));
         let (recomputed, literal) = match bare {
@@ -167,6 +173,85 @@ fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
 }
 
 #[test]
+fn every_logarithm_is_bit_identical_to_the_reference() {
+    let text = golden();
+    let mut count = 0;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("log\t") else {
+            continue;
+        };
+        let (input, expected) = rest.split_once('\t').expect("an input and a result");
+        let x = from_bits(input);
+        let want = from_bits(expected);
+        assert_eq!(
+            jmath::fast_math::log(x).to_bits(),
+            want.to_bits(),
+            "FastMath.log({x:e})"
+        );
+        count += 1;
+    }
+    assert!(count > 0, "the golden carries no log rows");
+    println!("{count} logarithms bit-identical");
+}
+
+/// `LN_MANT`, the logarithm's own table, in both of the reference's forms.
+#[test]
+fn the_logarithm_table_matches_and_its_two_branches_agree() {
+    let text = golden();
+    let mut compared = 0;
+    let mut differ = 0;
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("table\t") else {
+            continue;
+        };
+        let mut fields = rest.split('\t');
+        let name = fields.next().expect("a table name");
+        if !name.contains("LN_MANT") {
+            continue;
+        }
+        let index: usize = fields.next().expect("an index").parse().expect("a number");
+        let expected = from_bits(fields.next().expect("the value"));
+        let ours = match name {
+            "LN_MANT_A" => f64::from_bits(jmath::fast_math_tables::LN_MANT_A[index]),
+            "LN_MANT_B" => f64::from_bits(jmath::fast_math_tables::LN_MANT_B[index]),
+            // The recomputed column is compared against the literals rather than against the
+            // port, since the port does not carry a `slowLog`: what matters is whether the
+            // reference's two branches agree here as they failed to for the exponential.
+            "RECOMPUTED_LN_MANT_A" => {
+                let literal = jmath::fast_math_tables::LN_MANT_A[index];
+                if expected.to_bits() != literal {
+                    differ += 1;
+                }
+                compared += 1;
+                continue;
+            }
+            "RECOMPUTED_LN_MANT_B" => {
+                let literal = jmath::fast_math_tables::LN_MANT_B[index];
+                if expected.to_bits() != literal {
+                    differ += 1;
+                }
+                compared += 1;
+                continue;
+            }
+            other => panic!("unknown table {other}"),
+        };
+        assert_eq!(ours.to_bits(), expected.to_bits(), "{name}[{index}]");
+        compared += 1;
+    }
+    assert_eq!(
+        compared, 4096,
+        "the golden should carry LN_MANT in both forms"
+    );
+    // Unlike the exponential's integer table, this one agrees with its recomputation: the
+    // disagreement of decision 0024 is specific to the reciprocal path.
+    assert_eq!(
+        differ, 0,
+        "LN_MANT's two branches now disagree on {differ} entries; see decision 0024"
+    );
+    println!("{compared} LN_MANT entries compared, {differ} branch disagreements");
+}
+
+#[test]
 fn every_exp_is_bit_identical_to_the_reference() {
     let text = golden();
     let mut count = 0;
@@ -185,12 +270,13 @@ fn every_exp_is_bit_identical_to_the_reference() {
     println!("{count} exponentials bit-identical");
 }
 
-/// The whole `jmath.csv` corpus, whose `FastMath` column is what a ported call site will reach.
+/// The whole `jmath.csv` corpus, whose `FastMath` column is what a ported call site will reach,
+/// for both functions ported here.
 ///
 /// The corpus is generated against 3.6.1 and the golden above against 3.5, so a divergence here
 /// with the golden green would mean the two versions differ, which is worth failing over.
 #[test]
-fn the_corpus_agrees_with_the_port_on_every_exponential() {
+fn the_corpus_agrees_with_the_port_on_every_exponential_and_logarithm() {
     use std::io::{BufRead, BufReader};
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/jmath.csv.gz");
     let file = std::fs::File::open(path).expect("corpus");
@@ -203,20 +289,22 @@ fn the_corpus_agrees_with_the_port_on_every_exponential() {
             continue;
         }
         let fields: Vec<&str> = line.split(',').collect();
-        if fields[0] != "exp" {
-            continue;
-        }
+        let ours = match fields[0] {
+            "exp" => jmath::fast_math::exp(hex(fields[1])),
+            "log" => jmath::fast_math::log(hex(fields[1])),
+            _ => continue,
+        };
         total += 1;
-        if jmath::fast_math::exp(hex(fields[1])).to_bits() == hex(fields[4]).to_bits() {
+        if ours.to_bits() == hex(fields[4]).to_bits() {
             matched += 1;
         }
     }
-    assert!(total > 40_000, "the corpus lost its exp rows: {total}");
+    assert!(total > 80_000, "the corpus lost rows: {total}");
     assert_eq!(
         matched,
         total,
-        "FastMath.exp diverges on {} of {total} corpus points",
+        "FastMath diverges on {} of {total} corpus points",
         total - matched
     );
-    println!("{matched}/{total} corpus exponentials bit-identical");
+    println!("{matched}/{total} corpus exponentials and logarithms bit-identical");
 }
