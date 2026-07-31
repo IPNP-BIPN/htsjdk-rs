@@ -59,7 +59,11 @@ impl NormalDistribution {
     /// `inverseCumulativeProbability(p)`. Outside `[0, 1]` the reference throws
     /// `OutOfRangeException`; here that is `None`.
     pub fn inverse_cumulative_probability(&self, p: f64) -> Option<f64> {
-        if !(0.0..=1.0).contains(&p) {
+        // `p < 0.0 || p > 1.0`, and not a range check: both comparisons are false for NaN, so a
+        // NaN probability is not out of range to the reference. It flows through and comes back
+        // as NaN.
+        #[allow(clippy::manual_range_contains)]
+        if p < 0.0 || p > 1.0 {
             return None;
         }
         Some(self.mean + self.standard_deviation * SQRT2 * gamma::erf_inv(2.0 * p - 1.0))
