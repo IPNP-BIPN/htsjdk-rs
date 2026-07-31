@@ -9,3 +9,4 @@
 
 pub mod bed;
 pub mod interval_list;
+pub mod vcf;
