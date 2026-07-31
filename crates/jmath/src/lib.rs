@@ -22,6 +22,7 @@
 
 pub mod dd;
 pub mod fast_math_exp;
+pub mod fast_math_log;
 pub mod fast_math_tables;
 mod log;
 pub mod percentile;
@@ -138,6 +139,12 @@ pub mod fast_math {
     #[inline]
     pub fn exp(x: f64) -> f64 {
         crate::fast_math_exp::exp(x)
+    }
+
+    /// `FastMath.log`, table-driven and **not** correctly rounded, unlike `java.lang.Math.log`.
+    #[inline]
+    pub fn log(x: f64) -> f64 {
+        crate::fast_math_log::log(x)
     }
 
     /// `FastMath.round(double)`, which is literally `(long) floor(x + 0.5)`.

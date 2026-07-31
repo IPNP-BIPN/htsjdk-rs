@@ -112,7 +112,10 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
         // The table-driven method loses precision here, so a nine-term double-double polynomial
         // runs instead. Note the guard: a caller wanting high precision does not take this path.
         let mut xa = x - 1.0;
-        let mut xb = xa - x + 1.0;
+        // The reference computes `xb = xa - x + 1.0` here and overwrites it three lines later
+        // with `ab`. Kept as the overwrite it is rather than as a value, since the intermediate
+        // is dead in the reference too.
+        let xb;
         let mut tmp = xa * HEX_40000000;
         let mut aa = xa + tmp - tmp;
         let mut ab = xa - aa;
@@ -209,7 +212,7 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
     // each term's magnitude range beside this block; reassociating it is a different function.
     let mut a = LN_2_A * exp as f64;
     let mut b = 0.0;
-    let mut add = |a: &mut f64, b: &mut f64, term: f64| {
+    let add = |a: &mut f64, b: &mut f64, term: f64| {
         let c = *a + term;
         let d = -(c - *a - term);
         *a = c;
@@ -246,7 +249,10 @@ mod tests {
     fn the_ordinary_range_is_close_to_the_true_logarithm() {
         for x in [1.0, 2.0, 0.5, 10.0, 1e300, 1e-300, 1.005, 0.995] {
             let ours = log(x);
-            assert!((ours - x.ln()).abs() <= 1e-12 * x.ln().abs().max(1.0), "log({x})");
+            assert!(
+                (ours - x.ln()).abs() <= 1e-12 * x.ln().abs().max(1.0),
+                "log({x})"
+            );
         }
     }
 
