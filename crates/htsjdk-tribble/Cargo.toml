@@ -8,6 +8,8 @@ description = "Port of htsjdk's Tribble feature codecs"
 
 [dependencies]
 htsjdk-bam = { path = "../htsjdk-bam" }
+flate2.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }
