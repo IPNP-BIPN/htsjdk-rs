@@ -41,7 +41,7 @@
     {
       "id": "tribble-interval-list",
       "title": "The IntervalList codec",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/tribble-conformance",
       "why": "IntervalListCodec is what GATK's -L regions.interval_list runs through, and it is a stricter parser than the reader htsjdk uses on the same file, so whether an interval list is valid depends on which door it came through. The field count is checked against five exactly and is counted after String.split has dropped trailing empty fields, so a line ending in a tab is refused for its count rather than for its empty name. The strand column is decoded by Strand.decode, which answers NONE for anything that is not a single plus or minus, and NONE is then rejected, so a dot is a legal strand in the BED codec of the same package and an error here. An interval on a contig the dictionary does not hold is dropped with a warning and the file still loads, while an interval past the end of a contig it does hold fails the whole read, and that length check is switched off by a declared length of zero. And start equal to end plus one is a legal empty interval while start equal to end plus two is refused with a message quoting a film, which is observable output and therefore part of the port.",
       "compare": {
@@ -50,7 +50,7 @@
       "cases": [
         {
           "dump": "IntervalListCodecDump",
-          "golden": null
+          "golden": "crates/htsjdk-tribble/tests/data/interval_list_codec.txt.gz"
         }
       ]
     },
