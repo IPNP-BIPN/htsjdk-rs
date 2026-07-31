@@ -63,6 +63,8 @@ fn call(name: &str, inputs: &[f64]) -> String {
         "erf" => render(gamma::erf(inputs[0])),
         "erfc" => render(gamma::erfc(inputs[0])),
         "erfInv" => render(gamma::erf_inv(inputs[0])),
+        "digamma" => render(gamma::digamma(inputs[0])),
+        "trigamma" => render(gamma::trigamma(inputs[0])),
         "invGamma1pm1" => match gamma::inv_gamma1pm1(inputs[0]) {
             Ok(value) => render(value),
             Err(error) => exception(&error),

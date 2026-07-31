@@ -493,3 +493,60 @@ pub fn erf_inv(x: f64) -> f64 {
 
     p * x
 }
+
+/// `Gamma.GAMMA`, the Euler-Mascheroni constant as commons-math3 transcribes it.
+const GAMMA: f64 = 0.577_215_664_901_532_9;
+/// `Gamma.S_LIMIT`, below which `digamma` uses "method 5 from Bernardo AS103".
+const S_LIMIT: f64 = 1e-5;
+/// `Gamma.C_LIMIT`, above which the asymptotic expansion is used.
+const C_LIMIT: f64 = 49.0;
+
+/// `Gamma.digamma`: the logarithmic derivative of the gamma function.
+///
+/// Three branches, and the middle one is a **recursion**: below 49 it calls itself at `x + 1` and
+/// subtracts `1 / x`, so a digamma of 0.1 unwinds forty-nine frames before any arithmetic that is
+/// not a subtraction happens, and the result is a sum of forty-nine reciprocals in a fixed order.
+/// That order is the result: rearranging the sum would change the last bits.
+///
+/// A `NaN` or an infinity is returned unchanged, so `digamma(-inf)` is `-inf` rather than the `NaN`
+/// the function's own poles would suggest. A negative integer, where the true function has a pole,
+/// recurses up through zero and comes back finite.
+pub fn digamma(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x;
+    }
+    if x > 0.0 && x <= S_LIMIT {
+        // "use method 5 from Bernardo AS103, accurate to O(x)".
+        return -GAMMA - 1.0 / x;
+    }
+    if x >= C_LIMIT {
+        // "use method 4 (accurate to O(1/x^8))":
+        //            1       1        1         1
+        // log(x) -  --- - ------ + ------- - -------
+        //           2 x   12 x^2   120 x^4   252 x^6
+        let inv = 1.0 / (x * x);
+        return crate::fast_math::log(x)
+            - 0.5 / x
+            - inv * ((1.0 / 12.0) + inv * (1.0 / 120.0 - inv / 252.0));
+    }
+    digamma(x + 1.0) - 1.0 / x
+}
+
+/// `Gamma.trigamma`: the derivative of [`digamma`], with the same three-branch shape.
+pub fn trigamma(x: f64) -> f64 {
+    if x.is_nan() || x.is_infinite() {
+        return x;
+    }
+    if x > 0.0 && x <= S_LIMIT {
+        return 1.0 / (x * x);
+    }
+    if x >= C_LIMIT {
+        let inv = 1.0 / (x * x);
+        //  1    1      1       1       1
+        //  - + ---- + ---- - ----- + -----
+        //  x      2      3       5       7
+        //      2 x    6 x    30 x    42 x
+        return 1.0 / x + inv / 2.0 + inv / x * (1.0 / 6.0 - inv * (1.0 / 30.0 - inv / 42.0));
+    }
+    trigamma(x + 1.0) + 1.0 / (x * x)
+}
