@@ -116,6 +116,10 @@ pub enum GammaError {
     /// `ConvergenceException` from the continued fraction, which distinguishes an infinite value
     /// from a NaN one.
     ContinuedFractionDiverged { infinite: bool, x: f64 },
+    /// `StackOverflowError`: `digamma` and `trigamma` in 3.5 have no NaN guard, so `NaN` and
+    /// `-Infinity` recurse forever. Not an `Exception`, so a caller that catches one does not catch
+    /// this.
+    NonTerminating,
 }
 
 /// `Gamma.lanczos`, summed from the far end so the small terms are added first.
@@ -508,13 +512,27 @@ const C_LIMIT: f64 = 49.0;
 /// not a subtraction happens, and the result is a sum of forty-nine reciprocals in a fixed order.
 /// That order is the result: rearranging the sum would change the last bits.
 ///
-/// A `NaN` or an infinity is returned unchanged, so `digamma(-inf)` is `-inf` rather than the `NaN`
-/// the function's own poles would suggest. A negative integer, where the true function has a pole,
-/// recurses up through zero and comes back finite.
-pub fn digamma(x: f64) -> f64 {
-    if x.is_nan() || x.is_infinite() {
-        return x;
+/// # There is no `NaN` guard in 3.5, so two inputs do not terminate
+///
+/// A later commons-math3 returns `x` unchanged for a `NaN` or an infinity. **3.5 does not have that
+/// line.** `NaN` fails both branch tests, so the middle branch recurses on `NaN + 1`, which is
+/// `NaN`, forever; `-Infinity` recurses on `-Infinity + 1`, which is `-Infinity`, forever. Both
+/// raise a `StackOverflowError`, which is an `Error` and not an `Exception`, so a caller catching
+/// `Exception` does not catch it. The golden records both, and this port refuses them rather than
+/// inventing the guard the version in use does not have.
+///
+/// `+Infinity` does terminate: it clears the asymptotic branch on the first test.
+///
+/// A negative integer, where the true function has a pole, recurses up through zero and comes back
+/// finite.
+pub fn digamma(x: f64) -> Result<f64, GammaError> {
+    if x.is_nan() || x == f64::NEG_INFINITY {
+        return Err(GammaError::NonTerminating);
     }
+    Ok(digamma_terminating(x))
+}
+
+fn digamma_terminating(x: f64) -> f64 {
     if x > 0.0 && x <= S_LIMIT {
         // "use method 5 from Bernardo AS103, accurate to O(x)".
         return -GAMMA - 1.0 / x;
@@ -529,14 +547,38 @@ pub fn digamma(x: f64) -> f64 {
             - 0.5 / x
             - inv * ((1.0 / 12.0) + inv * (1.0 / 120.0 - inv / 252.0));
     }
-    digamma(x + 1.0) - 1.0 / x
+    digamma_terminating(x + 1.0) - 1.0 / x
 }
 
 /// `Gamma.trigamma`: the derivative of [`digamma`], with the same three-branch shape.
-pub fn trigamma(x: f64) -> f64 {
-    if x.is_nan() || x.is_infinite() {
-        return x;
+///
+/// # The asymptotic branch contradicts its own comment, and the comment is the correct one
+///
+/// ```java
+/// //  1    1      1       1       1
+/// //  - + ---- + ---- - ----- + -----
+/// //  x      2      3       5       7
+/// //      2 x    6 x    30 x    42 x
+/// return 1 / x + inv / 2 + inv / x * (1.0 / 6 - inv * (1.0 / 30 + inv / 42));
+/// ```
+///
+/// Expanding the code gives `1/(6x^3) - 1/(30x^5) - 1/(42x^7)`, whose last sign is not the comment's
+/// and not the Bernoulli series'. The true asymptotic expansion alternates, so the comment is right
+/// and the code is wrong, and the error is real rather than a last-bit one: at `x = 1`, which
+/// recurses up to the asymptotic branch, the reference answers `1.6449340668481562` where the true
+/// value is `pi^2 / 6 = 1.6449340668482264`, eleven digits in.
+///
+/// The port follows the **code**, because the code is what produced the golden. The comment-faithful
+/// version was written first and the golden refused it, which is the only way this would have been
+/// found: both forms look correct, and only one of them is the reference.
+pub fn trigamma(x: f64) -> Result<f64, GammaError> {
+    if x.is_nan() || x == f64::NEG_INFINITY {
+        return Err(GammaError::NonTerminating);
     }
+    Ok(trigamma_terminating(x))
+}
+
+fn trigamma_terminating(x: f64) -> f64 {
     if x > 0.0 && x <= S_LIMIT {
         return 1.0 / (x * x);
     }
@@ -546,7 +588,8 @@ pub fn trigamma(x: f64) -> f64 {
         //  - + ---- + ---- - ----- + -----
         //  x      2      3       5       7
         //      2 x    6 x    30 x    42 x
-        return 1.0 / x + inv / 2.0 + inv / x * (1.0 / 6.0 - inv * (1.0 / 30.0 - inv / 42.0));
+        // `+ inv / 42`, as the code has it and not as the comment above it has it.
+        return 1.0 / x + inv / 2.0 + inv / x * (1.0 / 6.0 - inv * (1.0 / 30.0 + inv / 42.0));
     }
-    trigamma(x + 1.0) + 1.0 / (x * x)
+    trigamma_terminating(x + 1.0) + 1.0 / (x * x)
 }

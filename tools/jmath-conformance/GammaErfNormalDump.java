@@ -112,11 +112,14 @@ public class GammaErfNormalDump {
         double get();
     }
 
+    // Throwable, not Exception: Gamma.digamma has no NaN guard in 3.5, so digamma(NaN) and
+    // digamma(-Infinity) recurse forever and raise a StackOverflowError, which is an Error. Caught
+    // here so the run completes and the golden records which inputs do not terminate.
     static void one(final String name, final double x, final Call call) {
         try {
             System.out.printf("gamma\t%s\t%d\t%d%n", name, Double.doubleToRawLongBits(x),
                     Double.doubleToRawLongBits(call.get()));
-        } catch (final Exception | AssertionError e) {
+        } catch (final Throwable e) {
             System.out.printf("gamma\t%s\t%d\tE:%s%n", name, Double.doubleToRawLongBits(x),
                     e.getClass().getName());
         }
@@ -126,7 +129,7 @@ public class GammaErfNormalDump {
         try {
             System.out.printf("gamma\t%s\t%d,%d\t%d%n", name, Double.doubleToRawLongBits(a),
                     Double.doubleToRawLongBits(x), Double.doubleToRawLongBits(call.get()));
-        } catch (final Exception | AssertionError e) {
+        } catch (final Throwable e) {
             System.out.printf("gamma\t%s\t%d,%d\tE:%s%n", name, Double.doubleToRawLongBits(a),
                     Double.doubleToRawLongBits(x), e.getClass().getName());
         }
