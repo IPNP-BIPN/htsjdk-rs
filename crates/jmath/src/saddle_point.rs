@@ -84,6 +84,10 @@ fn half_log_2_pi() -> f64 {
     0.5 * fast_math::log(TWO_PI)
 }
 
+/// The table's entry for 15.0, which nothing reads: the guard is `z < 15.0`. Exposed so the suite
+/// can assert that it is unreachable rather than describing it in a comment.
+pub const EXACT_STIRLING_ERROR_AT_FIFTEEN: f64 = EXACT_STIRLING_ERRORS[30];
+
 /// `SaddlePointExpansion.getStirlingError`.
 pub fn stirling_error(z: f64) -> f64 {
     if z < 15.0 {
