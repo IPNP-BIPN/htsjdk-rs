@@ -230,6 +230,46 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
     a + b
 }
 
+/// `FastMath.F_1_3` and `F_1_2`, the two constants `log1p`'s small-value branch uses.
+const F_1_3: f64 = 1.0 / 3.0;
+const F_1_2: f64 = 1.0 / 2.0;
+
+/// `FastMath.log1p`.
+///
+/// Two algorithms again, switched at `|x| = 1e-6`: above it the high-precision logarithm plus a
+/// two-term Taylor correction, below it a Taylor series centred on 1. The comment in the
+/// reference says "|x| < 1e6", which is a typo for 1e-6; the code is what is ported.
+pub fn log1p(x: f64) -> f64 {
+    if x == -1.0 {
+        return f64::NEG_INFINITY;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+
+    // `!(-1e-6..=1e-6).contains(&x)` in Rust idiom; kept as the reference's two comparisons
+    // because the boundary values themselves take the other branch and the shape says so.
+    #[allow(clippy::manual_range_contains)]
+    if x > 1e-6 || x < -1e-6 {
+        let xpa = 1.0 + x;
+        let xpb = -(xpa - 1.0 - x);
+
+        let mut hi_prec = [0.0f64; 2];
+        let lores = log_with_hi_prec(xpa, Some(&mut hi_prec));
+        if lores.is_infinite() {
+            // Guarded so an infinite logarithm is not turned into a NaN by the correction below.
+            return lores;
+        }
+
+        let fx1 = xpb / xpa;
+        let epsilon = 0.5 * fx1 + 1.0;
+        epsilon * fx1 + hi_prec[1] + hi_prec[0]
+    } else {
+        let y = (x * F_1_3 - F_1_2) * x + 1.0;
+        y * x
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
