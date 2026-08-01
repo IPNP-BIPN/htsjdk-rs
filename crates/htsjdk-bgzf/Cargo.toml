@@ -12,3 +12,4 @@ libz-sys.workspace = true
 
 [dev-dependencies]
 md-5 = "0.10"
+rapidgzip-core = "=0.1.0"
