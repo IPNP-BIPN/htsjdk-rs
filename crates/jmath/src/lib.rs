@@ -30,6 +30,7 @@ pub mod normal;
 pub mod percentile;
 pub mod saddle_point;
 pub mod strict_exp;
+pub mod strict_pow;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
@@ -131,6 +132,17 @@ pub mod strict_math {
     #[inline]
     pub fn exp(x: f64) -> f64 {
         crate::strict_exp::exp(x)
+    }
+
+    /// `StrictMath.pow`, exact over every point of the conformance corpus.
+    ///
+    /// Same standing as [`exp`], and the same limitation: this is not `Math.pow`, which is a
+    /// HotSpot intrinsic that decision 0007 deferred. What it makes possible is the measurement
+    /// that decision 0007 never had — a distance to the intrinsic rather than a rate of
+    /// agreement. See [`crate::strict_pow`].
+    #[inline]
+    pub fn pow(x: f64, y: f64) -> f64 {
+        crate::strict_pow::pow(x, y)
     }
 }
 

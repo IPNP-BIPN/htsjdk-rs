@@ -184,6 +184,125 @@ fn strict_exp_is_strictmath() {
     );
 }
 
+/// `strict_pow` is `java.lang.StrictMath.pow`, on every point of the corpus.
+///
+/// The same claim as [`strict_exp_is_strictmath`] and made the same way. `StrictMath` is specified
+/// to be fdlibm, so this is not "close to": a divergence would mean the port is wrong, or that a
+/// JDK stopped honouring the specification, and those two need telling apart.
+#[test]
+fn strict_pow_is_strictmath() {
+    let mut ok = 0u64;
+    let mut total = 0u64;
+    let mut examples = Vec::new();
+    for line in corpus().lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.first() != Some(&"pow") {
+            continue;
+        }
+        let (Some(inp), Some(sb)) = (fields.get(1), fields.get(3)) else {
+            continue;
+        };
+        let Some((a, b)) = inp.split_once(':') else {
+            continue;
+        };
+        let (x, y) = (bits(a), bits(b));
+        total += 1;
+        if same(jmath::strict_math::pow(x, y), bits(sb)) {
+            ok += 1;
+        } else if examples.len() < 5 {
+            examples.push(format!(
+                "pow({x:e}, {y:e}): ours {:x}, StrictMath {sb}",
+                jmath::strict_math::pow(x, y).to_bits()
+            ));
+        }
+    }
+    assert!(total > 400_000, "the pow corpus shrank to {total} points");
+    assert_eq!(
+        ok,
+        total,
+        "`strict_pow` must match java.lang.StrictMath on all {total} points, got {ok}:\n{}",
+        examples.join("\n")
+    );
+}
+
+/// What the `pow` licence costs, measured the way decision 0025 measured `exp`.
+///
+/// Decision 0007 deferred `Math.pow` because HotSpot's intrinsic leans on `rcpps`, an approximate
+/// instruction, at six sites without refining it away. It recorded a **rate** — how often the host
+/// libm happens to agree — and a rate says how often, not how far. This prints the distance.
+///
+/// Both permissive stand-ins are measured side by side, as for `exp`, because which one is closer
+/// is not predictable: for `exp` the answer was the opposite of the obvious guess, and fdlibm
+/// turned out to be the *worse* stand-in.
+#[test]
+fn the_pow_gap_is_measured_for_both_stand_ins() {
+    let (mut libm_ok, mut fdlibm_ok, mut total) = (0u64, 0u64, 0u64);
+    let mut worst_ulps = 0i64;
+    let mut worst_at = String::new();
+    let mut unbounded = Vec::new();
+    for line in corpus().lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.first() != Some(&"pow") {
+            continue;
+        }
+        let (Some(inp), Some(mb)) = (fields.get(1), fields.get(2)) else {
+            continue;
+        };
+        let Some((a, b)) = inp.split_once(':') else {
+            continue;
+        };
+        let (x, y) = (bits(a), bits(b));
+        let math = bits(mb);
+        total += 1;
+        if same(x.powf(y), math) {
+            libm_ok += 1;
+        }
+        let ours = jmath::strict_math::pow(x, y);
+        if same(ours, math) {
+            fdlibm_ok += 1;
+        } else if ours.is_finite() && math.is_finite() && ours.signum() == math.signum() {
+            // The distance in representable doubles, which is the honest unit for "how wrong".
+            let d = (ours.to_bits() as i64 - math.to_bits() as i64).abs();
+            if d > worst_ulps {
+                worst_ulps = d;
+                worst_at = format!("pow({x:e}, {y:e})");
+            }
+        } else {
+            // A divergence that is not a last-bit difference: a sign flip, or one side
+            // non-finite. There should be none, and naming them beats folding them into a rate.
+            if unbounded.len() < 5 {
+                unbounded.push(format!("pow({x:e}, {y:e}): ours {ours:e}, Math {math:e}"));
+            }
+        }
+    }
+    let pct = |n: u64| 100.0 * n as f64 / total as f64;
+    println!(
+        "pow against java.lang.Math over {total} points: system libm {:.4}%, FDLIBM {:.4}%, \
+         worst FDLIBM divergence {worst_ulps} ulp at {worst_at}",
+        pct(libm_ok),
+        pct(fdlibm_ok)
+    );
+    assert!(
+        unbounded.is_empty(),
+        "{} divergence(s) are not a last-bit difference, so no ulp bound covers them:\n{}",
+        unbounded.len(),
+        unbounded.join("\n")
+    );
+    assert!(
+        fdlibm_ok < total,
+        "FDLIBM now matches java.lang.Math on all {total} points. If that is real, decision 0007 \
+         needs updating: the gap it describes would have closed."
+    );
+}
+
 /// What the licence costs, measured against the best permissive implementation rather than
 /// against whatever libm the host ships.
 ///
