@@ -23,6 +23,8 @@
 //! - NaN and infinity share the symbol `?`, so a metrics file cannot distinguish `NaN` from
 //!   `+Infinity`. `-Infinity` becomes `-?`, because the sign is applied separately.
 
+use std::cmp::Ordering;
+
 /// `FormatUtil.DECIMAL_DIGITS_TO_PRINT`.
 pub const DECIMAL_DIGITS_TO_PRINT: usize = 6;
 
@@ -56,7 +58,7 @@ pub fn format_double(value: f64) -> String {
     }
 
     let (digits, exp10) = shortest_decimal(value.abs());
-    let body = round_to_fraction_digits(&digits, exp10, DECIMAL_DIGITS_TO_PRINT);
+    let body = round_to_fraction_digits(&digits, exp10, DECIMAL_DIGITS_TO_PRINT, value.abs());
     // Negative zero keeps its sign: htsjdk prints `-0`.
     if negative {
         format!("-{body}")
@@ -89,31 +91,92 @@ fn shortest_decimal(value: f64) -> (String, i32) {
     (digits.to_string(), exponent + 1)
 }
 
-/// Whether `0.<digits> * 10^exp10` is the double's exact value, `valueExactAsDecimal` in
-/// `DigitList`.
+/// Where the double's exact value sits relative to its own shortest decimal form.
 ///
-/// A decimal `n / 10^k` is exactly representable in binary only when it is a dyadic rational,
-/// which happens exactly when `5^k` divides `n`. Since the digit string is already the shortest
-/// decimal that round-trips, the double equals it exactly precisely in that case.
-fn is_exact_decimal(digits: &str, exp10: i32) -> bool {
-    let k = digits.len() as i32 - exp10;
-    if k <= 0 {
-        return true; // an integer, exactly representable if it round-trips at all
+/// This is the pair of facts `DigitList.shouldRoundUp` consults and that this port used to be
+/// missing: `Equal` is `valueExactAsDecimal`, and `Less` is `alreadyRounded` — the shortest form
+/// was rounded **up** to reach it, so an apparent tie is really below the halfway point.
+///
+/// The previous version approximated both with "is the decimal exact", and rounded up whenever it
+/// was not. That is right half the time by construction, which is what most of the quarantined
+/// divergences of decision 0011 were.
+///
+/// Every double is a finite decimal, so this is an exact comparison and not an estimate. Nothing
+/// here is a transcription of `FloatingDecimal`: `m * 2^e` with `e` negative is `m * 5^-e / 10^-e`,
+/// and multiplying a decimal by five is one pass over its digits. That is arithmetic on the
+/// double's own bits, which is why decision 0013's licence blocker does not reach it.
+fn compare_to_exact(digits: &str, exp10: i32, magnitude: f64) -> Ordering {
+    let (exact_digits, exact_exp10) = exact_decimal(magnitude);
+    // Both are `0.<digits> * 10^exp` with no leading zero, so a differing exponent settles it. It
+    // does differ for a value like 1e23, whose shortest form is `1` at exponent 24 while the double
+    // is 0.99999999999999991611392 at exponent 23.
+    if exp10 != exact_exp10 {
+        return exact_exp10.cmp(&exp10);
     }
-    // 5^k outgrows any 17-digit mantissa well before k = 28, so it cannot divide.
-    if k > 27 {
-        return false;
+    let shortest = digits.as_bytes();
+    for index in 0..shortest.len().max(exact_digits.len()) {
+        let ours = exact_digits.get(index).copied().unwrap_or(0);
+        let theirs = shortest.get(index).map_or(0, |b| b - b'0');
+        match ours.cmp(&theirs) {
+            Ordering::Equal => {}
+            other => return other,
+        }
     }
-    let Ok(n) = digits.parse::<u128>() else {
-        return false;
+    Ordering::Equal
+}
+
+/// The double's exact decimal expansion, as `(digits, exp10)` with the value `0.<digits> * 10^exp10`.
+fn exact_decimal(value: f64) -> (Vec<u8>, i32) {
+    let bits = value.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1u64 << 52) - 1);
+    // Subnormals carry no implicit leading one and have a fixed exponent.
+    let (mantissa, exponent) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1u64 << 52), biased - 1075)
     };
-    let pow = 5u128.pow(k as u32);
-    n % pow == 0
+
+    // Least significant digit first, which is the direction a carry travels.
+    let mut digits: Vec<u8> = Vec::with_capacity(800);
+    let mut rest = mantissa;
+    if rest == 0 {
+        digits.push(0);
+    }
+    while rest > 0 {
+        digits.push((rest % 10) as u8);
+        rest /= 10;
+    }
+
+    // `m * 2^e` for a non-negative exponent is repeated doubling; for a negative one it is
+    // `m * 5^-e` with the point moved -e places left, because `2^e = 5^-e / 10^-e`.
+    let (factor, shift) = if exponent >= 0 {
+        (2u8, 0)
+    } else {
+        (5u8, -exponent)
+    };
+    for _ in 0..exponent.abs() {
+        let mut carry = 0u8;
+        for digit in digits.iter_mut() {
+            let product = *digit * factor + carry;
+            *digit = product % 10;
+            carry = product / 10;
+        }
+        while carry > 0 {
+            digits.push(carry % 10);
+            carry /= 10;
+        }
+    }
+
+    // Back to most significant first, and to the `0.<digits>` convention.
+    digits.reverse();
+    let exp10 = digits.len() as i32 - shift;
+    (digits, exp10)
 }
 
 /// Rounds `0.<digits> * 10^exp10` to at most `max_fraction` fraction digits, HALF_DOWN, and
 /// renders it without grouping, without trailing zeros, and with at least one integer digit.
-fn round_to_fraction_digits(digits: &str, exp10: i32, max_fraction: usize) -> String {
+fn round_to_fraction_digits(digits: &str, exp10: i32, max_fraction: usize, value: f64) -> String {
     // Position, counted in digits after the decimal point, of the last digit we keep.
     // A digit at index i in `digits` sits at fraction position i + 1 - exp10.
     let keep = max_fraction as i32 + exp10;
@@ -121,19 +184,23 @@ fn round_to_fraction_digits(digits: &str, exp10: i32, max_fraction: usize) -> St
     let mut kept: Vec<u8>;
     let mut exp10 = exp10;
 
-    // Whether the digit string represents the double *exactly*, which is what
-    // `DigitList.shouldRoundUp` calls `valueExactAsDecimal` and what decides a tie.
-    let exact = is_exact_decimal(digits, exp10);
-
     if keep <= 0 {
-        // Everything is beyond the last kept place.
-        let lone_five = keep == 0 && digits.as_bytes()[0] == b'5' && digits.len() == 1;
-        if keep == 0 && digits.as_bytes()[0] >= b'5' && !(lone_five && exact) {
-            kept = vec![1];
-            exp10 += 1;
-        } else {
+        // Everything is beyond the last kept place, so the answer is either zero or one unit in
+        // that place. This branch is left as it was, because measurement says it was already right
+        // and the reason is worth writing down: here a lone '5' rounds **up** unless the digit
+        // string is the exact value, which is the opposite of what happens one place to the right.
+        // `5e-7` is `4.99999999999999977…e-7`, below the halfway point, and htsjdk still prints
+        // `0.000001`. Only a genuine tie goes down, which is `HALF_DOWN` doing what it says.
+        let first = digits.as_bytes()[0];
+        let lone_five = first == b'5' && digits.len() == 1;
+        let round_up = keep == 0
+            && first >= b'5'
+            && !(lone_five && compare_to_exact(digits, exp10, value) == Ordering::Equal);
+        if !round_up {
             return "0".to_string();
         }
+        kept = vec![1];
+        exp10 += 1;
     } else {
         let keep = keep as usize;
         if keep >= digits.len() {
@@ -143,16 +210,17 @@ fn round_to_fraction_digits(digits: &str, exp10: i32, max_fraction: usize) -> St
             let rest = &digits[keep..];
             let first_dropped = rest.as_bytes()[0];
             let past_half = rest.bytes().skip(1).any(|b| b != b'0');
-            // `DigitList.shouldRoundUp`, HALF_DOWN branch, partially ported. A leading '5'
-            // with nothing after it looks like a tie, but it only *is* one when the digits
-            // represent the value exactly; otherwise the true binary value sits off the tie.
+            // `DigitList.shouldRoundUp`, HALF_DOWN branch. A leading '5' with nothing after it
+            // looks like a tie, but it only *is* one when the digit string is the double's exact
+            // value. Otherwise the true value sits to one side of the halfway point and decides,
+            // and which side it is cannot be read off the digits: `0.1234565` and `0.1234575`
+            // print the same shape and go opposite ways.
             //
-            // INCOMPLETE. Java also consults `alreadyRounded`, which says whether
-            // `FloatingDecimal` rounded *up* to produce the digit string, and returns false in
-            // that case. Reproducing it needs the exact decimal expansion of the double, which
-            // is most of `FloatingDecimal` itself. See decision 0011: the residual divergence
-            // is measured and pinned rather than fitted away.
-            let round_up = first_dropped > b'5' || (first_dropped == b'5' && (past_half || !exact));
+            // A real tie goes down, because `FormatUtil` sets `HALF_DOWN` rather than the
+            // `DecimalFormat` default.
+            let round_up = first_dropped > b'5'
+                || (first_dropped == b'5'
+                    && (past_half || compare_to_exact(digits, exp10, value) == Ordering::Greater));
             if round_up {
                 let mut i = kept.len();
                 loop {
@@ -242,6 +310,33 @@ mod tests {
         assert_eq!(format_double(2.0 / 3.0), "0.666667");
         assert_eq!(format_double(1.0 / 7.0), "0.142857");
         assert_eq!(format_double(std::f64::consts::PI), "3.141593");
+    }
+
+    /// The tie rule, which used to round up whenever the digit string was not the exact value and
+    /// so was wrong on about half of the cases it decided.
+    ///
+    /// Every one of these prints a `5` at the seventh fraction digit and nothing after it, so no
+    /// rule that looks only at the digit string can tell them apart. What separates them is which
+    /// side of the halfway point the double sits on.
+    #[test]
+    fn an_apparent_tie_is_settled_by_the_true_value() {
+        // 0.1234564999999999967…, below the halfway point, so down.
+        assert_eq!(format_double(0.123_456_5), "0.123456");
+        assert_eq!(format_double(0.123_457_5), "0.123457");
+        assert_eq!(format_double(-0.123_456_5), "-0.123456");
+        // 0.1234525000000000066…, above it, so up — and note the digit before the 5 is even, so
+        // a half-even reading of the digit string would have sent this one the other way too.
+        assert_eq!(format_double(0.123_452_5), "0.123453");
+    }
+
+    /// A genuine tie, where the digit string *is* the value, is the only place the rounding mode
+    /// itself shows. `HALF_DOWN` is not `DecimalFormat`'s default, and this is what it buys.
+    #[test]
+    fn a_real_tie_goes_down_because_the_mode_is_half_down() {
+        // 2^-21 is exactly 0.0000004768371582031250, a tie at the seventh digit.
+        assert_eq!(format_double(4.768_371_582_031_25e-7), "0");
+        // And a tie that is not at the underflow boundary.
+        assert_eq!(format_double(0.062_500_05), "0.0625");
     }
 
     #[test]
