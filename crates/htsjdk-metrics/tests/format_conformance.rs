@@ -3,26 +3,31 @@
 //! Goldens from `tools/metrics-conformance/FormatDump.java` in the pinned oracle container
 //! under `Locale.US`.
 //!
-//! **The port is not finished, and this file says so precisely rather than passing.** 41,566 of
-//! 41,678 values match, 99.73%. The remaining 112 are listed in
+//! **The port is not finished, and this file says so precisely rather than passing.** 41,610 of
+//! 41,678 values match, 99.84%. The remaining 68 are listed in
 //! `tests/data/known_divergences.tsv` by bit pattern, with the answer each side gives, so that
 //! neither an improvement nor a regression can happen silently.
 //!
 //! Pinning the failures rather than trimming the corpus is the point. A conformance suite that
 //! contains only what already passes reports 100% and means nothing.
 //!
-//! The cause is diagnosed in decision 0011 and the work is **blocked by a licence**, not by
-//! difficulty: see decision 0013. `FloatingDecimal` and `DigitList` are `java.base` classes
-//! under GPL2, and the OpenJDK Assembly Exception grants permission to *link*, not to translate
-//! and relicense. These 112 values are therefore quarantined as bio-identical rather than
-//! pending.
+//! # It used to be 112, and 44 of those were never licence-blocked
 //!
-//! The cause itself is not a rounding tweak away:
-//! `DecimalFormat` rounds the digit string produced by Java 17's `FloatingDecimal`, and
-//! `DigitList.shouldRoundUp` consults whether that string is exact and whether it was already
-//! rounded up. Both require the exact decimal expansion of the double. Fitting a rule to this
-//! corpus instead would pass here and diverge elsewhere, which is the failure mode this whole
-//! project exists to avoid.
+//! Decisions 0011 and 0013 diagnosed two causes and blocked both on the same licence:
+//! `DigitList.shouldRoundUp` consults whether the digit string is the double's exact value and
+//! whether it was already rounded up, and both were taken to require `FloatingDecimal`, which is
+//! GPL2 and cannot be transcribed into an MIT crate.
+//!
+//! The first of those two facts does not need `FloatingDecimal`. Every double **is** a finite
+//! decimal, and expanding it is arithmetic on its own bits — see decision 0026. Supplying that
+//! comparison fixed 44 values and introduced none.
+//!
+//! # What the remaining 68 are, and it is one cause
+//!
+//! All 68 are Java 17 emitting digits that the shortest form does not have: 66 are above 2^53 and
+//! 2 need sixteen significant digits. That is the pre-Schubfach `FloatingDecimal` behaviour
+//! decision 0017 already located and measured for `String.format`, arriving here by a different
+//! route. Not one remaining divergence is a rounding decision.
 
 use std::io::Read;
 
@@ -122,17 +127,52 @@ fn each_declared_divergence_is_still_exactly_as_recorded() {
     }
 }
 
-/// Keeps the rate quoted in decision 0011 tied to the code.
+/// Keeps the rate quoted in decisions 0011 and 0026 tied to the code.
 #[test]
 fn the_measured_agreement_rate_matches_the_decision_record() {
     let total = 41_678usize;
     let diverging = known().len();
-    assert_eq!(diverging, 112);
+    assert_eq!(diverging, 68);
     let rate = (total - diverging) as f64 / total as f64;
     assert!(
-        (0.9972..0.9974).contains(&rate),
-        "decision 0011 states 99.73%, measured {:.4}%",
+        (0.9983..0.9985).contains(&rate),
+        "decision 0026 states 99.84%, measured {:.4}%",
         rate * 100.0
+    );
+}
+
+/// Every remaining divergence must be a digit-generation case, not a rounding one.
+///
+/// This is the claim decision 0026 makes, and it is the one that would quietly stop being true:
+/// a future change to the tie rule could reintroduce a rounding divergence, and the count alone
+/// would not say which kind it was. A value diverges here only because Java 17 emits digits the
+/// shortest form does not have, which happens above 2^53 or when sixteen significant digits are
+/// needed.
+#[test]
+fn nothing_left_is_a_rounding_decision() {
+    let mut rounding = Vec::new();
+    for (bits, ours, htsjdk) in known() {
+        if bits.starts_with('L') {
+            rounding.push(format!("{bits}: a long, which has no rounding at all"));
+            continue;
+        }
+        let value = f64::from_bits(u64::from_str_radix(bits, 16).expect("double bits"));
+        let significant = format!("{value:e}")
+            .split('e')
+            .next()
+            .expect("mantissa")
+            .chars()
+            .filter(char::is_ascii_digit)
+            .count();
+        if value.abs() < 9_007_199_254_740_992.0 && significant < 16 {
+            rounding.push(format!("{bits}: ours={ours} htsjdk={htsjdk}"));
+        }
+    }
+    assert!(
+        rounding.is_empty(),
+        "{} divergence(s) are not digit generation, so decision 0026's claim no longer holds:\n{}",
+        rounding.len(),
+        rounding.join("\n")
     );
 }
 

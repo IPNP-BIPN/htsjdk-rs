@@ -4,3 +4,4 @@ target/
 /picard/
 /htsjdk/
 tools/conformance/pending/
+tools/conformance/__pycache__/
