@@ -555,26 +555,18 @@
     },
     {
       "id": "variant-comparator",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "VariantContextComparator: contig order, then start",
       "harness": "tools/vcf-conformance",
       "why": "H.2, and one of the two things gatk-rs's MultiVariantDataSource needs: the multi-input walkers gatk-rs G1.6 handed over cannot be ported until this and VCFUtils.smartMergeHeaders exist. Three behaviours are the reason for the case list. The two constructors refuse different things and word them differently: from a contig list the index is the position so only a repeated name can go wrong, while from header lines the index is carried by the line, so a repeated INDEX is a second, separately-worded error that a contig list cannot express at all \u2014 and the empty case is refused by both with different sentences, which the port got wrong until this dump said so. An unknown contig throws NullPointerException, and htsjdk's own comment says it does so happily, meaning a caller sorting a variant outside the dictionary gets an exception rather than an arbitrary order. And compare returns a subtraction rather than a normalised sign, so the magnitude is observable and the dump records the number: a comparator built from lines with sparse indexes returns the difference of those indexes, not of their positions in the collection.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 67,
-      "expect_contains": [
-        "ctor\tlines-empty\tE:java.lang.IllegalArgumentException:One or more header lines must be in the header line collection.",
-        "ctor\tempty\tE:java.lang.IllegalArgumentException:One or more contigs must be in the contig list.",
-        "ctor\tlines-shared-index\tE:java.lang.IllegalArgumentException:One or more contigs share the same index number.",
-        "E:java.lang.NullPointerException",
-        "cmp\tlines-sparse\tchr1:1\tchr2:1\t-4"
-      ],
       "cases": [
         {
           "dump": "VariantComparatorDump",
-          "golden": null,
-          "why": "No golden yet. The candidate comes from the pinned container on a real x86-64 runner, published as this run's golden-pending artefact."
+          "golden": "crates/htsjdk-vcf/tests/data/variant_comparator.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 67 rows, no corrections: 10 constructor cases with 5 refusals across 4 distinct messages, 53 comparisons of which 13 are refused for an unknown contig, and 4 compatibility checks. It corrected the port before it ever compared a number: the two constructors word the empty case differently and this port returned the contig-list sentence for both."
         }
       ]
     }
