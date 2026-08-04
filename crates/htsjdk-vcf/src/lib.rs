@@ -5,6 +5,7 @@
 
 pub mod allele;
 pub mod chromosome_counts;
+pub mod comparator;
 pub mod encoder;
 pub mod genotype_likelihoods;
 pub mod genotype_parse;
