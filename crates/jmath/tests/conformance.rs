@@ -26,14 +26,25 @@ fn same(a: f64, b: f64) -> bool {
 
 /// (function, agreements with `Math`, total points)
 fn agreement() -> BTreeMap<String, (u64, u64)> {
+    agreement_against(2)
+}
+
+/// The same, against whichever column of the corpus the caller names: 2 is `java.lang.Math`, 3 is
+/// `java.lang.StrictMath`. They are different functions (decision 0005), and a port can be exact
+/// against one and not the other, which is the whole point of [`strict_exp_is_strictmath`].
+fn agreement_against(column: usize) -> BTreeMap<String, (u64, u64)> {
     let mut acc: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     for line in corpus().lines() {
         let line = line.unwrap();
         if line.starts_with('#') {
             continue;
         }
-        let mut it = line.split(',');
-        let (Some(f), Some(inp), Some(mb)) = (it.next(), it.next(), it.next()) else {
+        let fields: Vec<&str> = line.split(',').collect();
+        let (Some(f), Some(inp), Some(mb)) = (
+            fields.first().copied(),
+            fields.get(1).copied(),
+            fields.get(column).copied(),
+        ) else {
             continue;
         };
         let (x, y) = match inp.split_once(':') {
@@ -49,6 +60,9 @@ fn agreement() -> BTreeMap<String, (u64, u64)> {
             // HotSpot source (decision 0014). It stays in the corpus, routed to the system
             // libm, so its divergence rate is measured and reported rather than the function
             // quietly disappearing from the table.
+            // Two implementations, measured side by side. The system libm is what decision 0014
+            // left behind when the GPL2 transcription was withdrawn; `strict_exp` is FDLIBM, which
+            // is permissively licensed and is what `StrictMath.exp` is specified to be.
             "exp" => x.exp(),
             "log1p" => x.ln_1p(),
             "expm1" => x.exp_m1(),
@@ -135,4 +149,92 @@ fn unported_functions_are_not_yet_exact() {
         );
     }
     println!("agreement with java.lang.Math: {}", report.join("  "));
+}
+
+/// FDLIBM is what `StrictMath.exp` is specified to be, and this checks that on every point.
+///
+/// The specification says so; the corpus is what makes it a measurement rather than a citation.
+/// If this ever fails, either the port drifted or a JDK stopped honouring the specification, and
+/// the two are worth telling apart.
+#[test]
+fn strict_exp_is_strictmath() {
+    let mut ok = 0u64;
+    let mut total = 0u64;
+    for line in corpus().lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.first() != Some(&"exp") {
+            continue;
+        }
+        let (Some(inp), Some(sb)) = (fields.get(1), fields.get(3)) else {
+            continue;
+        };
+        total += 1;
+        if same(jmath::strict_exp::exp(bits(inp)), bits(sb)) {
+            ok += 1;
+        }
+    }
+    assert!(total > 40_000, "the exp corpus shrank to {total} points");
+    assert_eq!(
+        ok, total,
+        "`strict_exp` must match java.lang.StrictMath on all {total} points, got {ok}"
+    );
+}
+
+/// What the licence costs, measured against the best permissive implementation rather than
+/// against whatever libm the host ships.
+///
+/// `Math.exp` is HotSpot's intrinsic, whose source is GPL2-only and therefore unportable into this
+/// crate (decision 0014). Two permissively-licensed implementations are available to stand in for
+/// it, and this prints how often each one happens to agree with the intrinsic. Neither reaches
+/// 100%, and the assertion is that neither does: if one ever did, the gap this crate documents
+/// would have closed and the decisions that describe it would be wrong.
+#[test]
+fn the_exp_gap_is_measured_for_both_stand_ins() {
+    let (mut libm_ok, mut fdlibm_ok, mut total) = (0u64, 0u64, 0u64);
+    let mut worst_ulps = 0i64;
+    for line in corpus().lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.first() != Some(&"exp") {
+            continue;
+        }
+        let (Some(inp), Some(mb)) = (fields.get(1), fields.get(2)) else {
+            continue;
+        };
+        let x = bits(inp);
+        let math = bits(mb);
+        total += 1;
+        if same(x.exp(), math) {
+            libm_ok += 1;
+        }
+        let ours = jmath::strict_exp::exp(x);
+        if same(ours, math) {
+            fdlibm_ok += 1;
+        } else if ours.is_finite() && math.is_finite() {
+            // The distance in representable doubles, which is the honest unit for "how wrong".
+            // Only meaningful when both are finite and share a sign, which every divergence here
+            // does: exp is positive everywhere it is finite.
+            let d = (ours.to_bits() as i64 - math.to_bits() as i64).abs();
+            worst_ulps = worst_ulps.max(d);
+        }
+    }
+    let pct = |n: u64| 100.0 * n as f64 / total as f64;
+    println!(
+        "exp against java.lang.Math over {total} points: system libm {:.4}%, FDLIBM {:.4}%, \
+         worst FDLIBM divergence {worst_ulps} ulp",
+        pct(libm_ok),
+        pct(fdlibm_ok)
+    );
+    assert!(
+        fdlibm_ok < total,
+        "FDLIBM now matches java.lang.Math on all {total} points. If that is real, decisions 0005 \
+         and 0014 need updating: the gap they describe would have closed."
+    );
 }

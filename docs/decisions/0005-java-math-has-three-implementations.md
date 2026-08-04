@@ -103,10 +103,19 @@ difficulty. They are not equivalent:
 | library | source | licence | portable by transcription? |
 |---|---|---|---|
 | `java.lang.Math` | HotSpot intrinsics | GPL2 only | **no** |
-| `java.lang.StrictMath` | fdlibm in `java.base` | GPL2 + Classpath Exception | **no** |
+| `java.lang.StrictMath` | fdlibm in `java.base` | GPL2 + Classpath Exception | **no, from that copy** |
+| `java.lang.StrictMath` | **FDLIBM, from Sun** | freely distributable, notice preserved | **yes** (decision 0025) |
 | commons-math3 `FastMath` | Apache Commons | Apache 2.0 | yes |
 
-Only the third can be transcribed. For the first two, exactness has to be reached the way
+The second row is what this table got wrong, and decision 0025 corrects it: what cannot be
+transcribed is the JDK's *copy* of fdlibm, because it sits inside a GPL2 distribution. The library
+itself is Sun's, freely distributable with its notice preserved, and `StrictMath` is *specified* to
+be it rather than merely to resemble it. `jmath::strict_math::exp` is that port and it matches
+`StrictMath.exp` on every point of the corpus. It does **not** help with `Math.exp`: measured
+against the intrinsic it agrees on 98.6443% where the system libm agrees on 99.9711%, so the
+permissive implementation is the worse stand-in, with every divergence inside 1 ulp.
+
+Only the first row is closed by licence alone. For the first two, exactness has to be reached the way
 decision 0006 reached it for `log`: by establishing an independent property of the result — that
 it is correctly rounded — and implementing to that property rather than to the algorithm. Where
 no such property holds, as with `exp`, the function stays unported.
