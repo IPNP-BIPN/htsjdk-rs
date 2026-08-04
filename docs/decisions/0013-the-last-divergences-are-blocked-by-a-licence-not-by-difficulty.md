@@ -92,6 +92,36 @@ a metrics file containing one of those values will differ in one digit.
    JDK 19+ oracle. That does not help while the contract pins JDK 17, but it means the problem
    has a shelf life, and it reframes the choice of oracle JDK as a licensing decision as well as
    a fidelity one.
+
+   **Corrected on 2026-08-04, by measurement. This is right for `String.format` and wrong for
+   `DecimalFormat`, which is the path these 66 divergences are on.** The Schubfach rewrite
+   replaced `Double.toString` and `Float.toString`. `DecimalFormat` kept the old converter:
+
+   | JDK | `Double.toString(1e23)` | `new DecimalFormat("#.##").format(1e23)` |
+   |---|---|---|
+   | 17, the pinned oracle | `9.999999999999999E22` | `99999999999999990000000` |
+   | 21 LTS | **`1.0E23`** | `99999999999999990000000` |
+   | 22, 24, 25 | `1.0E23` | `99999999999999990000000` |
+   | **26** | `1.0E23` | **`100000000000000000000000`** |
+
+   All measured on `linux/amd64` Temurin. So the version that would close this file's divergences
+   is not 19 but **26**, released this year, nine major versions past what htsjdk 4.2.0 and
+   GATK 4.6.2.0 are built and shipped against. Pinning the oracle there would make the goldens
+   represent a runtime nobody uses these tools on, which is a worse failure than the divergence
+   it removes.
+
+   Recorded rather than quietly dropped, because this option was carried for a year as the cheap
+   way out and it is not one.
+
+   What a bump would cost elsewhere was measured at the same time, since the image had to exist
+   anyway: gatk-rs replayed all **57 oracle-backed suites, 62 cases, 32,604 compared values**
+   against a JDK 21 oracle built for the purpose, and **not one moved**. So the obstacle is not
+   that a JDK bump breaks things — it does not. The obstacle is that the bump which would help is
+   far too new to be the reference.
+
+   One thing the attempt confirmed for free: the oracle image's build-time probe refused JDK 21
+   outright (`java major is '21', expected '17'`), so the pin cannot be changed by accident. It
+   had to be relaxed deliberately, in a copy, to take this measurement.
 3. **An independent implementation with its own provenance.** If a permissively licensed
    implementation of the pre-JDK19 algorithm exists, using it is clean. **Searched on 2026-08-04.
    Negative, and the negative is measured rather than argued.**
