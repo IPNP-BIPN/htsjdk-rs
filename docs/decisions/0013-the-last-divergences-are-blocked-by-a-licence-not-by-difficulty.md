@@ -113,6 +113,28 @@ a metrics file containing one of those values will differ in one digit.
    Recorded rather than quietly dropped, because this option was carried for a year as the cheap
    way out and it is not one.
 
+   **Costed on 2026-08-04, both repositories, against a JDK 26 oracle built for the purpose.**
+
+   | | measured |
+   |---|---|
+   | htsjdk-rs, this corpus | 67 of 41,612 rows change: the **66** quarantined ones close, and **1** new divergence opens |
+   | gatk-rs, all 57 oracle-backed suites | 61 of 62 cases unchanged; **1** golden would need regenerating (`decimal-format`, the suite that deliberately probes the boundary) |
+
+   The new divergence is `5e-7` at the underflow boundary, and it is the branch this repository
+   deliberately left alone: under JDK 17 a lone `5` before the first digit rounds **up** unless the
+   digit string is exact, and under JDK 26 it rounds **down**. This port follows JDK 17, so it
+   would become wrong there — and the fix is the one-branch change that was tried and reverted
+   during #74, because it broke that same value against the *current* oracle.
+
+   So the honest arithmetic of the move is **68 divergences to 0**, at the price of one golden
+   regenerated here, one in gatk-rs, and a one-branch change to `round_to_fraction_digits`.
+
+   That is a much smaller price than "nothing moves" would have suggested, and it does not settle
+   the question. What it costs technically is not what it costs in meaning: htsjdk 4.2.0 and
+   GATK 4.6.2.0 are built and shipped against Java 17, and goldens taken on JDK 26 would describe a
+   runtime nobody runs these tools on. The measurement is here so that whoever decides is deciding
+   between two known things rather than one known and one guessed.
+
    What a bump would cost elsewhere was measured at the same time, since the image had to exist
    anyway: gatk-rs replayed all **57 oracle-backed suites, 62 cases, 32,604 compared values**
    against a JDK 21 oracle built for the purpose, and **not one moved**. So the obstacle is not
