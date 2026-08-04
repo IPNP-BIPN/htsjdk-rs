@@ -88,7 +88,76 @@ fn shortest_decimal(value: f64) -> (String, i32) {
     let digits = if digits.is_empty() { "0" } else { digits };
     // `{:e}` normalises to one digit before the point, so exp10 (digits before the point when
     // written as 0.<digits>) is exponent + 1.
-    (digits.to_string(), exponent + 1)
+    closest_of_that_length(digits, exponent + 1, value)
+}
+
+/// Among the decimals of the length Rust chose, the one nearest the double, ties to even.
+///
+/// "Shortest, then nearest, then even" is the specification every modern shortest-representation
+/// algorithm implements — Ryu, Schubfach, and therefore Java 19 and later. Rust's formatter gets
+/// the length right and does not always get the last digit right: `6.985838094673373e14` is exactly
+/// `698583809467337.25`, so the two sixteen-digit forms `…337.2` and `…337.3` are **equidistant**
+/// and both round-trip. htsjdk prints the even one; Rust prints the other.
+///
+/// This is implementing to the specification rather than to Java 17. Where Java 17 stops agreeing
+/// with the specification — above 2^53, where its digit generation predates Schubfach — no rule of
+/// this kind reaches it, and those values stay in the declared divergences.
+///
+/// The cost is two string parses per call. The exact expansion, which is the expensive part, runs
+/// only when a neighbour also round-trips, which needs the double to be a short decimal and is
+/// rare.
+fn closest_of_that_length(digits: &str, exp10: i32, value: f64) -> (String, i32) {
+    let length = digits.len();
+    let Ok(number) = digits.parse::<u128>() else {
+        // Past what a u128 holds there is no neighbour to consider: the length is already beyond
+        // anything a double can distinguish.
+        return (digits.to_string(), exp10);
+    };
+    // The scale that turns the digit string back into the value it names.
+    let scale = exp10 - length as i32;
+    let magnitude = value.abs();
+
+    // Reaching the exact expansion needs the double to sit exactly on a midpoint, which needs it
+    // to *be* a short decimal. Testing that first is what keeps this affordable: without the gate
+    // the expansion ran on nearly every value, because at seventeen digits some twenty neighbouring
+    // decimals round-trip and reading a midpoint back lands on the same double again.
+    if !may_be_a_short_decimal(magnitude) {
+        return (digits.to_string(), exp10);
+    }
+
+    for lower in [number.wrapping_sub(1), number] {
+        let upper = lower + 1;
+        let (lower_text, upper_text) = (lower.to_string(), upper.to_string());
+        // Only a neighbour of the *same* length competes. A shorter one would already have been
+        // chosen, since Rust's answer is the shortest that round-trips.
+        if lower_text.len() != length || upper_text.len() != length {
+            continue;
+        }
+        let both_round_trip = [&lower_text, &upper_text].iter().all(|candidate| {
+            format!("{candidate}e{scale}")
+                .parse::<f64>()
+                .is_ok_and(|parsed| parsed == magnitude)
+        });
+        if !both_round_trip {
+            continue;
+        }
+        // The midpoint of two consecutive n-digit decimals is the lower one with a 5 appended, so
+        // the exact comparison this module already does answers which side the double falls on.
+        let chosen = match compare_to_exact(&format!("{lower_text}5"), exp10, magnitude) {
+            Ordering::Less => lower_text,
+            Ordering::Greater => upper_text,
+            // Equidistant, and this is the case Rust gets wrong.
+            Ordering::Equal => {
+                if lower % 2 == 0 {
+                    lower_text
+                } else {
+                    upper_text
+                }
+            }
+        };
+        return (chosen, exp10);
+    }
+    (digits.to_string(), exp10)
 }
 
 /// Where the double's exact value sits relative to its own shortest decimal form.
@@ -123,6 +192,40 @@ fn compare_to_exact(digits: &str, exp10: i32, magnitude: f64) -> Ordering {
         }
     }
     Ordering::Equal
+}
+
+/// Whether the double could be a decimal short enough for an equidistant pair to exist at all.
+///
+/// A necessary condition, and a cheap one. Write the value as `odd * 2^power` with `odd` odd. When
+/// `power` is negative the exact decimal is `odd * 5^-power` over `10^-power`, and `5^-power` is
+/// odd too, so nothing cancels: the expansion has at least `digits(odd) + floor(0.699 * -power)`
+/// significant digits. When `power` is positive the value is `odd * 2^power`, at least
+/// `digits(odd) + floor(0.301 * power)` digits by the same argument. A tie between two forms of at
+/// most eighteen digits cannot happen once either exceeds nineteen.
+///
+/// False positives are harmless — the exact comparison then runs and finds no tie. False negatives
+/// would be a bug, which is why the bound is the pessimistic one.
+fn may_be_a_short_decimal(value: f64) -> bool {
+    let bits = value.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & ((1u64 << 52) - 1);
+    let (mantissa, exponent) = if biased == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1u64 << 52), biased - 1075)
+    };
+    if mantissa == 0 {
+        return true;
+    }
+    let shift = mantissa.trailing_zeros() as i32;
+    let power = exponent + shift;
+    let odd_digits = (mantissa >> shift).to_string().len() as u32;
+    if power >= 0 {
+        // An integer, `odd * 2^power`, which has at least `digits(odd) + floor(0.301 * power)`
+        // significant digits for the same reason.
+        return odd_digits * 1000 + power as u32 * 301 <= 19_000;
+    }
+    odd_digits * 1000 + (-power) as u32 * 699 <= 19_000
 }
 
 /// The double's exact decimal expansion, as `(digits, exp10)` with the value `0.<digits> * 10^exp10`.

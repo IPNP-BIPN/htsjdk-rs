@@ -1,6 +1,8 @@
 # 0013. The last formatting divergences are blocked by a licence, not by difficulty
 
-**Status:** accepted; the port is blocked, and the block is not technical
+**Status:** accepted; the port is blocked, and the block is not technical.
+Superseded in part by [0026](0026-the-tie-rule-was-never-licence-blocked.md): most of what this
+record blocked was never blocked. Option 3 was searched on 2026-08-04 and came back negative
 **Date:** 2026-07-21
 **Follows:** [0011](0011-metrics-number-formatting-depends-on-the-jvm-locale.md)
 
@@ -91,8 +93,32 @@ a metrics file containing one of those values will differ in one digit.
    has a shelf life, and it reframes the choice of oracle JDK as a licensing decision as well as
    a fidelity one.
 3. **An independent implementation with its own provenance.** If a permissively licensed
-   implementation of the pre-JDK19 algorithm exists, using it is clean. This has not been
-   searched.
+   implementation of the pre-JDK19 algorithm exists, using it is clean. **Searched on 2026-08-04.
+   Negative, and the negative is measured rather than argued.**
+
+   The permissive lineage is Apache Harmony's `NumberConverter`, inherited by Android's `libcore`
+   as `RealToString`, Apache 2.0. It is an independent implementation aiming at the same
+   documented goal, and it does not reproduce OpenJDK's deviations from that goal — it has its
+   own. Android's own bug tracker says so, on the exact value that sits in this corpus
+   (`44b52d02c7e14af6`, `1e23`):
+
+   > The test was previously failing with the RI for 1E23: the closest representable double to
+   > 1E23 is exactly 99999999999999991611392. The value produces `99999999999999990000000` when
+   > formatted with the RI and not `100000000000000000000000`.
+
+   — [platform/libcore 4e92b62](https://android.googlesource.com/platform/libcore/+/4e92b62),
+   bug 17656132.
+
+   `100000000000000000000000` is what this port already produces, so the permissive implementation
+   would agree with **us** and not with the oracle. It closes nothing.
+
+   Modern Android is no help either: since Nougat its class library is `ojluni`, which is OpenJDK
+   code and therefore GPL2. The only implementation that reproduces OpenJDK 17 is OpenJDK's, which
+   is the one that may not be transcribed.
+
+   Note what this negative did **not** require: no Apache-2.0 source was read. The answer came
+   from the project's own bug tracker, which is the cheapest place to have looked and was not
+   looked at for a year.
 
 ## The general lesson, which is bigger than this function
 

@@ -1,6 +1,6 @@
 # 0026. The formatting tie rule was never licence-blocked
 
-**Status:** accepted; 112 divergences reduced to 68, and the remainder is one cause
+**Status:** accepted; 112 divergences reduced to 66, and the remainder is one cause
 **Date:** 2026-08-04
 **Follows:** [0011](0011-metrics-number-formatting-depends-on-the-jvm-locale.md),
 [0013](0013-the-last-divergences-are-blocked-by-a-licence-not-by-difficulty.md),
@@ -62,9 +62,9 @@ The corpus is unchanged: 41,678 values from the pinned oracle, `tools/metrics-co
 | | divergences | agreement |
 |---|---|---|
 | before | 112 | 99.73% |
-| after | **68** | **99.84%** |
+| after | **66** | **99.84%** |
 
-44 fixed, 0 introduced. The values that moved are exactly the shape the old rule could not see:
+46 fixed, 0 introduced. The values that moved are exactly the shape the old rule could not see:
 
 | value | the double | old | htsjdk |
 |---|---|---|---|
@@ -74,16 +74,38 @@ The corpus is unchanged: 41,678 values from the pinned oracle, `tools/metrics-co
 Both print a `5` at the seventh fraction digit with nothing after it. No rule reading only the
 digit string separates them.
 
-## What the remaining 68 are
+## What the remaining 66 are
 
-One cause, and it is already on the record. All 68 are Java 17 emitting digits that the shortest
-form does not have: **66 are above 2^53**, and **2 need sixteen significant digits**. That is the
-pre-Schubfach `FloatingDecimal` behaviour decision 0017 located and measured for `String.format`,
-reached here through `DecimalFormat` instead.
+One cause, and it is already on the record. **Every one is above 2^53**, where Java 17 stops
+printing the shortest decimal form. That is the pre-Schubfach `FloatingDecimal` behaviour decision
+0017 located and measured for `String.format`, reached here through `DecimalFormat` instead.
 
-Not one remaining divergence is a rounding decision, and the suite asserts that rather than
-stating it: `nothing_left_is_a_rounding_decision` fails if a divergence appears below 2^53 with
-fewer than sixteen significant digits.
+Below that line the port and the reference agree on every value in the corpus, and the suite
+asserts that rather than stating it: `nothing_left_is_below_two_to_the_fifty_three` fails if any
+divergence appears under it.
+
+## Addendum, 2026-08-04: two of the 68 were ours
+
+The first pass left 68 and attributed all of them to Java. Two were not Java's doing.
+
+`6.985838094673373e14` is exactly `698583809467337.25`, so the two sixteen-digit forms `…337.2` and
+`…337.3` are **equidistant** and both round-trip. "Shortest, then nearest, then even" is the
+specification Ryu and Schubfach implement, and therefore what Java 19 and later do — and what
+Java 17 does here too. Rust's formatter gets the length right and picks the odd form.
+
+`shortest_decimal` now corrects it: among the decimals of the length Rust chose, take the one
+nearest the double, ties to even. That is implementing to the specification, not to Java 17.
+
+The cost had to be managed. At seventeen digits some twenty neighbouring decimals round-trip, so a
+naive check ran the exact expansion on nearly every value and the suite went from 0.12s to 6s. A
+tie needs the double to *be* a short decimal, which is testable without expanding it: written as
+`odd * 2^power`, the exact decimal has at least `digits(odd) + floor(0.699 * -power)` significant
+digits when `power` is negative and `digits(odd) + floor(0.301 * power)` when it is positive, and a
+tie between forms of at most eighteen digits cannot happen once either exceeds nineteen. With that
+gate the suite is back to 0.15s.
+
+The same correction, and the same gate, are in gatk-rs's `DecimalFormat` port, where they took its
+divergences from 4 to 2 — likewise leaving only values above 2^53.
 
 ## One place the old rule was right, and why
 
