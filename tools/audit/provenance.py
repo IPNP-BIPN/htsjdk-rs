@@ -26,6 +26,13 @@ ALLOWED = {
     # what makes commons-math3 portable where the JDK is not. See decision 0023.
     "org.apache.commons.math3": "commons-math3, Apache 2.0",
     "commons-math3": "commons-math3, Apache 2.0",
+    # FDLIBM, Sun Microsystems 1993. Its notice grants the right to "use, copy, modify, and
+    # distribute this software ... provided that this notice is preserved", which is what a
+    # translation needs and is what the JDK's own copy could not give us: OpenJDK's FDLIBM is
+    # inside a GPL2 distribution. The notice is preserved in the module header of every file that
+    # cites it. `java.lang.StrictMath` is *specified* to be this library, which is why porting it
+    # is exact rather than approximate. See decision 0025.
+    "fdlibm": "FDLIBM, Sun freely-distributable licence",
 }
 
 # Anything matching these is GPL2 and must not be transcribed. Listed explicitly rather than

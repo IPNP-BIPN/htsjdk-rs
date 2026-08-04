@@ -29,6 +29,7 @@ mod log;
 pub mod normal;
 pub mod percentile;
 pub mod saddle_point;
+pub mod strict_exp;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
@@ -106,6 +107,12 @@ pub mod math {
     // Classpath Exception, so the transcription could not be published under this crate's MIT
     // licence. Removed in decision 0014. `Math.exp` now has the same status as `Math.pow`:
     // unported, with the reason recorded rather than the gap left unexplained.
+    //
+    // `strict_math::exp` is NOT a substitute for it, and decision 0025 measured why: FDLIBM agrees
+    // with `Math.exp` on 98.6443% of the corpus where the system libm agrees on 99.9711%. The
+    // permissive implementation is the *worse* stand-in for the intrinsic, and it would have been
+    // easy to assume the opposite. What both agree on is the size of the gap: no divergence
+    // exceeds 1 ulp.
 }
 
 /// `java.lang.StrictMath`. fdlibm, portable by specification.
@@ -114,6 +121,16 @@ pub mod strict_math {
     #[inline]
     pub fn sqrt(x: f64) -> f64 {
         x.sqrt()
+    }
+
+    /// `StrictMath.exp`, exact over every point of the conformance corpus.
+    ///
+    /// Portable where `Math.exp` is not, and for a licence reason rather than a difficulty one:
+    /// `StrictMath` is *specified* to be FDLIBM, and FDLIBM's notice grants the right to
+    /// translate it. See [`crate::strict_exp`] and decision 0025.
+    #[inline]
+    pub fn exp(x: f64) -> f64 {
+        crate::strict_exp::exp(x)
     }
 }
 
