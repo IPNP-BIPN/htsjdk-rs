@@ -3,8 +3,8 @@
 //! Goldens from `tools/metrics-conformance/FormatDump.java` in the pinned oracle container
 //! under `Locale.US`.
 //!
-//! **The port is not finished, and this file says so precisely rather than passing.** 41,610 of
-//! 41,678 values match, 99.84%. The remaining 68 are listed in
+//! **The port is not finished, and this file says so precisely rather than passing.** 41,612 of
+//! 41,678 values match, 99.84%. The remaining 66 are listed in
 //! `tests/data/known_divergences.tsv` by bit pattern, with the answer each side gives, so that
 //! neither an improvement nor a regression can happen silently.
 //!
@@ -22,12 +22,19 @@
 //! decimal, and expanding it is arithmetic on its own bits — see decision 0026. Supplying that
 //! comparison fixed 44 values and introduced none.
 //!
-//! # What the remaining 68 are, and it is one cause
+//! # What the remaining 66 are, and it is one cause
 //!
-//! All 68 are Java 17 emitting digits that the shortest form does not have: 66 are above 2^53 and
-//! 2 need sixteen significant digits. That is the pre-Schubfach `FloatingDecimal` behaviour
-//! decision 0017 already located and measured for `String.format`, arriving here by a different
-//! route. Not one remaining divergence is a rounding decision.
+//! **Every one is above 2^53**, where Java 17 stops printing the shortest decimal form. Below that
+//! line the port and the reference agree on every value in the corpus.
+//!
+//! Two of the earlier 68 were not Java's doing at all: they were exact ties between two
+//! equidistant shortest forms, which the reference resolves toward the even digit and Rust's
+//! formatter does not. Fixing that is implementing to the specification every modern
+//! shortest-representation algorithm follows, and it is in `format.rs` rather than here.
+//!
+//! What is left is the pre-Schubfach `FloatingDecimal` behaviour decision 0017 located and measured
+//! for `String.format`, arriving here by a different route. Not one remaining divergence is a
+//! rounding decision, and none is below 2^53.
 
 use std::io::Read;
 
@@ -132,7 +139,7 @@ fn each_declared_divergence_is_still_exactly_as_recorded() {
 fn the_measured_agreement_rate_matches_the_decision_record() {
     let total = 41_678usize;
     let diverging = known().len();
-    assert_eq!(diverging, 68);
+    assert_eq!(diverging, 66);
     let rate = (total - diverging) as f64 / total as f64;
     assert!(
         (0.9983..0.9985).contains(&rate),
@@ -141,38 +148,30 @@ fn the_measured_agreement_rate_matches_the_decision_record() {
     );
 }
 
-/// Every remaining divergence must be a digit-generation case, not a rounding one.
+/// Every remaining divergence must be above 2^53, which is the one place Java 17 leaves the
+/// shortest decimal form.
 ///
-/// This is the claim decision 0026 makes, and it is the one that would quietly stop being true:
-/// a future change to the tie rule could reintroduce a rounding divergence, and the count alone
-/// would not say which kind it was. A value diverges here only because Java 17 emits digits the
-/// shortest form does not have, which happens above 2^53 or when sixteen significant digits are
-/// needed.
+/// This is the claim decision 0026 makes, and it is the one that would quietly stop being true: a
+/// future change to the rounding or the tie rule could reintroduce a divergence below the line, and
+/// the count alone would not say which kind it was.
 #[test]
-fn nothing_left_is_a_rounding_decision() {
-    let mut rounding = Vec::new();
+fn nothing_left_is_below_two_to_the_fifty_three() {
+    let mut below = Vec::new();
     for (bits, ours, htsjdk) in known() {
         if bits.starts_with('L') {
-            rounding.push(format!("{bits}: a long, which has no rounding at all"));
+            below.push(format!("{bits}: a long, which has no rounding at all"));
             continue;
         }
         let value = f64::from_bits(u64::from_str_radix(bits, 16).expect("double bits"));
-        let significant = format!("{value:e}")
-            .split('e')
-            .next()
-            .expect("mantissa")
-            .chars()
-            .filter(char::is_ascii_digit)
-            .count();
-        if value.abs() < 9_007_199_254_740_992.0 && significant < 16 {
-            rounding.push(format!("{bits}: ours={ours} htsjdk={htsjdk}"));
+        if value.abs() < 9_007_199_254_740_992.0 {
+            below.push(format!("{bits}: ours={ours} htsjdk={htsjdk}"));
         }
     }
     assert!(
-        rounding.is_empty(),
-        "{} divergence(s) are not digit generation, so decision 0026's claim no longer holds:\n{}",
-        rounding.len(),
-        rounding.join("\n")
+        below.is_empty(),
+        "{} divergence(s) sit below 2^53, so decision 0026's claim no longer holds:\n{}",
+        below.len(),
+        below.join("\n")
     );
 }
 
