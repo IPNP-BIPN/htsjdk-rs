@@ -1,6 +1,8 @@
 # 0007. `Math.pow` is deferred: its intrinsic depends on an approximate hardware instruction
 
-**Status:** accepted; hazard partially cleared, see the addendum
+**Status:** accepted; hazard partially cleared, see the addendum.
+Superseded in part by [0027](0027-pow-has-a-bound-now-and-it-is-the-same-one-as-exp.md): `pow` now
+has a measured bound of 1 ulp and `StrictMath.pow` is exact
 **Date:** 2026-07-21
 **Follows:** [0006](0006-correct-rounding-is-the-target-for-log-and-log10.md)
 
