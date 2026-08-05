@@ -569,6 +569,31 @@
           "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 67 rows, no corrections: 10 constructor cases with 5 refusals across 4 distinct messages, 53 comparisons of which 13 are refused for an unknown contig, and 4 compatibility checks. It corrected the port before it ever compared a number: the two constructors word the empty case differently and this port returned the contig-list sentence for both."
         }
       ]
+    },
+    {
+      "id": "smart-merge-headers",
+      "status": "golden-pending",
+      "title": "VCFUtils.smartMergeHeaders: what survives, and in what order",
+      "harness": "tools/vcf-conformance",
+      "why": "H.2, and the second of the two things gatk-rs's MultiVariantDataSource needs: with this and VariantContextComparator the multi-input walkers gatk-rs G1.6 handed over become portable. Eighty lines of Java, and most of what matters in them is not the merge, which is why the suite exists. THE OUTPUT ALWAYS CARRIES A fileformat LINE NO SOURCE WROTE: getMetaDataInSortedOrder prepends one before the sorted metadata, so a merge of two headers holding one INFO line each returns two lines rather than one, and the extra one is VCFv4.2 unless the header's version FIELD is 4.3 or later \u2014 a field set at parse time, not a fileformat line among the metadata, so a header assembled in memory never reaches the version policy however its lines are labelled. THE TWO PROMOTION ARMS ARE BOTH NO-OPS: the Java says promote key to Float in each and neither does it, because the put writes back what the map already holds, so an Integer seen first stays Integer and a Float seen first stays Float. The one branch that does change the map is setNumberToUnbounded, which mutates the stored line in place. And the input order is each source's SORTED order, not its file order, which is what the method's own comment says the ordering exists to protect for contig lines.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 16,
+      "expect_contains": [
+        "merged\tint-then-float\t2\tfileformat=VCFv4.2|INFO=<ID=X,Number=1,Type=Integer,",
+        "merged\tfloat-then-int\t2\tfileformat=VCFv4.2|INFO=<ID=X,Number=1,Type=Float,",
+        "merged\tnumber-differs\t2\tfileformat=VCFv4.2|INFO=<ID=AF,Number=.,Type=Float,",
+        "err\tint-then-string\tjava.lang.IllegalStateException:Incompatible header types, collision between these two types:",
+        "merged\tversion-43-and-42\t2\t"
+      ],
+      "cases": [
+        {
+          "dump": "SmartMergeDump",
+          "golden": null,
+          "why": "No golden yet. The candidate comes from the pinned container on a real x86-64 runner, published as this run's golden-pending artefact."
+        }
+      ]
     }
   ],
   "probes": [
