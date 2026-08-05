@@ -244,15 +244,15 @@ jobs:
                   if parts[0] in ('deflate', 'bgzf', 'fixture', 'default-bgzf-level', 'flags'):
                       rows[tuple(parts[:-2] if parts[0] in ('deflate', 'bgzf') else parts[:-1])] = parts[-1]
               return rows
-          emulated = load('tools/gkl-probe/emulated.txt')
-          real = load('/tmp/gkl-real.txt')
-          if not emulated or not real:
+          committed = load('tools/gkl-probe/real-x86-64.txt')
+          fresh = load('/tmp/gkl-real.txt')
+          if not committed or not fresh:
               print("FAIL: one of the two columns is empty"); sys.exit(1)
-          missing = set(emulated) ^ set(real)
+          missing = set(committed) ^ set(fresh)
           if missing:
               print(f"FAIL: the two runs compared different things: {sorted(missing)[:5]}")
               sys.exit(1)
-          differing = sorted(k for k in emulated if emulated[k] != real[k])
+          differing = sorted(k for k in committed if committed[k] != fresh[k])
           # First half: does this GKL still split where decisions 0028 and 0029 say it does?
           #
           # Below 7 GKL is either igzip (levels 1 and 2) or Intel's patched zlib 1.2.13 (3 to 6),
@@ -264,17 +264,17 @@ jobs:
           # and 4, measured, because two match-finders can agree on data that simple. The claim
           # is asserted on `acgt`, which is the BAM-shaped fixture the level table was measured
           # on. The other direction admits no exceptions: EVERY row at 7 and above must agree.
-          igzip_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl'
+          igzip_gone = [k for k in fresh if k[0] == 'deflate' and k[3] == 'gkl'
                         and k[1] == 'acgt' and int(k[2]) < 7
-                        and real[k] == real[(k[0], k[1], k[2], 'jdk')]]
+                        and fresh[k] == fresh[(k[0], k[1], k[2], 'jdk')]]
           if igzip_gone:
               print(f"FAIL: on the acgt fixture GKL matched the JDK at level(s) "
                     f"{sorted(int(k[2]) for k in igzip_gone)}. Either the native library did not "
                     f"load, or this GKL's zlib is no longer patched, or its version skew with the "
                     f"JDK's zlib closed. Decisions 0028 and 0029 no longer describe it.")
               sys.exit(1)
-          zlib_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl' and int(k[2]) >= 7
-                       and real[k] != real[(k[0], k[1], k[2], 'jdk')]]
+          zlib_gone = [k for k in fresh if k[0] == 'deflate' and k[3] == 'gkl' and int(k[2]) >= 7
+                       and fresh[k] != fresh[(k[0], k[1], k[2], 'jdk')]]
           if zlib_gone:
               print(f"FAIL: GKL no longer matches the JDK at levels 7 to 9 "
                     f"({len(zlib_gone)} rows). Decision 0028 rests on those levels needing no "
@@ -282,14 +282,14 @@ jobs:
               sys.exit(1)
           # The flags line is reported, never asserted. It describes the experiment's reach.
           flags_key = ('flags',)
-          same_dispatch = emulated.get(flags_key) == real.get(flags_key)
+          same_dispatch = committed.get(flags_key) == fresh.get(flags_key)
           differing = [k for k in differing if k != flags_key]
-          print(f"reference host flags: {emulated.get(flags_key)}")
-          print(f"this host flags:      {real.get(flags_key)}")
-          print(f"{len(emulated) - 1} rows compared, {len(differing)} differing")
+          print(f"committed column flags: {committed.get(flags_key)}")
+          print(f"this host flags:       {fresh.get(flags_key)}")
+          print(f"{len(committed) - 1} rows compared, {len(differing)} differing")
           if differing:
               for key in differing[:10]:
-                  print(f"  {'/'.join(key)}: emulated={emulated[key][:16]} real={real[key][:16]}")
+                  print(f"  {'/'.join(key)}: committed={committed[key][:16]} fresh={fresh[key][:16]}")
               print(f"\nDecision 0028 outcome: igzip's output DEPENDS ON THE CPU. There is no "
                     f"single byte sequence to port to, and H.4 belongs with Math.pow in decision "
                     f"0007 rather than in the reproducible column.")

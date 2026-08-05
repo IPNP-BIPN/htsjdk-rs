@@ -25,7 +25,7 @@
  *     gcc -O2 -Iisa-l/include igzip_config.c isa-l/.libs/libisal.a -o probe && ./probe
  *
  * with the four fixtures in /fx and the output compared against the `gkl` rows of
- * `emulated.txt`. See docs/decisions/0031-gkl-levels-one-and-two-are-isal-level-one.md.
+ * `real-x86-64.txt`. See docs/decisions/0031-gkl-levels-one-and-two-are-isal-level-one.md.
  */
 #include <stdio.h>
 #include <stdlib.h>

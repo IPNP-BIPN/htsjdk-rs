@@ -22,24 +22,24 @@ docker run --rm --platform linux/amd64 -v "$PWD":/harness:ro -w /work htsjdk-rs-
    && java -cp "$ORACLE_CP":. GklProbe'
 ```
 
-## `emulated.txt`
+## `real-x86-64.txt`
 
-The committed reference column, produced on Apple Silicon where Docker translates `linux/amd64`
-through Rosetta. Its `cpu` line reads `VirtualApple @ 2.50GHz`, and Rosetta implements no AVX, so
-this column is igzip's SSE path.
+The committed column, and a golden: `crates/gkl-deflate` compares against it. Its `cpu` line reads
+`AMD EPYC 7763 64-Core Processor` and its `flags` line `avx,avx2,pclmulqdq,sse4_1,sse4_2`, because
+it was derived by the `igzip-portability` job on a GitHub runner and downloaded from that run's
+`gkl-probe-real-x86-64` artefact. Decision 0008: a golden comes from the pinned container on a real
+x86-64 runner and never from a developer machine.
 
-**This file is now a golden, and its provenance is wrong.** It was written on this laptop, and
-decision 0008 says a golden may only come from the pinned container on a real x86-64 runner. When
-it was created that rule did not bite, because nothing read it except the `igzip-portability` CI
-job, which reruns the probe on a real host and diffs. `crates/gkl-deflate` then started comparing
-against it, and the sentence that used to be here ("nothing in the Rust tests reads it") became
-false without anyone noticing.
+It did not start out that way, and the way it went wrong is worth keeping. The file was first
+written on Apple Silicon under Rosetta as a *reference* for the portability diff, and this README
+said so: "nothing in the Rust tests reads it." Then `gkl-deflate` started reading it, which made it
+a golden and made that sentence false in the same commit. Every measured row was identical between
+the two columns, so nothing was wrong with the numbers; what was wrong was a claim about them that
+had quietly stopped being true.
 
-What holds it up in the meantime: the portability job re-derives every row on a real x86-64 runner
-on every CI run and fails on any difference, so the column is *verified* by CI even though it was
-*authored* here. That is close to the rule and is not the rule. The job now publishes what it
-derived as an artefact, so the laptop column can be replaced by a CI one, which is tracked in the
-issue this README links.
+The job still re-derives every row on each run and fails on any difference, which is what the
+portability question needs. What changed is that the file it compares against now comes from the
+same class of host it is compared on.
 
 ## Which backend a level reaches
 
