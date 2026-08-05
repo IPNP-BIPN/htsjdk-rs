@@ -43,14 +43,22 @@
 //! number is wrong and it is in the bytes, so a port that computes the honest mean writes a
 //! different file.
 //!
-//! # What this module does not do
+//! # Both layouts are written, because the choice is not the caller's
 //!
-//! **It does not write an interval-tree index**, the same boundary [`crate::index`] draws on the
-//! read side: that layout is refused rather than guessed at. The dynamic creator here therefore
-//! reports which type it chose and refuses to build the bytes when the answer is the tree. Since
-//! the choice depends on the data, that is a real limit and not a formality.
+//! The interval-tree layout is here too, and it has to be: the dynamic creator reaches it from
+//! ordinary data, so a writer that only knew the linear one could not build the index htsjdk builds
+//! for three of the ten cases this suite measures.
+//!
+//! Its byte order is the harder half. `IntervalTreeIndex.ChrIndex.write` writes
+//! `tree.getIntervals()`, and that is a **pre-order walk of a red-black tree**, not a sorted list,
+//! so the order in the file is the order the rotations left the nodes in. Reproducing the bytes
+//! means reproducing the tree: the CLRS insert with its two mirrored fixup halves, both rotations,
+//! and the `min`/`max` update that walks to the root after each one. The insert comparator sends
+//! **equal starts left**, which is what turns a run of intervals sharing a start into a left spine.
 
-use crate::index::{Block, ChrIndex, IndexError, TribbleIndex, LINEAR, MAGIC_NUMBER};
+use crate::index::{
+    Block, ChrIndex, IndexError, TribbleIndex, INTERVAL_TREE, LINEAR, MAGIC_NUMBER,
+};
 
 /// `LinearIndexCreator.DEFAULT_BIN_WIDTH`.
 pub const DEFAULT_BIN_WIDTH: i32 = 8000;
@@ -91,16 +99,13 @@ pub enum CreateError {
     IllegalArgument(String),
     /// `TribbleException.MalformedFeatureFile`.
     MalformedFeatureFile(String),
-    /// The dynamic creator chose the interval-tree layout, which this port refuses to write for
-    /// the same reason the reader refuses to parse it.
-    IntervalTreeRefused,
 }
 
 impl CreateError {
     pub fn class(&self) -> &'static str {
         match self {
             CreateError::IllegalArgument(_) => "java.lang.IllegalArgumentException",
-            CreateError::MalformedFeatureFile(_) | CreateError::IntervalTreeRefused => {
+            CreateError::MalformedFeatureFile(_) => {
                 "htsjdk.tribble.TribbleException$MalformedFeatureFile"
             }
         }
@@ -110,9 +115,6 @@ impl CreateError {
         match self {
             CreateError::IllegalArgument(message) | CreateError::MalformedFeatureFile(message) => {
                 message.clone()
-            }
-            CreateError::IntervalTreeRefused => {
-                "the interval-tree layout is not written by this port".to_string()
             }
         }
     }
@@ -383,16 +385,23 @@ pub enum ChosenIndex {
     IntervalTree,
 }
 
+/// What a creator built: the two layouts are different shapes, so the choice travels with them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltIndex {
+    Linear(Vec<ChrIndex>),
+    IntervalTree(Vec<crate::index::IntervalChrIndex>),
+}
+
 /// `DynamicIndexCreator`.
 ///
-/// It holds both creators and feeds every feature to both. Only the linear one is built here; the
-/// interval-tree creator is present as its **score**, which is a constant of the creator rather
-/// than a function of the data, so the choice can be reproduced exactly without the layout.
+/// It holds both creators and feeds every feature to **both**, then scores them and keeps one. The
+/// discarded creator's work is thrown away, which is why a dynamic index costs roughly twice what
+/// a fixed one does.
 #[derive(Debug, Clone)]
 pub struct DynamicIndexCreator {
     approach: BalanceApproach,
     linear: LinearIndexCreator,
-    features_per_interval: i32,
+    tree: IntervalIndexCreator,
     longest_feature_length: i32,
     feature_count: i64,
     stats: RunningStat,
@@ -415,7 +424,7 @@ impl DynamicIndexCreator {
         Self {
             approach,
             linear: LinearIndexCreator::new(bin_width),
-            features_per_interval,
+            tree: IntervalIndexCreator::new(features_per_interval),
             longest_feature_length: 0,
             feature_count: 0,
             stats: RunningStat::default(),
@@ -440,6 +449,7 @@ impl DynamicIndexCreator {
         self.longest_feature_length = self.longest_feature_length.max(feature.length());
         self.stats.push(f64::from(self.longest_feature_length));
         self.linear.add_feature(feature, file_position);
+        self.tree.add_feature(feature, file_position);
         self.last_start = Some(feature.start);
     }
 
@@ -458,7 +468,7 @@ impl DynamicIndexCreator {
         let bin_size = f64::from(self.linear.bin_size());
         let linear_score =
             bin_size * density * (f64::from(self.longest_feature_length) / bin_size).ceil();
-        let tree_score = f64::from(self.features_per_interval);
+        let tree_score = f64::from(self.tree.features_per_interval());
 
         if linear_score == tree_score {
             return ChosenIndex::IntervalTree;
@@ -494,18 +504,23 @@ impl DynamicIndexCreator {
         ]
     }
 
-    /// `finalizeIndex`, which refuses when the choice is the layout this port does not write.
-    pub fn finalize(
-        self,
-        final_file_position: i64,
-    ) -> Result<(ChosenIndex, Vec<ChrIndex>), CreateError> {
+    /// `finalizeIndex`: score, keep one, and hand the properties to the survivor.
+    ///
+    /// The properties are added to the **chosen** creator only, which is why a linear index built
+    /// directly carries none and the same index built dynamically carries four.
+    pub fn finalize(self, final_file_position: i64) -> Result<BuiltIndex, CreateError> {
         let chosen = self.chosen();
-        if chosen == ChosenIndex::IntervalTree {
-            return Err(CreateError::IntervalTreeRefused);
-        }
         let properties = self.properties();
-        let contigs = self.linear.finalize(final_file_position, properties)?;
-        Ok((chosen, contigs))
+        match chosen {
+            ChosenIndex::Linear => Ok(BuiltIndex::Linear(
+                self.linear.finalize(final_file_position, properties)?,
+            )),
+            // The interval creator has no `finalFilePosition == 0` guard of its own, so an empty
+            // file reaches it and produces an index with no contigs rather than a refusal.
+            ChosenIndex::IntervalTree => Ok(BuiltIndex::IntervalTree(
+                self.tree.finalize(final_file_position),
+            )),
+        }
     }
 }
 
@@ -599,12 +614,14 @@ impl Writer {
 }
 
 impl TribbleIndex {
-    /// `AbstractIndex.write`, for a linear index.
+    /// `AbstractIndex.write`.
     ///
-    /// Refuses an interval-tree index rather than guessing at its per-contig record, matching
-    /// [`TribbleIndex::read`]'s refusal on the way in.
+    /// Both layouts, which is what [`TribbleIndex::read`] already parses. Their per-contig records
+    /// are different shapes and the difference is easy to miss: the linear one writes N blocks as
+    /// **N+1 positions** whose differences are the sizes, and the interval one writes each size
+    /// **outright**, as an `int` where the block holds a `long`.
     pub fn write(&self) -> Result<Vec<u8>, IndexError> {
-        if self.index_type != LINEAR {
+        if self.index_type != LINEAR && self.index_type != INTERVAL_TREE {
             return Err(IndexError::UnsupportedType {
                 found: self.index_type,
             });
@@ -623,6 +640,23 @@ impl TribbleIndex {
         for (key, value) in &self.properties {
             writer.string(key);
             writer.string(value);
+        }
+
+        if self.index_type == INTERVAL_TREE {
+            writer.i32(self.interval_contigs.len() as i32);
+            for contig in &self.interval_contigs {
+                writer.string(&contig.name);
+                writer.i32(contig.intervals.len() as i32);
+                for interval in &contig.intervals {
+                    writer.i32(interval.start);
+                    writer.i32(interval.end);
+                    writer.i64(interval.block.start);
+                    // `(int) interval.getBlock().getSize()`: an unchecked narrowing, so a block
+                    // larger than 2 GB writes a truncated size rather than failing.
+                    writer.i32(interval.block.size as i32);
+                }
+            }
+            return Ok(writer.bytes);
         }
 
         writer.i32(self.contigs.len() as i32);
@@ -720,5 +754,365 @@ mod tests {
         };
         assert_eq!(sparse(BalanceApproach::ForSeekTime), ChosenIndex::Linear);
         assert_eq!(sparse(BalanceApproach::ForSize), ChosenIndex::IntervalTree);
+    }
+}
+
+/// `IntervalTree`, the red-black tree whose **shape** decides the byte order of an interval-tree
+/// index.
+///
+/// `IntervalTreeIndex.ChrIndex.write` writes `tree.getIntervals()`, and `getIntervals` is a
+/// **pre-order** walk (node, left, right) of the tree rather than a sorted list. So the order in
+/// the file is the order the rotations left the nodes in, and reproducing the bytes means
+/// reproducing the tree: the CLRS insert, both rotations, and the `min`/`max` update that walks to
+/// the root after each one.
+///
+/// The insert comparator is `x.start <= node.start`, so **equal starts go left**, which is what
+/// puts a run of intervals sharing a start into a left spine rather than balanced around it.
+///
+/// Nodes live in a `Vec` with index links, because the Java is a graph of mutable parent pointers
+/// and an arena is the honest translation of that; `NIL` is index 0 and carries the sentinel
+/// `min`/`max` its default constructor sets.
+mod interval_tree {
+    use crate::index::{Block, Interval};
+
+    const NIL: usize = 0;
+    const RED: bool = true;
+    const BLACK: bool = false;
+
+    struct Node {
+        interval: Interval,
+        min: i32,
+        max: i32,
+        left: usize,
+        right: usize,
+        parent: usize,
+        color: bool,
+    }
+
+    pub struct IntervalTree {
+        nodes: Vec<Node>,
+        root: usize,
+    }
+
+    impl Default for IntervalTree {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl IntervalTree {
+        pub fn new() -> Self {
+            // `Node.NIL`, whose private constructor leaves `max` at Integer.MIN_VALUE and `min` at
+            // Integer.MAX_VALUE so that `update`'s maxima and minima ignore it.
+            let nil = Node {
+                interval: Interval {
+                    start: 0,
+                    end: 0,
+                    block: Block { start: 0, size: 0 },
+                },
+                min: i32::MAX,
+                max: i32::MIN,
+                left: NIL,
+                right: NIL,
+                parent: NIL,
+                color: BLACK,
+            };
+            Self {
+                nodes: vec![nil],
+                root: NIL,
+            }
+        }
+
+        pub fn insert(&mut self, interval: Interval) {
+            self.nodes.push(Node {
+                interval,
+                min: i32::MAX,
+                max: i32::MIN,
+                left: NIL,
+                right: NIL,
+                parent: NIL,
+                color: RED,
+            });
+            let x = self.nodes.len() - 1;
+            self.tree_insert(x);
+            self.fixup(x);
+        }
+
+        /// `getIntervals`: pre-order, not sorted and not in-order.
+        pub fn intervals(&self) -> Vec<Interval> {
+            let mut out = Vec::new();
+            if self.root != NIL {
+                self.get_all(self.root, &mut out);
+            }
+            out
+        }
+
+        fn get_all(&self, node: usize, out: &mut Vec<Interval>) {
+            out.push(self.nodes[node].interval);
+            if self.nodes[node].left != NIL {
+                self.get_all(self.nodes[node].left, out);
+            }
+            if self.nodes[node].right != NIL {
+                self.get_all(self.nodes[node].right, out);
+            }
+        }
+
+        /// `treeInsert`. Equal starts go **left**.
+        fn tree_insert(&mut self, x: usize) {
+            let mut node = self.root;
+            let mut y = NIL;
+            while node != NIL {
+                y = node;
+                node = if self.nodes[x].interval.start <= self.nodes[node].interval.start {
+                    self.nodes[node].left
+                } else {
+                    self.nodes[node].right
+                };
+            }
+            self.nodes[x].parent = y;
+            if y == NIL {
+                self.root = x;
+                self.nodes[x].left = NIL;
+                self.nodes[x].right = NIL;
+            } else if self.nodes[x].interval.start <= self.nodes[y].interval.start {
+                self.nodes[y].left = x;
+            } else {
+                self.nodes[y].right = x;
+            }
+            self.apply_update(x);
+        }
+
+        /// The CLRS insert fixup, spelled out rather than shortened: the two halves are mirror
+        /// images and htsjdk writes both, so both are here.
+        fn fixup(&mut self, mut x: usize) {
+            self.nodes[x].color = RED;
+            while x != self.root && self.nodes[self.nodes[x].parent].color == RED {
+                let parent = self.nodes[x].parent;
+                let grandparent = self.nodes[parent].parent;
+                if parent == self.nodes[grandparent].left {
+                    let uncle = self.nodes[grandparent].right;
+                    if self.nodes[uncle].color == RED {
+                        self.nodes[parent].color = BLACK;
+                        self.nodes[uncle].color = BLACK;
+                        self.nodes[grandparent].color = RED;
+                        x = grandparent;
+                    } else {
+                        if x == self.nodes[parent].right {
+                            x = parent;
+                            self.left_rotate(x);
+                        }
+                        let parent = self.nodes[x].parent;
+                        let grandparent = self.nodes[parent].parent;
+                        self.nodes[parent].color = BLACK;
+                        self.nodes[grandparent].color = RED;
+                        self.right_rotate(grandparent);
+                    }
+                } else {
+                    let uncle = self.nodes[grandparent].left;
+                    if self.nodes[uncle].color == RED {
+                        self.nodes[parent].color = BLACK;
+                        self.nodes[uncle].color = BLACK;
+                        self.nodes[grandparent].color = RED;
+                        x = grandparent;
+                    } else {
+                        if x == self.nodes[parent].left {
+                            x = parent;
+                            self.right_rotate(x);
+                        }
+                        let parent = self.nodes[x].parent;
+                        let grandparent = self.nodes[parent].parent;
+                        self.nodes[parent].color = BLACK;
+                        self.nodes[grandparent].color = RED;
+                        self.left_rotate(grandparent);
+                    }
+                }
+            }
+            self.nodes[self.root].color = BLACK;
+        }
+
+        fn left_rotate(&mut self, x: usize) {
+            let y = self.nodes[x].right;
+            self.nodes[x].right = self.nodes[y].left;
+            if self.nodes[y].left != NIL {
+                let left = self.nodes[y].left;
+                self.nodes[left].parent = x;
+            }
+            self.nodes[y].parent = self.nodes[x].parent;
+            let parent = self.nodes[x].parent;
+            if parent == NIL {
+                self.root = y;
+            } else if self.nodes[parent].left == x {
+                self.nodes[parent].left = y;
+            } else {
+                self.nodes[parent].right = y;
+            }
+            self.nodes[y].left = x;
+            self.nodes[x].parent = y;
+            self.apply_update(x);
+        }
+
+        fn right_rotate(&mut self, x: usize) {
+            let y = self.nodes[x].left;
+            self.nodes[x].left = self.nodes[y].right;
+            if self.nodes[y].right != NIL {
+                let right = self.nodes[y].right;
+                self.nodes[right].parent = x;
+            }
+            self.nodes[y].parent = self.nodes[x].parent;
+            let parent = self.nodes[x].parent;
+            if parent == NIL {
+                self.root = y;
+            } else if self.nodes[parent].right == x {
+                self.nodes[parent].right = y;
+            } else {
+                self.nodes[parent].left = y;
+            }
+            self.nodes[y].right = x;
+            self.nodes[x].parent = y;
+            self.apply_update(x);
+        }
+
+        /// `applyUpdate`: walk to the root recomputing `min` and `max`. The loop stops at `NIL`,
+        /// which is reached through the root's own parent, so the root is updated and the sentinel
+        /// is not.
+        fn apply_update(&mut self, mut node: usize) {
+            while node != NIL {
+                let left = self.nodes[node].left;
+                let right = self.nodes[node].right;
+                self.nodes[node].max = self.nodes[left]
+                    .max
+                    .max(self.nodes[right].max)
+                    .max(self.nodes[node].interval.end);
+                self.nodes[node].min = self.nodes[left]
+                    .min
+                    .min(self.nodes[right].min)
+                    .min(self.nodes[node].interval.start);
+                node = self.nodes[node].parent;
+            }
+        }
+    }
+}
+
+/// `IntervalIndexCreator`.
+///
+/// Where the linear creator cuts the file by **coordinate**, this one cuts it by **feature count**:
+/// a new interval opens every `features_per_interval` features, and the one before it is closed at
+/// the position where the new one starts. So the intervals partition the file contiguously and
+/// their coordinates are whatever the features in them happened to span.
+///
+/// The stop of the open interval is `max(feature.end, stop)`, so an interval's end can exceed the
+/// start of the next one: the coordinate ranges overlap even though the file ranges do not.
+#[derive(Debug, Clone)]
+pub struct IntervalIndexCreator {
+    features_per_interval: i32,
+    /// The contigs closed so far, each with its intervals in insertion order.
+    chr_list: Vec<(String, Vec<crate::index::Interval>)>,
+    /// The intervals of the contig being filled, still mutable.
+    intervals: Vec<MutableInterval>,
+    feature_count: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MutableInterval {
+    start: i32,
+    stop: i32,
+    start_file_position: i64,
+    end_file_position: i64,
+}
+
+impl IntervalIndexCreator {
+    pub fn new(features_per_interval: i32) -> Self {
+        Self {
+            features_per_interval,
+            chr_list: Vec::new(),
+            intervals: Vec::new(),
+            feature_count: 0,
+        }
+    }
+
+    pub fn features_per_interval(&self) -> i32 {
+        self.features_per_interval
+    }
+
+    /// `addFeature`.
+    ///
+    /// `featureCount` is **not** reset when the contig changes, only when an interval opens, so the
+    /// first interval of a new contig inherits the count from the previous contig. It opens anyway,
+    /// because `intervals.isEmpty()` is the other arm of the same test.
+    pub fn add_feature(&mut self, feature: &Feature, file_position: i64) {
+        let new_contig = match self.chr_list.last() {
+            None => true,
+            Some((name, _)) => name != &feature.contig,
+        };
+        if new_contig {
+            if !self.chr_list.is_empty() {
+                self.close_intervals(file_position);
+            }
+            self.chr_list.push((feature.contig.clone(), Vec::new()));
+            self.intervals.clear();
+        }
+
+        if self.feature_count >= self.features_per_interval || self.intervals.is_empty() {
+            if let Some(last) = self.intervals.last_mut() {
+                last.end_file_position = file_position;
+            }
+            self.feature_count = 0;
+            self.intervals.push(MutableInterval {
+                start: feature.start,
+                stop: 0,
+                start_file_position: file_position,
+                end_file_position: 0,
+            });
+        }
+        let last = self.intervals.last_mut().expect("an interval is open");
+        last.stop = feature.end.max(last.stop);
+        self.feature_count += 1;
+    }
+
+    /// `addIntervalsToLastChr`: only the **last** interval's end is set here, because every earlier
+    /// one was closed when its successor opened.
+    fn close_intervals(&mut self, current_position: i64) {
+        let count = self.intervals.len();
+        for (index, interval) in self.intervals.iter_mut().enumerate() {
+            if index == count - 1 {
+                interval.end_file_position = current_position;
+            }
+        }
+        let converted: Vec<crate::index::Interval> = self
+            .intervals
+            .iter()
+            .map(|interval| crate::index::Interval {
+                start: interval.start,
+                end: interval.stop,
+                block: Block {
+                    start: interval.start_file_position,
+                    size: interval.end_file_position - interval.start_file_position,
+                },
+            })
+            .collect();
+        if let Some((_, list)) = self.chr_list.last_mut() {
+            list.extend(converted);
+        }
+    }
+
+    /// `finalizeIndex`, which returns each contig's intervals **in the tree's pre-order**, since
+    /// that is the order they are written in.
+    pub fn finalize(mut self, final_file_position: i64) -> Vec<crate::index::IntervalChrIndex> {
+        if !self.chr_list.is_empty() {
+            self.close_intervals(final_file_position);
+        }
+        self.chr_list
+            .into_iter()
+            .map(|(name, inserted)| {
+                let mut tree = interval_tree::IntervalTree::new();
+                for interval in inserted {
+                    tree.insert(interval);
+                }
+                crate::index::IntervalChrIndex {
+                    name,
+                    intervals: tree.intervals(),
+                }
+            })
+            .collect()
     }
 }
