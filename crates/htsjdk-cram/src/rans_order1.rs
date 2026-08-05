@@ -42,7 +42,10 @@
 //! the contexts have to be seeded at the quarter boundaries and why the remainder past four
 //! quarters belongs to the last lane alone.
 
-use crate::rans::{EncodingSymbol, NUMBER_OF_SYMBOLS, TOTAL_FREQ, TOTAL_FREQ_SHIFT};
+use crate::rans::{
+    EncodingSymbol, Order, LOWER_BOUND, NUMBER_OF_SYMBOLS, PREFIX_LENGTH, TOTAL_FREQ,
+    TOTAL_FREQ_SHIFT,
+};
 
 /// One frequency table: 256 contexts of 256 symbols. Heap-allocated because the array is 256 KiB.
 pub type Table = Vec<[i32; NUMBER_OF_SYMBOLS]>;
@@ -191,6 +194,87 @@ pub fn build_symbols_order1(frequencies: &Table) -> Vec<[EncodingSymbol; NUMBER_
         }
     }
     symbols
+}
+
+/// `RANS4x8Encode.compressOrder1Way4`.
+///
+/// The caller must have checked the length: htsjdk refuses order 1 below four bytes by silently
+/// using order 0, which [`crate::rans::order_used`] is.
+pub fn compress_order1(input: &[u8]) -> Vec<u8> {
+    let frequencies = calc_frequencies_order1(input);
+    let symbols = build_symbols_order1(&frequencies);
+
+    let mut out = vec![0u8; PREFIX_LENGTH];
+    let frequency_table_size = write_frequencies_order1(&frequencies, &mut out);
+
+    let mut blob: Vec<u8> = Vec::with_capacity(input.len());
+    let in_size = input.len();
+    let quarter = (in_size >> 2) as isize;
+    let mut rans = [LOWER_BOUND; 4];
+
+    // The lane cursors, running backwards, two before the end of each quarter. On a four-byte
+    // input `quarter` is 1 and every cursor starts negative, so the main loop never runs and the
+    // whole input is encoded by the remainder and the four final symbols.
+    let mut cursors: [isize; 4] = [
+        quarter - 2,
+        2 * quarter - 2,
+        3 * quarter - 2,
+        4 * quarter - 2,
+    ];
+
+    // The symbol each lane will encode against, seeded from one past its cursor.
+    let mut last = [0u8; 4];
+    for lane in 0..3 {
+        if cursors[lane] + 1 >= 0 {
+            last[lane] = input[(cursors[lane] + 1) as usize];
+        }
+    }
+    last[3] = input[in_size - 1];
+
+    // `symbols[context][symbol]`: going backwards, the byte at the cursor is the CONTEXT and the
+    // byte after it is the symbol being encoded. The naming in htsjdk reads the other way round.
+    let mut i3 = in_size as isize - 2;
+    while i3 > 4 * quarter - 2 && i3 >= 0 {
+        let context = input[i3 as usize];
+        rans[3] = symbols[context as usize][last[3] as usize].put(rans[3], &mut blob);
+        last[3] = context;
+        i3 -= 1;
+    }
+    cursors[3] = i3;
+
+    while cursors[0] >= 0 {
+        let context: [u8; 4] = [
+            input[cursors[0] as usize],
+            input[cursors[1] as usize],
+            input[cursors[2] as usize],
+            input[cursors[3] as usize],
+        ];
+        for lane in (0..4).rev() {
+            rans[lane] =
+                symbols[context[lane] as usize][last[lane] as usize].put(rans[lane], &mut blob);
+        }
+        last = context;
+        for cursor in cursors.iter_mut() {
+            *cursor -= 1;
+        }
+    }
+
+    // The first symbol of each lane, whose context is 0 because there is nothing before it.
+    for lane in (0..4).rev() {
+        rans[lane] = symbols[0][last[lane] as usize].put(rans[lane], &mut blob);
+    }
+
+    for lane in (0..4).rev() {
+        blob.extend_from_slice(&(rans[lane] as u32).to_be_bytes());
+    }
+    blob.reverse();
+    out.extend_from_slice(&blob);
+
+    out[0] = Order::One as u8;
+    let compressed_size = (frequency_table_size + blob.len()) as i32;
+    out[1..5].copy_from_slice(&compressed_size.to_le_bytes());
+    out[5..9].copy_from_slice(&(in_size as i32).to_le_bytes());
+    out
 }
 
 #[cfg(test)]
