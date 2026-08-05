@@ -1,0 +1,194 @@
+//! The GKL flavour, checked against GKL itself.
+//!
+//! `tools/gkl-probe/emulated.txt` was produced by running Intel's own `IntelDeflater` in the
+//! pinned oracle container. This test recomputes the same fixtures, compresses them with this
+//! crate, and compares sha256 against that file. So the assertion is against the real library's
+//! bytes, not against a reading of its source, and it fails if the port drifts *or* if the
+//! recorded column is regenerated with a different GKL.
+//!
+//! **The fixtures are rebuilt rather than shipped.** `java.util.Random` is specified exactly, so
+//! it can be reimplemented, and the file carries a sha256 per fixture: the test asserts those
+//! first. If the reimplementation were wrong, the fixture assertion fails and says so, instead of
+//! a deflate comparison failing for a reason that has nothing to do with deflate.
+//!
+//! Levels 3 to 9 only. Levels 1 and 2 are igzip inside GKL and are not implemented; the test
+//! asserts that they are refused rather than silently answered.
+
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+
+/// `java.util.Random`, which the `java.util.Random` Javadoc specifies down to the constants. This
+/// is a reimplementation of a *specification*, not a transcription of the JDK's source.
+struct JavaRandom(u64);
+
+impl JavaRandom {
+    fn new(seed: u64) -> Self {
+        JavaRandom((seed ^ 0x5DEECE66D) & ((1 << 48) - 1))
+    }
+
+    fn next(&mut self, bits: u32) -> i32 {
+        self.0 = self.0.wrapping_mul(0x5DEECE66D).wrapping_add(0xB) & ((1 << 48) - 1);
+        (self.0 >> (48 - bits)) as i32
+    }
+
+    /// The power-of-two branch, which is the only one the fixtures reach (`nextInt(4)`).
+    fn next_int_pow2(&mut self, bound: i32) -> i32 {
+        (((bound as i64) * (self.next(31) as i64)) >> 31) as i32
+    }
+
+    fn next_bytes(&mut self, out: &mut [u8]) {
+        let mut i = 0;
+        while i < out.len() {
+            let mut rnd = self.next(32);
+            let mut n = (out.len() - i).min(4);
+            while n > 0 {
+                out[i] = rnd as u8;
+                i += 1;
+                rnd >>= 8;
+                n -= 1;
+            }
+        }
+    }
+}
+
+fn bases(len: usize, seed: u64) -> Vec<u8> {
+    let mut random = JavaRandom::new(seed);
+    (0..len)
+        .map(|_| b"ACGT"[random.next_int_pow2(4) as usize])
+        .collect()
+}
+
+fn fixtures() -> Vec<(&'static str, Vec<u8>)> {
+    let mut noise = vec![0u8; 60_000];
+    JavaRandom::new(11).next_bytes(&mut noise);
+    vec![
+        ("acgt", bases(60_000, 7)),
+        (
+            "runs",
+            (0..60_000usize).map(|i| b"ACGT"[(i / 300) % 4]).collect(),
+        ),
+        ("random", noise),
+        ("acgt-2blocks", bases(200_000, 13)),
+    ]
+}
+
+fn sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// The oracle column, keyed the way the file writes it.
+fn recorded() -> (HashMap<String, String>, HashMap<(String, usize), String>) {
+    let text = include_str!("../../../tools/gkl-probe/emulated.txt");
+    let mut inputs = HashMap::new();
+    let mut outputs = HashMap::new();
+    for line in text.lines() {
+        let parts: Vec<&str> = line.split('\t').collect();
+        match parts.as_slice() {
+            ["fixture", name, _, hash] => {
+                inputs.insert(name.to_string(), hash.to_string());
+            }
+            ["deflate", name, level, "gkl", _, hash] => {
+                outputs.insert((name.to_string(), level.parse().unwrap()), hash.to_string());
+            }
+            _ => {}
+        }
+    }
+    (inputs, outputs)
+}
+
+#[test]
+fn the_fixtures_are_the_ones_the_oracle_compressed() {
+    let (inputs, _) = recorded();
+    assert!(!inputs.is_empty(), "no fixture rows in emulated.txt");
+    for (name, data) in fixtures() {
+        assert_eq!(
+            sha256(&data),
+            inputs[name],
+            "fixture {name} was rebuilt wrongly, so any deflate comparison using it is meaningless"
+        );
+    }
+}
+
+#[test]
+fn byte_identical_to_gkl_at_levels_three_to_nine() {
+    let (_, outputs) = recorded();
+    let mut compared = 0usize;
+    let mut failures = Vec::new();
+    for (name, data) in fixtures() {
+        for level in 3..=9usize {
+            let ours = sha256(&gkl_deflate::deflate_gkl(&data, level));
+            let theirs = &outputs[&(name.to_string(), level)];
+            compared += 1;
+            if &ours != theirs {
+                failures.push(format!("{name} level {level}: ours {ours}, GKL {theirs}"));
+            }
+        }
+    }
+    println!("gkl-deflate: {compared} (fixture, level) pairs compared against GKL's own output");
+    assert!(
+        failures.is_empty(),
+        "{} of {compared} differ:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+#[should_panic(expected = "igzip")]
+fn levels_one_and_two_are_refused_rather_than_guessed() {
+    gkl_deflate::deflate_gkl(b"anything", 1);
+}
+
+/// The other branch of GKL's own CPU check.
+///
+/// `Flavour::Gkl { sse42: false }` is not a hypothetical: it is what GKL does on a host without
+/// SSE4.2, and it emits different bytes at the levels whose hash chains are short. The reference
+/// is `tools/gkl-probe/no-sse42.txt`, which that file's header is careful to say is built from
+/// Intel's source rather than measured from the library, because no host here lacks SSE4.2.
+#[test]
+fn the_no_sse42_branch_matches_intels_source() {
+    let text = include_str!("../../../tools/gkl-probe/no-sse42.txt");
+    let mut expected = HashMap::new();
+    for line in text.lines().filter(|l| !l.starts_with('#')) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if let ["deflate", name, level, "gkl-no-sse42", _, hash] = parts.as_slice() {
+            expected.insert(
+                (name.to_string(), level.parse::<usize>().unwrap()),
+                hash.to_string(),
+            );
+        }
+    }
+    assert_eq!(expected.len(), 28, "no-sse42.txt lost rows");
+
+    let mut differ_from_sse42 = 0;
+    for (name, data) in fixtures() {
+        for level in 3..=9usize {
+            let out = gkl_deflate::deflate_flavour(
+                &data,
+                level,
+                gkl_deflate::Flavour::Gkl { sse42: false },
+            );
+            assert_eq!(
+                sha256(&out),
+                expected[&(name.to_string(), level)],
+                "{name} level {level} on the no-SSE4.2 path"
+            );
+            if sha256(&gkl_deflate::deflate_gkl(&data, level)) != sha256(&out) {
+                differ_from_sse42 += 1;
+            }
+        }
+    }
+    // The point of the branch existing at all. If this ever reaches zero, the two hashes have
+    // stopped mattering and `sse42` can go.
+    assert!(
+        differ_from_sse42 > 0,
+        "the two CPU branches produced identical bytes everywhere, which contradicts the measurement"
+    );
+    println!("gkl-deflate: {differ_from_sse42} of 28 rows change when SSE4.2 is absent");
+}

@@ -14,31 +14,37 @@
 //! htsjdk's BGZF default is **level 5**, so the second one decides the bytes of every BAM GATK
 //! writes without `--use-jdk-deflater`.
 //!
-//! ## What is here so far
+//! ## What is here
 //!
-//! The zlib deflate algorithm itself: the window, the hash chains, `longest_match`, the fast and
-//! slow block functions, and the whole of `trees.c`. That is the foundation both remaining pieces
-//! need, and it is **verifiable on its own**: at levels 4 to 9 this crate must agree byte for byte
-//! with the C zlib the workspace already links, on any input. The test does exactly that, and a
-//! divergence anywhere in the match finder or the tree builder shows up as a differing byte rather
-//! than as a slightly worse ratio.
+//! Both flavours, verified two different ways.
 //!
-//! What is **not** here yet, and what H.4 still needs:
+//! [`Flavour::Jdk`] is stock zlib, which is what `java.util.zip.Deflater` reaches. It is checked
+//! against the C zlib the workspace already links, byte for byte, at every level.
 //!
-//! - **`deflate_medium`**, Intel's third block function, which covers levels 4 to 6 and therefore
-//!   the default;
-//! - **the CRC32-based hash** Intel's fork substitutes for zlib's multiplicative one when the CPU
-//!   reports SSE4.2, which changes chain order and so changes which match is found at the levels
-//!   whose chains are short;
-//! - **igzip**, for levels 1 and 2.
+//! [`Flavour::Gkl`] is Intel's fork: `deflate_medium` at levels 4 to 6, and a CRC-32C positional
+//! hash in place of zlib's multiplicative rolling one. It is checked against the hashes GKL itself
+//! produced in the pinned container, so the assertion is against the real library rather than
+//! against a reading of its source.
 //!
-//! Until those land, this crate reproduces *stock zlib*, which is the JDK's deflater and not GKL's.
-//! Saying which is the point: a deflate claim that does not name its implementation is not a claim.
+//! **GKL's output depends on the CPU, and this is where that becomes visible.** The fork selects
+//! its hash on `x86_cpu_has_sse42` at load time, so a host without SSE4.2 fills the chains
+//! differently and emits different bytes at every level from 3 up. `Flavour::Gkl { sse42 }` makes
+//! that a parameter rather than a hidden assumption; the default of `true` is the column every
+//! oracle run has been measured in, because every host so far reports SSE4.2.
+//!
+//! ## What is not here
+//!
+//! **igzip, for levels 1 and 2.** Those are the only levels GKL does not route through zlib, and
+//! nothing in htsjdk asks for them by default. [`deflate_gkl`] refuses them rather than quietly
+//! answering with zlib's bytes, which would be a wrong answer that looks like a right one.
 
 mod deflate;
 mod trees;
 
-/// Compress `data` as a raw deflate stream, the `nowrap` mode BGZF blocks use.
+pub use deflate::Flavour;
+
+/// Compress `data` as a raw deflate stream the way `java.util.zip.Deflater` does, which is the
+/// `nowrap` mode BGZF blocks use.
 ///
 /// `level` is 1 to 9. Level 0 (store only) is not implemented: htsjdk never asks for it, and a
 /// path nothing exercises is a path nothing checks.
@@ -47,5 +53,32 @@ pub fn deflate(data: &[u8], level: usize) -> Vec<u8> {
         (1..=9).contains(&level),
         "level must be 1 to 9, got {level}"
     );
-    deflate::Deflater::new(data, level).finish()
+    deflate::Deflater::new(data, level, Flavour::Jdk).finish()
+}
+
+/// Compress `data` with an explicit flavour, for callers that need the non-default CPU branch.
+pub fn deflate_flavour(data: &[u8], level: usize, flavour: Flavour) -> Vec<u8> {
+    match flavour {
+        Flavour::Jdk => assert!(
+            (1..=9).contains(&level),
+            "level must be 1 to 9, got {level}"
+        ),
+        Flavour::Gkl { .. } => assert!(
+            (3..=9).contains(&level),
+            "GKL routes levels 1 and 2 through igzip, which is not implemented; got {level}"
+        ),
+    }
+    deflate::Deflater::new(data, level, flavour).finish()
+}
+
+/// Compress `data` the way GKL's `IntelDeflater` does, on a CPU reporting SSE4.2.
+///
+/// `level` is **3 to 9**. Levels 1 and 2 are igzip inside GKL, not zlib, and are not implemented;
+/// answering them with zlib's bytes would be a wrong answer wearing a right one's shape.
+pub fn deflate_gkl(data: &[u8], level: usize) -> Vec<u8> {
+    assert!(
+        (3..=9).contains(&level),
+        "GKL routes levels 1 and 2 through igzip, which is not implemented; got {level}"
+    );
+    deflate::Deflater::new(data, level, Flavour::Gkl { sse42: true }).finish()
 }
