@@ -611,7 +611,7 @@
       "status": "oracle-backed",
       "title": "VariantContextComparator: contig order, then start",
       "harness": "tools/vcf-conformance",
-      "why": "H.2, and one of the two things gatk-rs's MultiVariantDataSource needs: the multi-input walkers gatk-rs G1.6 handed over cannot be ported until this and VCFUtils.smartMergeHeaders exist. Three behaviours are the reason for the case list. The two constructors refuse different things and word them differently: from a contig list the index is the position so only a repeated name can go wrong, while from header lines the index is carried by the line, so a repeated INDEX is a second, separately-worded error that a contig list cannot express at all — and the empty case is refused by both with different sentences, which the port got wrong until this dump said so. An unknown contig throws NullPointerException, and htsjdk's own comment says it does so happily, meaning a caller sorting a variant outside the dictionary gets an exception rather than an arbitrary order. And compare returns a subtraction rather than a normalised sign, so the magnitude is observable and the dump records the number: a comparator built from lines with sparse indexes returns the difference of those indexes, not of their positions in the collection.",
+      "why": "H.2, and one of the two things gatk-rs's MultiVariantDataSource needs: the multi-input walkers gatk-rs G1.6 handed over cannot be ported until this and VCFUtils.smartMergeHeaders exist. Three behaviours are the reason for the case list. The two constructors refuse different things and word them differently: from a contig list the index is the position so only a repeated name can go wrong, while from header lines the index is carried by the line, so a repeated INDEX is a second, separately-worded error that a contig list cannot express at all \u2014 and the empty case is refused by both with different sentences, which the port got wrong until this dump said so. An unknown contig throws NullPointerException, and htsjdk's own comment says it does so happily, meaning a caller sorting a variant outside the dictionary gets an exception rather than an arbitrary order. And compare returns a subtraction rather than a normalised sign, so the magnitude is observable and the dump records the number: a comparator built from lines with sparse indexes returns the difference of those indexes, not of their positions in the collection.",
       "compare": {
         "mode": "lines"
       },
@@ -628,7 +628,7 @@
       "status": "oracle-backed",
       "title": "VCFUtils.smartMergeHeaders: what survives, and in what order",
       "harness": "tools/vcf-conformance",
-      "why": "H.2, and the second of the two things gatk-rs's MultiVariantDataSource needs: with this and VariantContextComparator the multi-input walkers gatk-rs G1.6 handed over become portable. Eighty lines of Java, and most of what matters in them is not the merge, which is why the suite exists. THE OUTPUT ALWAYS CARRIES A fileformat LINE NO SOURCE WROTE: getMetaDataInSortedOrder prepends one before the sorted metadata, so a merge of two headers holding one INFO line each returns two lines rather than one, and the extra one is VCFv4.2 unless the header's version FIELD is 4.3 or later — a field set at parse time, not a fileformat line among the metadata, so a header assembled in memory never reaches the version policy however its lines are labelled. THE TWO PROMOTION ARMS ARE BOTH NO-OPS: the Java says promote key to Float in each and neither does it, because the put writes back what the map already holds, so an Integer seen first stays Integer and a Float seen first stays Float. The one branch that does change the map is setNumberToUnbounded, which mutates the stored line in place. And the input order is each source's SORTED order, not its file order, which is what the method's own comment says the ordering exists to protect for contig lines.",
+      "why": "H.2, and the second of the two things gatk-rs's MultiVariantDataSource needs: with this and VariantContextComparator the multi-input walkers gatk-rs G1.6 handed over become portable. Eighty lines of Java, and most of what matters in them is not the merge, which is why the suite exists. THE OUTPUT ALWAYS CARRIES A fileformat LINE NO SOURCE WROTE: getMetaDataInSortedOrder prepends one before the sorted metadata, so a merge of two headers holding one INFO line each returns two lines rather than one, and the extra one is VCFv4.2 unless the header's version FIELD is 4.3 or later \u2014 a field set at parse time, not a fileformat line among the metadata, so a header assembled in memory never reaches the version policy however its lines are labelled. THE TWO PROMOTION ARMS ARE BOTH NO-OPS: the Java says promote key to Float in each and neither does it, because the put writes back what the map already holds, so an Integer seen first stays Integer and a Float seen first stays Float. The one branch that does change the map is setNumberToUnbounded, which mutates the stored line in place. And the input order is each source's SORTED order, not its file order, which is what the method's own comment says the ordering exists to protect for contig lines.",
       "compare": {
         "mode": "lines"
       },
@@ -636,7 +636,7 @@
         {
           "dump": "SmartMergeDump",
           "golden": "crates/htsjdk-vcf/tests/data/smart_merge_headers.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 16 rows, no corrections — to the golden. It corrected the port three times before a single row was compared: the prepended fileformat line, the version being a field rather than a line, and both promotion arms being no-ops."
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 16 rows, no corrections \u2014 to the golden. It corrected the port three times before a single row was compared: the prepended fileformat line, the version being a field rather than a line, and both promotion arms being no-ops."
         }
       ]
     },
@@ -645,7 +645,7 @@
       "status": "oracle-backed",
       "title": "The .idx file, and the blocks a query resolves to",
       "harness": "tools/tribble-conformance",
-      "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant — 16000 for one contig and 8000 for another in the same file — so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
+      "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant \u2014 16000 for one contig and 8000 for another in the same file \u2014 so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
       "compare": {
         "mode": "lines"
       },
@@ -722,6 +722,31 @@
           "dump": "CramBlockDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_block.txt.gz",
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #108. 359 rows over five files: 118 block headers as fields, the same 118 as the raw bytes they occupy, 118 content digests, and 5 per-file method summaries. The content travels as a SHA-256 rather than as bytes because it is what the compressors produce and this suite is about the framing around it; the digest still fails if the framing put a boundary in the wrong place."
+        }
+      ]
+    },
+    {
+      "id": "cram-rans",
+      "status": "golden-pending",
+      "title": "rANS 4x8 order 0, the codec an ordinary CRAM uses",
+      "harness": "tools/cram-conformance",
+      "why": "cram-block measured the compression methods present in a four-read CRAM and found RAW, GZIP and rANS, so this is required rather than optional. Six things are arithmetic rather than layout, and arithmetic is where a port diverges in silence. AN EMPTY INPUT PRODUCES ZERO BYTES, not a nine-byte prefix over an empty table, so a decoder that reads the prefix unconditionally fails on the one input it should find easiest. THE REQUESTED ORDER IS NOT ALWAYS THE WRITTEN ORDER: below MINIMUM_ORDER_1_SIZE = 4 bytes compress uses order 0 whatever the parameters say and the order byte records the order it used, so asking for order 1 on three bytes writes a stream that says 0. THE FOUR FINAL STATES ARE WRITTEN BIG ENDIAN AND THE WHOLE BLOB IS THEN REVERSED, two reversals that cancel, so they arrive at the head of the blob little-endian and in the order rans0, rans1, rans2, rans3, the opposite of the order they were written in. THE NORMALISATION IS FIXED POINT, NOT A DIVISION: tr = (4096 << 31) / T + (1 << 30) / T, then F[j] = (F[j] * tr) >> 31 with a floor of 1, and THE WHOLE ROUNDING RESIDUE IS DUMPED ON ONE SYMBOL, the one with the largest RAW count, ties to the LOWEST index. It is not a nudge: on an input holding symbol i exactly i times, symbol 254 normalises to 31 and symbol 255, whose fair share is the same 31, is written as 152. THE FREQUENCY TABLE'S RUN LENGTHS START AT THE SECOND CONSECUTIVE SYMBOL, so a run of exactly two writes a run byte of 0, and the decoder infers that a run byte follows by peeking at whether the next symbol byte is the current symbol plus one: the marker is inferred from the data and never signalled. AND A UNIFORM INPUT'S BLOB IS FOUR UNCHANGED STATES, because one symbol takes the whole 4096, its complement frequency is zero and its bias is zero, so 1000 identical bytes compress to 29.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 1782,
+      "expect_contains": [
+        "orderused\t3\tONE\t0",
+        "orderused\t4\tONE\t1",
+        "enc\tempty\t0\t",
+        "norm\tskewed-256\t255\t255\t152",
+        "freqtab\tuniform-1000\t4\t41900000",
+        "states\tuniform-1000\t8388608\t8388608\t8388608\t8388608"
+      ],
+      "cases": [
+        {
+          "dump": "CramRansDump",
+          "golden": null
         }
       ]
     }
