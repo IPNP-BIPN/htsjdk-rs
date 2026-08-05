@@ -188,6 +188,7 @@ name = "htsjdk-vcf"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "htsjdk-tribble",
  "jmath",
 ]
 
