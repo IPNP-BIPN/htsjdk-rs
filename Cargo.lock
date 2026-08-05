@@ -161,6 +161,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "htsjdk-cram"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "htsjdk-diff"
 version = "0.0.0"
 dependencies = [
