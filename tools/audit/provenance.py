@@ -33,6 +33,13 @@ ALLOWED = {
     # cites it. `java.lang.StrictMath` is *specified* to be this library, which is why porting it
     # is exact rather than approximate. See decision 0025.
     "fdlibm": "FDLIBM, Sun freely-distributable licence",
+    # The zlib licence is permissive and explicitly allows altered source versions, which is what
+    # a port is, provided they are marked as such and not misrepresented as the original. Every
+    # file citing it says so in its module header. This covers both stock zlib and the Intel fork
+    # inside libgkl_compression.so, which carries the same notice. See decision 0029.
+    "zlib": "zlib, zlib licence",
+    # ISA-L, BSD-3-Clause. igzip is the backend GKL uses at levels 1 and 2. See decision 0028.
+    "isa-l": "ISA-L, BSD-3-Clause",
 }
 
 # Anything matching these is GPL2 and must not be transcribed. Listed explicitly rather than
