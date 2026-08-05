@@ -356,10 +356,10 @@ pub fn compress(input: &[u8], requested: Order) -> Result<Vec<u8>, RansError> {
     if input.is_empty() {
         return Ok(Vec::new());
     }
-    match order_used(requested, input.len()) {
-        Order::Zero => Ok(compress_order0(input)),
-        Order::One => Err(RansError::OrderOneNotPorted),
-    }
+    Ok(match order_used(requested, input.len()) {
+        Order::Zero => compress_order0(input),
+        Order::One => crate::rans_order1::compress_order1(input),
+    })
 }
 
 /// One symbol's range, as the decoder holds it.
