@@ -6,6 +6,7 @@
 //! checked until those are.
 pub mod block;
 pub mod container;
+pub mod encoding_map;
 pub mod preservation_map;
 pub mod rans;
 pub mod rans_order1;
