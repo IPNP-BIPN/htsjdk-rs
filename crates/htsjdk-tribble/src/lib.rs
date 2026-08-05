@@ -9,5 +9,6 @@
 
 pub mod bed;
 pub mod index;
+pub mod index_write;
 pub mod interval_list;
 pub mod vcf;
