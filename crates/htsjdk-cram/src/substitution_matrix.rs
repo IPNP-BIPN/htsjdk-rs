@@ -155,6 +155,62 @@ impl SubstitutionMatrix {
         out
     }
 
+    /// `SubstitutionMatrix(List<CRAMCompressionRecord>)`, given the frequencies it would build.
+    ///
+    /// `frequencies[refBase][readBase]` is the count of that substitution.
+    pub fn from_frequencies(frequencies: &[[i64; SYMBOL_SPACE_SIZE]]) -> Self {
+        let mut out = Self::empty();
+        for (index, reference) in BASES.iter().enumerate() {
+            out.encoded[index] =
+                out.substitution_code_vector(*reference, &frequencies[*reference as usize]);
+        }
+        for reference in BASES {
+            for substitute in BASES {
+                if reference != substitute {
+                    let code = out.code_by_base[reference as usize][substitute as usize] as usize;
+                    out.base_by_code[reference as usize][code] = substitute;
+                    out.base_by_code[reference.to_ascii_lowercase() as usize][code] = substitute;
+                }
+            }
+        }
+        out
+    }
+
+    /// `substitutionCodeVector`, side effect included: it fills this base's row of the forward
+    /// lookup as well as returning the packed byte.
+    pub fn substitution_code_vector(
+        &mut self,
+        reference: u8,
+        frequencies: &[i64; SYMBOL_SPACE_SIZE],
+    ) -> u8 {
+        // (base, ordinal, frequency, rank)
+        let mut codes: Vec<(u8, usize, i64, u8)> = BASES
+            .iter()
+            .enumerate()
+            .filter(|(_, base)| **base != reference)
+            .map(|(ordinal, base)| (*base, ordinal, frequencies[*base as usize], 0u8))
+            .collect();
+
+        java_sort(&mut codes, compare);
+        for (rank, entry) in codes.iter_mut().enumerate() {
+            entry.3 = rank as u8;
+        }
+        // Every frequency is zeroed, so the second sort is the ordinal tie-break on every pair.
+        for entry in codes.iter_mut() {
+            entry.2 = 0;
+        }
+        java_sort(&mut codes, compare);
+
+        let mut vector = 0u8;
+        for entry in &codes {
+            vector = (vector << 2) | entry.3;
+        }
+        for entry in &codes {
+            self.code_by_base[reference as usize][entry.0 as usize] = entry.3;
+        }
+        vector
+    }
+
     /// The five bytes as they are serialised into the preservation map's `SM` key.
     pub fn encoded(&self) -> [u8; BASES_SIZE] {
         self.encoded
@@ -207,12 +263,118 @@ impl SubstitutionMatrix {
     }
 }
 
+/// The comparator, overflow included: a `long` difference narrowed to an `int`.
+fn compare(left: &(u8, usize, i64, u8), right: &(u8, usize, i64, u8)) -> std::cmp::Ordering {
+    if left.2 != right.2 {
+        // `(int) (o2.freq - o1.freq)`: the subtraction is 64-bit and wraps, then the cast keeps the
+        // low 32 bits. A difference that is a non-zero multiple of 2^32 becomes 0, which the sort
+        // reads as "equal" even though the branch was taken because they are not.
+        let difference = right.2.wrapping_sub(left.2) as i32;
+        return difference.cmp(&0);
+    }
+    // The spec's base order.
+    (left.1 as i32).cmp(&(right.1 as i32))
+}
+
+/// `java.util.Arrays.sort(T[], Comparator)` for an array below `MIN_MERGE`, which is the only path
+/// a four-element array can take.
+///
+/// Ported rather than delegated to Rust's sort because the comparator above is **not** a total
+/// order: with an inconsistent comparator two sorts can disagree, so the one that decides the bytes
+/// has to be the one htsjdk runs. Rust's `sort_by` is also entitled to panic on an inconsistent
+/// comparator, and htsjdk's does not.
+fn java_sort<T, F>(values: &mut [T], compare: F)
+where
+    F: Fn(&T, &T) -> std::cmp::Ordering,
+{
+    use std::cmp::Ordering;
+    let length = values.len();
+    if length < 2 {
+        return;
+    }
+    // `countRunAndMakeAscending`.
+    let mut run_hi = 1usize;
+    if compare(&values[run_hi], &values[0]) == Ordering::Less {
+        run_hi += 1;
+        while run_hi < length && compare(&values[run_hi], &values[run_hi - 1]) == Ordering::Less {
+            run_hi += 1;
+        }
+        values[..run_hi].reverse();
+    } else {
+        run_hi += 1;
+        while run_hi < length && compare(&values[run_hi], &values[run_hi - 1]) != Ordering::Less {
+            run_hi += 1;
+        }
+    }
+
+    // `binarySort`, starting past the run that is already ordered.
+    for start in run_hi..length {
+        let (mut left, mut right) = (0usize, start);
+        while left < right {
+            let mid = (left + right) >> 1;
+            if compare(&values[start], &values[mid]) == Ordering::Less {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+        values[left..=start].rotate_right(1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn flat(counts: [(u8, i64); 5]) -> [i64; SYMBOL_SPACE_SIZE] {
+        let mut out = [0i64; SYMBOL_SPACE_SIZE];
+        for (base, count) in counts {
+            out[base as usize] = count;
+        }
+        out
+    }
+
     /// No substitutions observed: every frequency ties, the ordinal order wins, and the byte is the
     /// `1b` the preservation map suite found in every file.
+    #[test]
+    fn the_default_matrix_is_one_b_and_not_zero() {
+        let mut matrix = SubstitutionMatrix::empty();
+        let frequencies = [0i64; SYMBOL_SPACE_SIZE];
+        for reference in BASES {
+            assert_eq!(
+                matrix.substitution_code_vector(reference, &frequencies),
+                0x1b,
+                "reference {}",
+                reference as char
+            );
+        }
+    }
+
+    /// The commonest substitution in the file loses the shortest code to one that never happened,
+    /// because the comparator narrows a long difference to an int.
+    #[test]
+    fn a_frequency_difference_of_two_to_the_thirty_two_compares_equal() {
+        let mut matrix = SubstitutionMatrix::empty();
+        let overflowing = flat([
+            (b'A', 0),
+            (b'C', 4294967296),
+            (b'G', 0),
+            (b'T', 0),
+            (b'N', 0),
+        ]);
+        assert_eq!(matrix.substitution_code_vector(b'G', &overflowing), 27);
+
+        let mut matrix = SubstitutionMatrix::empty();
+        let one_more = flat([
+            (b'A', 0),
+            (b'C', 4294967297),
+            (b'G', 0),
+            (b'T', 0),
+            (b'N', 0),
+        ]);
+        assert_eq!(matrix.substitution_code_vector(b'G', &one_more), 75);
+    }
+
     /// A lower case reference base decodes and does not encode.
     #[test]
     fn lower_case_decodes_but_does_not_encode() {
