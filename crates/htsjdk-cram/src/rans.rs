@@ -169,6 +169,23 @@ impl EncodingSymbol {
         }
     }
 
+    /// `RANSEncodingSymbol.putSymbol4x8`: renormalise by emitting at most two bytes, then advance.
+    ///
+    /// At most two, not a loop: the state is bounded so a third byte is never needed, and htsjdk
+    /// writes the two tests out by hand rather than looping.
+    pub fn put(&self, r: u64, out: &mut Vec<u8>) -> u64 {
+        let mut r = r;
+        if r >= self.x_max {
+            out.push((r & 0xFF) as u8);
+            r >>= 8;
+            if r >= self.x_max {
+                out.push((r & 0xFF) as u8);
+                r >>= 8;
+            }
+        }
+        let q = (r * u64::from(self.rcp_freq)) >> self.rcp_shift;
+        r + u64::from(self.bias) + q * u64::from(self.cmpl_freq)
+    }
 }
 
 /// `RANS4x8Encode.calcFrequenciesOrder0`: count, scale by a fixed-point reciprocal, then hand the
@@ -277,6 +294,74 @@ pub fn build_symbols_order0(
     symbols
 }
 
+/// `RANS4x8Encode.compressOrder0Way4`.
+pub fn compress_order0(input: &[u8]) -> Vec<u8> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+
+    let frequencies = calc_frequencies_order0(input);
+    let symbols = build_symbols_order0(&frequencies);
+
+    let mut out = Vec::with_capacity(input.len() + 256 * 3 + PREFIX_LENGTH + 16);
+    out.resize(PREFIX_LENGTH, 0);
+    let frequency_table_size = write_frequencies_order0(&frequencies, &mut out);
+
+    // The blob is built forwards and reversed whole at the end, so everything below writes in the
+    // opposite order to the one it will be read in.
+    let mut blob: Vec<u8> = Vec::with_capacity(input.len());
+    let in_size = input.len();
+    let mut rans = [LOWER_BOUND; 4];
+
+    // The tail, whose four cases fall through in htsjdk and so are three tests here. The indices
+    // are the last `in_size & 3` bytes, taken from the highest downwards but assigned to states 2,
+    // 1 and 0 in that order.
+    let tail = in_size & 3;
+    if tail == 3 {
+        rans[2] = symbols[input[in_size - (tail - 2)] as usize].put(rans[2], &mut blob);
+    }
+    if tail >= 2 {
+        rans[1] = symbols[input[in_size - (tail - 1)] as usize].put(rans[1], &mut blob);
+    }
+    if tail >= 1 {
+        rans[0] = symbols[input[in_size - tail] as usize].put(rans[0], &mut blob);
+    }
+
+    let mut i = in_size & !3;
+    while i > 0 {
+        for lane in (0..4).rev() {
+            rans[lane] = symbols[input[i - 4 + lane] as usize].put(rans[lane], &mut blob);
+        }
+        i -= 4;
+    }
+
+    // Big-endian, and reversed a moment later into little-endian at the head of the blob.
+    for lane in (0..4).rev() {
+        blob.extend_from_slice(&(rans[lane] as u32).to_be_bytes());
+    }
+    blob.reverse();
+
+    out.extend_from_slice(&blob);
+
+    // The prefix, written last because its lengths are only known now.
+    out[0] = Order::Zero as u8;
+    let compressed_size = (frequency_table_size + blob.len()) as i32;
+    out[1..5].copy_from_slice(&compressed_size.to_le_bytes());
+    out[5..9].copy_from_slice(&(in_size as i32).to_le_bytes());
+    out
+}
+
+/// `RANS4x8Encode.compress`, including the order it silently substitutes on short input.
+pub fn compress(input: &[u8], requested: Order) -> Result<Vec<u8>, RansError> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    match order_used(requested, input.len()) {
+        Order::Zero => Ok(compress_order0(input)),
+        Order::One => Err(RansError::OrderOneNotPorted),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,6 +379,19 @@ mod tests {
         }
         assert_eq!(order_used(Order::One, 4), Order::One);
         assert_eq!(order_used(Order::Zero, 4), Order::Zero);
+    }
+
+    /// One symbol takes the whole table, so its complement frequency is zero, the state never
+    /// moves, and the blob is the four initial lower bounds.
+    #[test]
+    fn a_uniform_input_never_moves_its_states() {
+        let frequencies = calc_frequencies_order0(&[b'A'; 1000]);
+        assert_eq!(frequencies[b'A' as usize], TOTAL_FREQ);
+        let symbol = EncodingSymbol::set(0, TOTAL_FREQ, TOTAL_FREQ_SHIFT);
+        assert_eq!(symbol.cmpl_freq, 0);
+        assert_eq!(symbol.bias, 0);
+        let compressed = compress_order0(&[b'A'; 1000]);
+        assert_eq!(compressed.len(), PREFIX_LENGTH + 4 + 16);
     }
 
     /// The residue lands on one symbol, and it is not a rounding nudge.
