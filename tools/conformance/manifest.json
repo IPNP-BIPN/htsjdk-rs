@@ -758,6 +758,29 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31045112037, the golden-pending run of htsjdk-rs #117. 876 rows over sixteen inputs: 16 input digests, 16 compressed streams by length and digest with 15 of them whole in hex, 16 prefixes, 16 quarter-boundary rows, 583 raw context totals, 149 table entries for the inputs whose alphabet is narrow enough to print, 16 digests of the whole 256 by 256 table for every input including those, 16 frequency tables, 16 state quadruples, 16 round trips, and one row that no input can produce: what the reader makes of a frequency byte of zero."
         }
       ]
+    },
+    {
+      "id": "cram-preservation-map",
+      "status": "golden-pending",
+      "title": "The compression header's preservation map",
+      "harness": "tools/cram-conformance",
+      "why": "cram-block measured the compression header as the RAW block that follows the GZIP header block in every CRAM; this is the first thing inside it. Six things are decisions rather than layout. THE MAP SIZE IS A HARDCODED 5, NOT A COUNT: internalWrite calls writeUnsignedITF8(5) and then writes exactly RN, AP, RR, SM and TD in that order whatever the header holds, so the field is a constant wearing a count's clothes. THE WRITE ORDER IS htsjdk'S RATHER THAN THE SPECIFICATION'S and the reader accepts the keys in any order, so it is invisible to a round trip and visible only against the reference's own bytes. A BOOLEAN IS `== 1`, NOT `!= 0`: measured over 0, 1, 2, 127 and 255, only 1 is true, everything else is false, and nothing raises, and three of the five keys go through it. THE SUBSTITUTION MATRIX AND THE TAG DICTIONARY ARE MANDATORY and the check is after the loop, so the message names both keys whichever one is missing. AN UNKNOWN KEY IS A PLAIN RuntimeException carrying the two characters it did not recognise, where a missing mandatory key is a CRAMException: two kinds of failure, and only the second is a CRAM error. AND THE TAG ID DICTIONARY'S FIRST GROUP IS ALWAYS EMPTY, present even in a file where every record carries tags, because group 0 is the record with none. Measured aside: the compression header is the same 160 bytes across four files differing in record count and read length, and only tags move it.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 65,
+      "expect_contains": [
+        "pmap\tfour-unmapped\t21\t5\t05524e01415000525201534d1b1b1b1b1b54440100",
+        "boolean\t2\tfalse",
+        "refuse\tunknown-key\tjava.lang.RuntimeException\tUnknown preservation map key: ZZ",
+        "tdgroup\ttagged\t1\tMDZ,NMc,XXf"
+      ],
+      "cases": [
+        {
+          "dump": "CramPreservationMapDump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [
