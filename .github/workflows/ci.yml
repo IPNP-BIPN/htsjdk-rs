@@ -144,13 +144,10 @@ jobs:
             suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: oracle-backed
             index: "9/9"
-            suites: "cram-container cram-block cram-rans"
+            suites: "cram-container cram-block cram-rans cram-rans-order1"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "cram-rans-order1"
     steps:
       - uses: actions/checkout@v4
 
