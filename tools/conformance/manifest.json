@@ -693,26 +693,18 @@
     },
     {
       "id": "cram-container",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
       "harness": "tools/cram-conformance",
       "why": "The first structures CRAM builds out of the ITF8s cram-varint pinned: a 26-byte file definition, then containers. Four things a reading of the specification does not give you. THE FILE ID IS PADDED TO EXACTLY 20 BYTES AND TRUNCATED IN SILENCE: CramHeader fills with zeros and copies min(id.length(), 20), so far-too-long-to-fit-in-twenty is written as far-too-long-to-fit- with no error. THE CHECKSUM COVERS THE HEADER AND NOT THE CONTAINER, is written LITTLE ENDIAN, which is the opposite of the CRC in a BGZF block's gzip trailer, and IS ABSENT BELOW VERSION 3, so the same container is four bytes shorter in a 2.1 file and a reader that always consumes them is off by four from the first container onwards. EVERY FILE HAS AT LEAST TWO CONTAINERS: a SAM header container, a data container per block of records, and an EOF container, so a file with no records still has two. AND THE EOF CONTAINER IS RECOGNISED BY A MAGIC NUMBER IN A COORDINATE FIELD: its alignmentStart is 4542278, which is 0x454F46, which is EOF in ASCII. A port that validated coordinates would refuse the end of every well-formed CRAM.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 34,
-      "expect_contains": [
-        "id\tfar-too-long-to-fit-in-twenty\t6661722d746f6f2d6c6f6e672d746f2d6669742d",
-        "id\tshort\t73686f7274000000000000000000000000000000",
-        "\t4542278\t",
-        "def\tfour-unmapped\tCRAM\t3.0\t",
-        "file\tno-reads\t"
-      ],
       "cases": [
         {
           "dump": "CramContainerDump",
-          "golden": null,
-          "why": "Awaiting the artefact from a real x86-64 CI run: a golden may only come from the pinned container."
+          "golden": "crates/htsjdk-cram/tests/data/cram_container.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #107. 34 rows: 4 file definitions, 4 file-id paddings, 11 container headers as fields, the same 11 as the raw bytes they occupy, and 4 file walks. The bytes rows are what makes the field rows mean something: a field read at the wrong width shifts every field after it, so parsing the recorded bytes and rendering the result is the layout under test rather than the numbers alone."
         }
       ]
     }
