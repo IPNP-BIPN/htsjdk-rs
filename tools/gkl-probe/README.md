@@ -28,9 +28,18 @@ The committed reference column, produced on Apple Silicon where Docker translate
 through Rosetta. Its `cpu` line reads `VirtualApple @ 2.50GHz`, and Rosetta implements no AVX, so
 this column is igzip's SSE path.
 
-It is a **reference, not a golden**: nothing in the Rust tests reads it. Its only consumer is the
-`igzip-portability` CI job, which reruns the probe on a real x86-64 host and diffs. Question 2 is
-that diff.
+**This file is now a golden, and its provenance is wrong.** It was written on this laptop, and
+decision 0008 says a golden may only come from the pinned container on a real x86-64 runner. When
+it was created that rule did not bite, because nothing read it except the `igzip-portability` CI
+job, which reruns the probe on a real host and diffs. `crates/gkl-deflate` then started comparing
+against it, and the sentence that used to be here ("nothing in the Rust tests reads it") became
+false without anyone noticing.
+
+What holds it up in the meantime: the portability job re-derives every row on a real x86-64 runner
+on every CI run and fails on any difference, so the column is *verified* by CI even though it was
+*authored* here. That is close to the rule and is not the rule. The job now publishes what it
+derived as an artefact, so the laptop column can be replaced by a CI one, which is tracked in the
+issue this README links.
 
 ## Which backend a level reaches
 

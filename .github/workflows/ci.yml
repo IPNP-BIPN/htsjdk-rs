@@ -420,3 +420,15 @@ jobs:
                     "compare kernels. To test the kernel dispatch, one column has to come from a "
                     "host whose flags differ.")
           PY
+
+      - name: Publish the column this real host derived
+        # `tools/gkl-probe/emulated.txt` was written on a developer machine, which decision 0008
+        # forbids for a golden. It was not one when it was created; `crates/gkl-deflate` later
+        # started comparing against it. Publishing what a real x86-64 runner derived is what lets
+        # the laptop column be replaced by a CI one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gkl-probe-real-x86-64
+          path: /tmp/gkl-real.txt
+          if-no-files-found: warn
