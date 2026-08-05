@@ -13,3 +13,8 @@ md-5 = "0.10"
 [dev-dependencies]
 flate2.workspace = true
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
+# A second, independent reader for the files this crate writes. A DEV dependency on purpose: it
+# is an opinion to check against, never a source of bytes. See decision 0036.
+noodles-bam = "0.94"
+noodles-sam = "0.89"
+
