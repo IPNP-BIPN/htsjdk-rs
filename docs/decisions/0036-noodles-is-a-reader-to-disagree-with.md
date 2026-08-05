@@ -1,6 +1,9 @@
 # 0036. noodles is a reader to disagree with, not a source of bytes
 
-**Status:** accepted; sets the rule for reusing third-party format crates
+**Status:** partly superseded by [0037](0037-noodles-reads-htsjdks-cram-and-0036-said-otherwise.md).
+The two measurements below hold: the primitives are unreachable and the ITF8 reader disagrees on
+truncation. The conclusion drawn from them does not. noodles' whole-file reader **is** public and
+**does** read the CRAM htsjdk writes, measured four records out of four. Read 0037 for the rule.
 **Date:** 2026-08-05
 **Follows:** [0001](0001-deflate-backend.md), [0034](0034-igzips-reference-c-does-not-produce-igzips-bytes.md)
 
@@ -69,10 +72,13 @@ the *same* vendored zlib the JDK links, so it is not a second implementation at 
 ## Decision
 
 **Third-party format crates are dev dependencies, never dependencies.** The rule has two halves.
+*(Too broad: see 0037. The correct axis is reading against writing, not dependency against dev
+dependency. Writing is disqualified by construction; reading is an experiment per format.)*
 
 **Hand-port the primitives, against the oracle.** ITF8, LTF8, rANS, the container model. Not because
 writing them is better, but because the alternative is unreachable and would be wrong if it were
-reachable.
+reachable. *(True of the primitives, which is all this paragraph measured, and not true of the
+container model: noodles reads that one. See 0037.)*
 
 **Use noodles as a second reader over what this port writes.** That is a claim no golden makes: a
 golden says "these bytes are the bytes htsjdk produced", and an independent reader says "these bytes
