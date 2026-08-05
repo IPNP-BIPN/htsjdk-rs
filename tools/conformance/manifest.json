@@ -792,6 +792,29 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31047158077, the golden-pending run of htsjdk-rs #119. 122 rows: 35 packed code vectors with the forward lookup each one filled, over seven frequency shapes and five reference bases; 40 decoded rows over four serialized matrices, upper case and lower; 27 answers from code and 18 from base across nine reference bases including zero, minus one and two lower case ones; the three sizes; and toString. Messages are escaped rather than raw because Java formats an invalid base with %c, so they carry a NUL and a U+FFFF."
         }
       ]
+    },
+    {
+      "id": "cram-encoding-map",
+      "status": "golden-pending",
+      "title": "The data series encoding map, and the order it is written in",
+      "harness": "tools/cram-conformance",
+      "why": "The compression header's second map, and the first thing in CRAM that describes a record rather than a container. Six things are decisions rather than layout. THIS MAP'S SIZE IS A REAL COUNT WHERE THE PRESERVATION MAP'S IS THE LITERAL 5: two maps in one header, one counted and one not, and the count here excludes any data series whose encoding is NULL. THE WRITE ORDER IS THE ENUM'S ORDINAL ORDER, not the order the constructor populates in: the map is a TreeMap keyed by the enum so it sorts by ordinal, while the constructor adds the series alphabetically by canonical name, and only the first order is in the bytes. htsjdk WRITES 26 OF THE 32 DATA SERIES: BB and QQ are never written by this implementation, TC and TN are obsolete, TM and TV exist only for tests, so a port that writes all 32 writes a map no htsjdk-written CRAM contains. TC AND TN ARE READ AND THEN DROPPED with a log warning, so the reader's map can hold FEWER entries than the count the file declared. THE CONTENT IDS ARE htsjdk'S AND NOT THE SPECIFICATION'S: it numbers the series 1 to 32 in enum order and a reader must discover them from the map. AND AN UNKNOWN ENCODING ID IS AN ARRAY INDEX rather than a CRAM error, with the read SIGNED, so an id byte of 255 arrives as index -1 and the message says so.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 103,
+      "expect_contains": [
+        "written\tBF,CF,RI,RL,AP,RG,RN,NF,MF,NS,NP,TS,TL,MQ,FN,FP,FC,BA,QS,BS,IN,DL,RS,SC,PD,HC",
+        "ignored\tTC,TN",
+        "refuse\tencoding-id-negative\tjava.lang.ArrayIndexOutOfBoundsException\tIndex -1 out of bounds for length 10",
+        "refuse\tunknown-canonical-name\thtsjdk.samtools.cram.CRAMException\tCould not find Data Series Encoding for: ZZ"
+      ],
+      "cases": [
+        {
+          "dump": "CramEncodingMapDump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [
