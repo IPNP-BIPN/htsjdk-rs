@@ -11,4 +11,5 @@ pub mod preservation_map;
 pub mod rans;
 pub mod rans_order1;
 pub mod substitution_matrix;
+pub mod tag_encoding_map;
 pub mod varint;
