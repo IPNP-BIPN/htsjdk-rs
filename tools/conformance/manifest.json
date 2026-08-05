@@ -829,24 +829,18 @@
     },
     {
       "id": "cram-slice-header",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The slice header, and the six tags that ride in it",
       "harness": "tools/cram-conformance",
       "why": "The last frame before CRAM becomes reads. THE BLOCK COUNT DOES NOT COUNT THE HEADER BLOCK: getNumberOfBlocks returns 1 + numberOfExternalBlocks, and measured on five files it equals exactly the number of blocks that FOLLOW the header, so a reader that counts the header among them stops one short. SIX TAGS RIDE IN THE HEADER AND FOUR OF THEM DIGEST NOTHING: B1 and S1 carry a SHA-1, B5 and S5 a SHA-512, and on an unmapped slice all four are the digest of the EMPTY string, byte for byte identical in every file, which is 168 bytes of constant per slice. Only BD and SD move with the reads, and they do NOT move when only the record tags change, which two files differing in exactly that prove. THE TAG SECTION HAS NO LENGTH: it is read to the end of the block, so the block's own length is the only delimiter and a header with no tags is indistinguishable from one whose tags are zero bytes long. THE MD5 IS SIXTEEN ZEROES WHEN THERE IS NONE, so its emptiness is a value rather than an absence. AN ABSENT EMBEDDED REFERENCE IS -1 written as an ITF8, which is the FIVE-byte form, so the commonest value of the field is also its longest encoding. AND THE TAG SECTION IS VERSION-GATED ON BOTH SIDES, so the same slice is shorter in a 2.1 file.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 51,
-      "expect_contains": [
-        "blockcount\tfour-unmapped\t0\t27\t27",
-        "slicetag\tfour-unmapped\t0\tB1\tbyte[]\tda39a3ee5e6b4b0d3255bfef95601890afd80709",
-        "slicetag\ttagged\t0\tBD\tbyte[]\t9efa8928",
-        "slicetag\tfour-unmapped\t0\tBD\tbyte[]\t9efa8928"
-      ],
       "cases": [
         {
           "dump": "CramSliceHeaderDump",
-          "golden": null
+          "golden": "crates/htsjdk-cram/tests/data/cram_slice_header.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31049831397, the golden-pending run of htsjdk-rs #122. 51 rows over five files: 5 slice headers whole in hex and 5 more field by field, 5 declared block counts beside the blocks that actually follow, 30 decoded slice tags, 5 slice counts and the constants. The tags are decoded with the reader's own codec rather than read off the bytes, which is what showed there are six of them and not one. Two of the five files differ only in whether their records carry tags, which is what separates the digests that move from the digests that do not."
         }
       ]
     }
