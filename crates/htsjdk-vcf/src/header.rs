@@ -347,7 +347,7 @@ pub struct SortKey {
 }
 
 impl HeaderLine {
-    fn sort_key(&self) -> SortKey {
+    pub(crate) fn sort_key(&self) -> SortKey {
         match self {
             HeaderLine::Contig { index, .. } => SortKey {
                 // Contigs share a prefix so that they group together, then order by index.
