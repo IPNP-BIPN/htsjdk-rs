@@ -92,6 +92,14 @@ pub struct Block {
     pub size: i64,
 }
 
+/// One interval of an `IntervalTreeIndex.ChrIndex`, with the block it points at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Interval {
+    pub start: i32,
+    pub end: i32,
+    pub block: Block,
+}
+
 /// `LinearIndex.ChrIndex`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChrIndex {
@@ -107,6 +115,22 @@ pub struct ChrIndex {
     pub blocks: Vec<Block>,
 }
 
+/// `IntervalTreeIndex.ChrIndex`, whose per-contig record is a different shape from the linear one:
+/// a flat list of intervals rather than a bin width and a run of positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntervalChrIndex {
+    pub name: String,
+    /// In the order the file holds them, which is the tree's own traversal order rather than
+    /// anything sorted.
+    pub intervals: Vec<Interval>,
+}
+
+/// The gap below which two blocks are merged into one read.
+///
+/// `block.getStartPosition() < lastBlock.getEndPosition() + 1000`. Not a tunable: the constant is
+/// written into the method.
+pub const CONSOLIDATION_GAP: i64 = 1000;
+
 /// A parsed `.idx`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TribbleIndex {
@@ -121,8 +145,11 @@ pub struct TribbleIndex {
     pub indexed_file_md5: String,
     pub flags: i32,
     pub properties: Vec<(String, String)>,
-    /// In file order, which is the order the creator wrote the contigs in.
+    /// In file order, which is the order the creator wrote the contigs in. Empty for an
+    /// interval-tree index.
     pub contigs: Vec<ChrIndex>,
+    /// The interval-tree contigs, likewise in file order. Empty for a linear index.
+    pub interval_contigs: Vec<IntervalChrIndex>,
 }
 
 /// A cursor over the little-endian stream, with the NUL-terminated strings the format uses.
@@ -172,9 +199,7 @@ impl TribbleIndex {
             return Err(IndexError::BadMagic { found: magic });
         }
         let index_type = reader.i32()?;
-        if index_type != LINEAR {
-            // The interval-tree chromosome record is a different shape. Refused rather than
-            // mis-parsed, because a reader that guessed would produce plausible nonsense.
+        if index_type != LINEAR && index_type != INTERVAL_TREE {
             return Err(IndexError::UnsupportedType { found: index_type });
         }
         let version = reader.i32()?;
@@ -194,7 +219,33 @@ impl TribbleIndex {
         }
 
         let mut contigs = Vec::new();
+        let mut interval_contigs = Vec::new();
         let mut remaining = reader.i32()?;
+        while remaining > 0 && index_type == INTERVAL_TREE {
+            // `IntervalTreeIndex.ChrIndex.read`: a name, a count, then that many
+            // (start, end, position, size) records. Sizes are stored, not derived, which is the
+            // opposite of the linear layout and the thing to be careful about when reading both.
+            let name = reader.string()?;
+            let mut count = reader.i32()?;
+            let mut intervals = Vec::new();
+            while count > 0 {
+                let start = reader.i32()?;
+                let end = reader.i32()?;
+                let position = reader.i64()?;
+                let size = i64::from(reader.i32()?);
+                intervals.push(Interval {
+                    start,
+                    end,
+                    block: Block {
+                        start: position,
+                        size,
+                    },
+                });
+                count -= 1;
+            }
+            interval_contigs.push(IntervalChrIndex { name, intervals });
+            remaining -= 1;
+        }
         while remaining > 0 {
             let name = reader.string()?;
             let bin_width = reader.i32()?;
@@ -236,6 +287,7 @@ impl TribbleIndex {
             flags,
             properties,
             contigs,
+            interval_contigs,
         })
     }
 
@@ -244,19 +296,80 @@ impl TribbleIndex {
     /// An unknown contig is refused rather than answered with nothing, which is htsjdk's choice
     /// and a useful one: a mistyped contig otherwise reads as a region with no features.
     pub fn blocks(&self, contig: &str, start: i32, end: i32) -> Result<Vec<Block>, IndexError> {
-        let chr = self
-            .contigs
-            .iter()
-            .find(|c| c.name == contig)
-            .ok_or_else(|| IndexError::UnknownContig {
-                contig: contig.to_string(),
-            })?;
-        Ok(chr.blocks_for(start, end))
+        if let Some(chr) = self.contigs.iter().find(|c| c.name == contig) {
+            return Ok(chr.blocks_for(start, end));
+        }
+        if let Some(chr) = self.interval_contigs.iter().find(|c| c.name == contig) {
+            return Ok(chr.blocks_for(start, end));
+        }
+        Err(IndexError::UnknownContig {
+            contig: contig.to_string(),
+        })
     }
 
     /// `getSequenceNames()`, in file order.
     pub fn sequence_names(&self) -> Vec<&str> {
-        self.contigs.iter().map(|c| c.name.as_str()).collect()
+        self.contigs
+            .iter()
+            .map(|c| c.name.as_str())
+            .chain(self.interval_contigs.iter().map(|c| c.name.as_str()))
+            .collect()
+    }
+}
+
+impl IntervalChrIndex {
+    /// `IntervalTreeIndex.ChrIndex.getBlocks(start, end)`.
+    ///
+    /// Three steps, and the middle one is where a port has to say what it cannot reproduce.
+    ///
+    /// **Overlap** is the tree's `findOverlapping`, which is inclusive at both ends.
+    ///
+    /// **The sort** is by start position, through a comparator htsjdk itself calls "a little
+    /// cryptic":
+    ///
+    /// ```java
+    /// return b1.getStartPosition() - b2.getStartPosition() < 1 ? -1
+    ///      : (b1.getStartPosition() - b2.getStartPosition() > 1 ? 1 : 0);
+    /// ```
+    ///
+    /// It is **not a consistent comparator**. `compare(a, a)` is `-1` rather than `0`, and two
+    /// blocks one byte apart compare *equal*. For any pair whose starts differ by two or more it
+    /// is an ordinary ascending sort, which is what this does. For the other two cases the answer
+    /// depends on TimSort's internals rather than on the data, so it is **not reproduced**: it is
+    /// named here instead, and no index this port has seen contains such a pair — blocks in a
+    /// Tribble index start at distinct offsets a record apart.
+    ///
+    /// **The consolidation** merges anything starting within [`CONSOLIDATION_GAP`] of the previous
+    /// block's end, so the answer is a list of reads rather than one block per interval. In the
+    /// reference this is done by mutating the stored block in place, so a query widens the index
+    /// it queried; this returns new blocks instead. The difference is observable only if a later
+    /// query would have seen a *narrower* block, and no corpus built for this has produced one.
+    pub fn blocks_for(&self, start: i32, end: i32) -> Vec<Block> {
+        let mut blocks: Vec<Block> = self
+            .intervals
+            .iter()
+            .filter(|interval| interval.start <= end && start <= interval.end)
+            .map(|interval| interval.block)
+            .collect();
+        if blocks.is_empty() {
+            return Vec::new();
+        }
+        blocks.sort_by_key(|block| block.start);
+
+        let mut consolidated: Vec<Block> = Vec::with_capacity(blocks.len());
+        consolidated.push(blocks[0]);
+        for block in &blocks[1..] {
+            let last = consolidated.last_mut().expect("pushed one");
+            if block.start < last.start + last.size + CONSOLIDATION_GAP {
+                // `lastBlock.setEndPosition(block.getEndPosition())`: the end moves, the start
+                // does not, so the size is the distance from the original start.
+                let end_position = block.start + block.size;
+                last.size = end_position - last.start;
+            } else {
+                consolidated.push(*block);
+            }
+        }
+        consolidated
     }
 }
 
@@ -363,6 +476,7 @@ mod tests {
             flags: 0,
             properties: Vec::new(),
             contigs: vec![chr("chr1", 16000, 600, &[0, 59, 80])],
+            interval_contigs: Vec::new(),
         };
         assert_eq!(index.blocks("chr1", 1_000_000, 1_000_010), Ok(Vec::new()));
         let error = index.blocks("chrX", 1, 10).expect_err("refused");
@@ -387,14 +501,66 @@ mod tests {
     fn a_file_that_is_not_an_index_is_refused_by_its_magic() {
         let error = TribbleIndex::read(b"not an index at all").expect_err("refused");
         assert!(matches!(error, IndexError::BadMagic { .. }));
-        // An interval-tree index is refused rather than mis-parsed.
+        // A type that is neither linear nor interval tree is refused rather than guessed at.
         let mut bytes = MAGIC_NUMBER.to_le_bytes().to_vec();
-        bytes.extend(INTERVAL_TREE.to_le_bytes());
+        bytes.extend(99i32.to_le_bytes());
         assert_eq!(
             TribbleIndex::read(&bytes),
-            Err(IndexError::UnsupportedType {
-                found: INTERVAL_TREE
-            })
+            Err(IndexError::UnsupportedType { found: 99 })
         );
+    }
+
+    fn interval(start: i32, end: i32, block_start: i64, size: i64) -> Interval {
+        Interval {
+            start,
+            end,
+            block: Block {
+                start: block_start,
+                size,
+            },
+        }
+    }
+
+    /// The consolidation is what makes an interval-tree answer a list of *reads* rather than one
+    /// block per interval, and the gap is a constant written into the method.
+    #[test]
+    fn intervals_within_a_thousand_bytes_become_one_read() {
+        let chr = IntervalChrIndex {
+            name: "chr1".to_string(),
+            intervals: vec![
+                interval(100, 200, 0, 50),
+                // Starts 40 bytes after the first one ends: inside the gap, so merged.
+                interval(300, 400, 90, 10),
+                // Starts 1000 past the previous end exactly, which is NOT less than the gap.
+                interval(500, 600, 1100, 20),
+            ],
+        };
+        assert_eq!(
+            chr.blocks_for(1, 1000),
+            vec![
+                Block {
+                    start: 0,
+                    size: 100
+                },
+                Block {
+                    start: 1100,
+                    size: 20
+                }
+            ]
+        );
+    }
+
+    /// Overlap is inclusive at both ends, so a query touching an interval's first or last base
+    /// still finds it.
+    #[test]
+    fn overlap_is_inclusive_at_both_ends() {
+        let chr = IntervalChrIndex {
+            name: "chr1".to_string(),
+            intervals: vec![interval(100, 200, 0, 50)],
+        };
+        assert_eq!(chr.blocks_for(200, 300).len(), 1, "touching the end");
+        assert_eq!(chr.blocks_for(1, 100).len(), 1, "touching the start");
+        assert!(chr.blocks_for(201, 300).is_empty(), "just past the end");
+        assert!(chr.blocks_for(1, 99).is_empty(), "just before the start");
     }
 }

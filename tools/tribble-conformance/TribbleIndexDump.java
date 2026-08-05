@@ -32,7 +32,8 @@
  *
  *     idx\t<label>\t<timestamp offset>\t<base64 of the .idx, timestamp zeroed>
  *     header\t<label>\t<magic>\t<type>\t<version>\t<flags>\t<properties>\t<path shape>\t<size shape>\t<md5 shape>
- *     chr\t<label>\t<name>\t<binWidth>\t<nBins>\t<longestFeature>\t<unused>\t<nFeatures>\t<block positions>
+ *     chr\t<label>\t<name>\t<binWidth>\t<nBins>\t<longestFeature>\t<unused>\t<nFeatures>\t<block positions>   (linear)
+ *     chr\t<label>\t<name>\t<count>\t<start,end,pos,size;...>                                     (interval tree)
  *     query\t<label>\t<contig>:<start>-<end>\t<start,size|...  or `none`>
  *
  * Usage: TribbleIndexDump
@@ -172,8 +173,39 @@ public class TribbleIndexDump {
                 }
             }
         } else {
-            for (final String name : index.getSequenceNames()) {
-                System.out.printf("chr\t%s\t%s\tinterval-tree%n", label, name);
+            // The interval-tree chromosome record: a name, a count, then that many
+            // (start, end, position, size). Sizes are STORED here, unlike the linear layout where
+            // they are the differences between consecutive positions.
+            try (final LittleEndianInputStream dis = new LittleEndianInputStream(
+                    new BufferedInputStream(new ByteArrayInputStream(bytes)))) {
+                dis.readInt();
+                dis.readInt();
+                dis.readInt();
+                dis.readString();
+                dis.readLong();
+                dis.readLong();
+                dis.readString();
+                dis.readInt();
+                int properties = dis.readInt();
+                while (properties-- > 0) {
+                    dis.readString();
+                    dis.readString();
+                }
+                int contigs = dis.readInt();
+                while (contigs-- > 0) {
+                    final String name = dis.readString();
+                    final int count = dis.readInt();
+                    final StringBuilder intervals = new StringBuilder();
+                    for (int i = 0; i < count; i++) {
+                        if (i > 0) {
+                            intervals.append(';');
+                        }
+                        intervals.append(dis.readInt()).append(',').append(dis.readInt())
+                                .append(',').append(dis.readLong()).append(',')
+                                .append(dis.readInt());
+                    }
+                    System.out.printf("chr\t%s\t%s\t%d\t%s%n", label, name, count, intervals);
+                }
             }
         }
 
