@@ -141,13 +141,10 @@ jobs:
             suites: "fastmath-exp gamma-erf-normal saddle-point variant-comparator smart-merge-headers"
           - group: oracle-backed
             index: "8/8"
-            suites: "tribble-index"
+            suites: "tribble-index tribble-index-write"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "tribble-index-write"
     steps:
       - uses: actions/checkout@v4
 

@@ -625,29 +625,18 @@
     },
     {
       "id": "tribble-index-write",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Building a .idx, and the decisions that shape it",
       "harness": "tools/tribble-conformance",
       "why": "The read side of the Tribble index landed in htsjdk-rs #83; this is the write side, which GATK runs beside every VCF it emits. Reading is a layout and writing is a set of decisions the layout only records the outcome of, and four of those decisions are invisible in the file. THE BIN WIDTH IS NOT THE ONE THE CREATOR WAS GIVEN: LinearIndex.optimize doubles it PER CONTIG, merging blocks pairwise, until the most dense block is estimated to hold more than MAX_FEATURES_PER_BIN features, or one block is left, or the width goes bad. That is the cause of the outcome the read suite measured, 16000 for one contig and 8000 for another in one file, and the loop keeps the LAST width still under the threshold rather than the first one over it. THE DENSITY IS ESTIMATED, NEVER COUNTED: the score is the largest block's size in BYTES over the mean bytes per feature, never compared to the feature count the same object carries, so two files with the same feature counts and different line lengths optimize differently. THE DYNAMIC CREATOR PICKS THE TYPE FROM THE DATA, and measured here the choice flips BOTH WAYS on the same two files: sparse data gets a linear index under FOR_SEEK_TIME and an interval tree under FOR_SIZE, and dense data gets the opposite, with nothing on a command line to say which a run produced. AND THE STATISTICS IN THE HEADER ARE NOT THE FEATURE LENGTHS: stats.push(longestFeatureLength) pushes the running MAXIMUM, so on features of lengths 10, 10, 600, 10, 10 the FEATURE_LENGTH_MEAN written into the bytes is 364.0, the mean of 10, 10, 600, 600, 600. A port computing the honest mean writes a different file. Two refusals are measured with their messages, and one of them states the OPPOSITE of the condition it guards: an empty file throws 'finalFilePosition != 0, -> 0' from a check that fires when it IS zero.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 33,
-      "expect_contains": [
-        "chr\tsparse-linear\tchr1\t16000\t",
-        "chr\tsparse-linear\tchr2\t8000\t",
-        "chr\tsparse-dynamic-seek\tchr2\t2000\t",
-        "idx\tsparse-dynamic-size\tIntervalTreeIndex\t",
-        "idx\tdense-dynamic-seek\tIntervalTreeIndex\t",
-        "idx\tdense-dynamic-size\tLinearIndex\t",
-        "FEATURE_LENGTH_MEAN=364.0",
-        "finalFilePosition != 0, -> 0"
-      ],
       "cases": [
         {
           "dump": "TribbleIndexWriteDump",
-          "golden": null,
-          "why": "Awaiting the artefact from a real x86-64 CI run: decision 0008 forbids a golden written on a developer machine."
+          "golden": "crates/htsjdk-tribble/tests/data/tribble_index_write.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #99. 33 rows: 10 built indexes, 10 property sets, 10 per-contig records and 3 refusals. Ten cases are compared BYTE FOR BYTE, with the header's path, size, timestamp and MD5 taken from the golden because they are facts about the run rather than decisions of the creator; everything else, the properties and every contig record, the port produces. Three cases the reference built as an interval tree, which this port refuses rather than guessing at, and the test asserts the refusal against the type the golden recorded."
         }
       ]
     }
