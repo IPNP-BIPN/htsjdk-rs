@@ -707,6 +707,30 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #107. 34 rows: 4 file definitions, 4 file-id paddings, 11 container headers as fields, the same 11 as the raw bytes they occupy, and 4 file walks. The bytes rows are what makes the field rows mean something: a field read at the wrong width shifts every field after it, so parsing the recorded bytes and rendering the result is the layout under test rather than the numbers alone."
         }
       ]
+    },
+    {
+      "id": "cram-block",
+      "status": "golden-pending",
+      "title": "The CRAM block, and where it ends",
+      "harness": "tools/cram-conformance",
+      "why": "What a container's byte size actually counts. Each block is a five-field header, two raw bytes then three ITF8s, the compressed content, and a CRC32 from version 3 up. THE CRC COVERS THE HEADER AND THE CONTENT TOGETHER, because Block.read wraps a CRC32InputStream around the whole read, so a block cannot be verified without re-reading its own header and THE FOUR CHECKSUM BYTES SIT OUTSIDE the compressedSize the header declares. A port that walks a container by adding header plus compressed size lands four bytes short of the next block and misreads every block after the first. It is absent below version 3 exactly as the container header's is, so the two version-dependent lengths compound. A CONTENT ID IS ONLY LEGAL ON AN EXTERNAL BLOCK: the constructor throws otherwise, so the field is present in every block and meaningful in one kind. THE FIRST TWO BLOCKS OF EVERY CRAM HAVE FIXED METHODS, not a per-file choice: createGZIPFileHeaderBlock and createRawCompressionHeaderBlock fix them, measured on five files. AND AN ORDINARY FILE USES rANS: the methods present in a four-read CRAM are RAW, GZIP and rANS over 29 blocks, which is the evidence behind decision 0038's scoping. A file with no records uses only RAW and GZIP.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 359,
+      "expect_contains": [
+        "counts\tfour-unmapped\t29\t0,1,4",
+        "counts\tno-reads\t2\t0,1",
+        "blk\tfour-unmapped\t0\t0\t1\t0\t",
+        "blk\tfour-unmapped\t1\t0\t0\t1\t"
+      ],
+      "cases": [
+        {
+          "dump": "CramBlockDump",
+          "golden": null,
+          "why": "Awaiting the artefact from a real x86-64 CI run: a golden may only come from the pinned container."
+        }
+      ]
     }
   ],
   "probes": [
