@@ -7,9 +7,12 @@
  * "deflate 1.2.13 Copyright 1995-2022 Jean-loup Gailly and Mark Adler"). Which one runs depends on
  * the compression level, and htsjdk's BGZF default level decides which one a BAM is written with.
  *
- * Decision 0028 established the first half by compressing the same bytes both ways: levels 1 to 6
- * differ from the JDK's zlib and are therefore igzip; levels 7 to 9 are byte-identical to it and
- * are therefore zlib. The default is 5, so the default path is igzip.
+ * Decision 0028 measured the split by compressing the same bytes both ways: levels 1 to 6 differ
+ * from the JDK's zlib, levels 7 to 9 are byte-identical to it. Decision 0029 then read the level
+ * branch out of the library rather than inferring it, and the split is not where 0028 said: only
+ * levels 1 and 2 reach igzip, and 3 to 9 reach a zlib 1.2.13 carrying Intel's `deflate_medium`
+ * patch, which the JDK's zlib 1.3.2 disagrees with below level 7. The default is 5, so the
+ * default path is that patched zlib.
  *
  * THIS PROBE ANSWERS THE SECOND HALF, which 0028 named and deliberately left open. igzip ships
  * hand-written AVX2 and AVX512 kernels and dispatches on CPU features at load time. If those

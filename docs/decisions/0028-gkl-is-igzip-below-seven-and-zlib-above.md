@@ -1,6 +1,9 @@
 # 0028. GKL is igzip below level 7 and zlib above it, and none of it is licence-blocked
 
-**Status:** accepted; H.4 resized from "port a compression algorithm" to "reproduce igzip at levels 1 to 6", and igzip measured CPU-independent
+**Status:** partly superseded by [0029](0029-only-levels-one-and-two-are-igzip.md). The level
+table and the portability result stand; the claim that levels 1 to 6 are igzip does not.
+Only levels 1 and 2 are igzip, and 3 to 9 are Intel's patched zlib 1.2.13, which the JDK's
+zlib 1.3.2 disagrees with below level 7. Read 0029 first.
 **Date:** 2026-08-05
 **Follows:** [0001](0001-deflate-backend.md), [0003](0003-deflate-fallback-is-a-status-not-a-length.md)
 
@@ -52,6 +55,8 @@ already reproduces. A byte claim at those levels is not deflater-dependent at al
 this milestone carries ("name the deflater it is a claim about") does not apply to them.
 
 **Levels 1 to 6 are igzip**, and level 5 is the one that matters because it is the default.
+*(Wrong: see 0029. Levels 3 to 6 are Intel's patched zlib, not igzip. Level 5 is still the
+one that matters, and it is still not the JDK's, so the rest of this section holds.)*
 
 **None of it is licence-blocked.** ISA-L is BSD-3-Clause, GKL is MIT, zlib is the zlib licence.
 This is the first place in the programme where the reference implementation of a byte-deciding

@@ -360,29 +360,32 @@ jobs:
               print(f"FAIL: the two runs compared different things: {sorted(missing)[:5]}")
               sys.exit(1)
           differing = sorted(k for k in emulated if emulated[k] != real[k])
-          # First half: is this GKL still igzip below level 7 and zlib at or above it?
+          # First half: does this GKL still split where decisions 0028 and 0029 say it does?
+          #
+          # Below 7 GKL is either igzip (levels 1 and 2) or Intel's patched zlib 1.2.13 (3 to 6),
+          # and the JDK here is zlib 1.3.2, so the two disagree. At 7 and above the patches stop
+          # mattering and the two zlibs emit the same bytes.
           #
           # Stated per level rather than per row on purpose. "GKL differs from the JDK below 7"
           # is not true of every input: the `runs` fixture compresses identically at levels 3
           # and 4, measured, because two match-finders can agree on data that simple. The claim
-          # is asserted on `acgt`, which is the BAM-shaped fixture decision 0028's table was
-          # measured on. The other direction admits no exceptions: at 7 and above GKL hands off
-          # to the zlib in the same shared object, so EVERY row must agree.
+          # is asserted on `acgt`, which is the BAM-shaped fixture the level table was measured
+          # on. The other direction admits no exceptions: EVERY row at 7 and above must agree.
           igzip_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl'
                         and k[1] == 'acgt' and int(k[2]) < 7
                         and real[k] == real[(k[0], k[1], k[2], 'jdk')]]
           if igzip_gone:
               print(f"FAIL: on the acgt fixture GKL matched the JDK at level(s) "
                     f"{sorted(int(k[2]) for k in igzip_gone)}. Either the native library did not "
-                    f"load or this GKL no longer routes through igzip, and decision 0028's "
-                    f"measurement no longer describes it.")
+                    f"load, or this GKL's zlib is no longer patched, or its version skew with the "
+                    f"JDK's zlib closed. Decisions 0028 and 0029 no longer describe it.")
               sys.exit(1)
           zlib_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl' and int(k[2]) >= 7
                        and real[k] != real[(k[0], k[1], k[2], 'jdk')]]
           if zlib_gone:
               print(f"FAIL: GKL no longer matches the JDK at levels 7 to 9 "
                     f"({len(zlib_gone)} rows). Decision 0028 rests on those levels needing no "
-                    f"port at all; they now need one.")
+                    f"port at all; they now need one. A JDK zlib bump is the likeliest cause.")
               sys.exit(1)
           print(f"{len(emulated)} rows compared, {len(differing)} differing")
           if differing:
