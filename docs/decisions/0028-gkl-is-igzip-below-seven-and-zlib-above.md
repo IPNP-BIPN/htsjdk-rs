@@ -1,6 +1,6 @@
 # 0028. GKL is igzip below level 7 and zlib above it, and none of it is licence-blocked
 
-**Status:** accepted; H.4 resized from "port a compression algorithm" to "reproduce igzip at levels 1 to 6"
+**Status:** accepted; H.4 resized from "port a compression algorithm" to "reproduce igzip at levels 1 to 6", and igzip measured CPU-independent
 **Date:** 2026-08-05
 **Follows:** [0001](0001-deflate-backend.md), [0003](0003-deflate-fallback-is-a-status-not-a-length.md)
 
@@ -99,3 +99,26 @@ stopped routing through igzip fails rather than silently invalidating this recor
 rather than per row: at levels 7 to 9 **every** row must match the JDK, but below 7 the claim is
 asserted on the `acgt` fixture alone, because the `runs` fixture compresses identically at levels 3
 and 4, measured rather than assumed. Two match-finders can agree on data that simple.
+
+## The answer
+
+**101 rows compared, 0 differing.**
+
+| | first machine | second machine |
+|---|---|---|
+| host | Apple Silicon under Rosetta | GitHub `ubuntu-latest` |
+| `cpu` line | `VirtualApple @ 2.50GHz` | `AMD EPYC 7763 64-Core Processor` |
+| AVX flags | none | `avx avx2 sse4_2` (no `avx512f`) |
+
+Every hash agrees: four fixtures times nine levels of raw deflate through both deflaters, plus the
+BGZF streams at levels 1, 5 and 9, plus the input hashes and the default level.
+
+**igzip's output is a property of the algorithm, not of the kernel that ran it.** So H.4 has a
+fixed target after all: a port can be checked against a byte sequence rather than against a
+machine, and a BAM written on one host is the BAM written on another. This is the opposite of what
+decision 0007 found for `Math.pow`, and it is the answer that made the porting work worth sizing.
+
+Two limits, stated rather than implied. Only two microarchitectures have been compared, and
+neither of them exercises igzip's AVX512 kernel, since the EPYC 7763 reports no `avx512f`. The
+result stands for the SSE and AVX2 paths; a host with AVX512 would be a third column and has not
+been run.
