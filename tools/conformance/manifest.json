@@ -397,28 +397,18 @@
     },
     {
       "id": "vcf-index-on-the-fly",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "A VCF and its .idx written in one pass",
       "harness": "tools/vcf-conformance",
       "why": "The join between the VCF the writer emits and the .idx it writes beside it, which is what every GATK tool emitting a VCF does and what neither the vcf-file suite nor tribble-index-write can see alone. INDEX_ON_THE_FLY IS ON BY DEFAULT: VariantContextWriterBuilder.DEFAULT_OPTIONS is EnumSet.of(Options.INDEX_ON_THE_FLY), so a caller who asks for nothing gets an index, and one who asks for nothing AND supplies no dictionary gets an exception instead of a file. THE RECORDED POSITION IS THE ONE BEFORE THE RECORD, and it is absolute in the output stream, so THE HEADER IS COUNTED: measured, the first record sits at 242 because that is the header's length, and an index built from a feature list that forgot the header is uniformly off by it. THE SEQUENCE DICTIONARY BECOMES PROPERTIES, NOT A FLAG: setIndexSequenceDictionary writes one DICT:<contig> property per sequence and flags stays ZERO, because SEQUENCE_DICTIONARY_FLAG is only read for version < 3; and those properties come BEFORE the dynamic creator's four statistics, because finalizeIndex copies the creator's own map first. AND THE LAYOUT IS NOT THE CALLER'S CHOICE: the writer always uses a DynamicIndexCreator with FOR_SEEK_TIME, so measured on ordinary files, one record gets a linear index while two thousand records get an interval tree, as does a header-only file, whose feature density is a division of zero by zero. Two refusals are measured and one is not the documented one: indexing to a stream is documented as an IllegalArgumentException and arrives as a NullPointerException, after the VCF itself has already been written.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 26,
-      "expect_contains": [
-        "vcf\tone-record\t267\t242\t1\t242",
-        "idx\tone-record\tLinearIndex\t",
-        "idx\tmany-records\tIntervalTreeIndex\t",
-        "idx\theader-only\tIntervalTreeIndex\t",
-        "flags=0;DICT:chr1=100000;DICT:chr2=200000;FEATURE_LENGTH_MEAN=",
-        "A reference dictionary is required for creating Tribble indices on the fly",
-        "java.lang.NullPointerException"
-      ],
       "cases": [
         {
           "dump": "VcfIndexOnTheFlyDump",
-          "golden": null,
-          "why": "Awaiting the artefact from a real x86-64 CI run: decision 0008 forbids a golden written on a developer machine."
+          "golden": "crates/htsjdk-vcf/tests/data/vcf_index_on_the_fly.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #101. 26 rows: 7 written VCFs with every record's byte offset, 7 index files, 6 property sets, 4 per-contig records and 2 refusals. Six index files are compared BYTE FOR BYTE across both layouts, three of them interval trees, with the header's path, size, timestamp and MD5 taken from the golden because they are facts about the run rather than decisions of the writer. The VCF rows compare the file's length, the header's length and every record's offset, which is what pins the two halves to each other: an index whose positions are right about a file the port writes differently is wrong twice and passes neither row."
         }
       ]
     },
