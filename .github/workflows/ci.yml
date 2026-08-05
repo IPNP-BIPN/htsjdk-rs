@@ -135,19 +135,16 @@ jobs:
             suites: "vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods"
           - group: oracle-backed
             index: "6/8"
-            suites: "vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip mateinfo"
+            suites: "vcf-chromosome-counts vcf-genotype-type vcf-attribute-type rg-checksum cigar-clip"
           - group: oracle-backed
             index: "7/8"
-            suites: "percentile fastmath-exp gamma-erf-normal saddle-point variant-comparator"
+            suites: "mateinfo percentile fastmath-exp gamma-erf-normal saddle-point"
           - group: oracle-backed
             index: "8/8"
-            suites: "smart-merge-headers tribble-index tribble-index-write"
+            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "vcf-attribute-type"
     steps:
       - uses: actions/checkout@v4
 
