@@ -6,4 +6,5 @@
 //! checked until those are.
 pub mod block;
 pub mod container;
+pub mod rans;
 pub mod varint;
