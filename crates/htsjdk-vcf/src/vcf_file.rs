@@ -32,8 +32,12 @@ pub const VERSION_LINE: &str = "##fileformat=VCFv4.2";
 pub fn write_vcf(header: &VcfHeader, records: &[VariantContext]) -> Result<String, EncodeError> {
     let encoder = VcfEncoder::new(header);
     let mut out = header.write();
+    // One allocation for the whole file rather than one per record and a copy. 64 bytes a record
+    // is the shortest a data line can plausibly be, so this under-reserves for real data and never
+    // over-reserves badly; the point is to start the doubling from somewhere sensible.
+    out.reserve(records.len() * 64);
     for record in records {
-        out.push_str(&encoder.encode(record)?);
+        encoder.encode_into(record, &mut out)?;
         out.push('\n');
     }
     Ok(out)

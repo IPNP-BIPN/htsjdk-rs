@@ -19,4 +19,5 @@ flate2.workspace = true
 # A second, independent reader for the files this crate writes. A DEV dependency on purpose: it
 # is an opinion to check against, never a source of bytes. See decision 0036.
 noodles-vcf = "0.92"
+noodles-core = "0.20"
 htsjdk-tribble = { path = "../htsjdk-tribble" }

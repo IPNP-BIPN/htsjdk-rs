@@ -288,6 +288,7 @@ dependencies = [
  "flate2",
  "htsjdk-tribble",
  "jmath",
+ "noodles-core",
  "noodles-vcf",
 ]
 

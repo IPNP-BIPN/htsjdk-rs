@@ -97,12 +97,29 @@ impl<'a> VcfEncoder<'a> {
     }
 
     /// `VCFEncoder.encode`.
+    ///
+    /// A convenience over [`Self::encode_into`] for a caller that wants one record on its own. The
+    /// whole-file writer uses the other one, because a `String` per record is an allocation per
+    /// record and then a copy of it.
     pub fn encode(&self, vc: &VariantContext) -> Result<String, EncodeError> {
-        let mut out = String::with_capacity(1000);
+        let mut out = String::new();
+        self.encode_into(vc, &mut out)?;
+        Ok(out)
+    }
+
+    /// `VCFEncoder.encode`, appending rather than returning.
+    ///
+    /// Byte for byte what [`Self::encode`] produced before this existed; the conformance suites are
+    /// the gate on that and there are three over this function alone. What changed is only where
+    /// the bytes land: straight into the caller's buffer, so a file of N records allocates once
+    /// rather than N times.
+    pub fn encode_into(&self, vc: &VariantContext, out: &mut String) -> Result<(), EncodeError> {
+        use std::fmt::Write as _;
 
         out.push_str(&vc.contig);
         out.push('\t');
-        out.push_str(&vc.start.to_string());
+        // `write!` rather than `push_str(&to_string())`: the same digits, without the String.
+        let _ = write!(out, "{}", vc.start);
         out.push('\t');
         out.push_str(&vc.id);
         out.push('\t');
@@ -111,12 +128,12 @@ impl<'a> VcfEncoder<'a> {
 
         // ALT
         if vc.is_variant() {
-            let alts: Vec<String> = vc
-                .alternate_alleles()
-                .iter()
-                .map(|a| a.display_string())
-                .collect();
-            out.push_str(&alts.join(","));
+            for (index, allele) in vc.alternate_alleles().iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                out.push_str(&allele.display_string());
+            }
         } else {
             out.push('.');
         }
@@ -130,18 +147,20 @@ impl<'a> VcfEncoder<'a> {
         }
         out.push('\t');
 
-        out.push_str(&self.filter_string(vc)?);
+        self.append_filter_string(vc, out)?;
         out.push('\t');
 
-        // INFO. The TreeMap is the ordering: keys come out in ASCII order.
-        let mut info: BTreeMap<String, String> = BTreeMap::new();
+        // INFO. The TreeMap is the ordering: keys come out in ASCII order. The keys are borrowed
+        // from the record rather than cloned into the map, which is the same order over the same
+        // strings.
+        let mut info: BTreeMap<&str, String> = BTreeMap::new();
         for (key, value) in &vc.attributes {
             self.check_header(self.header.has_info_line(key), key, "INFO", vc)?;
             if let Some(text) = value.format() {
-                info.insert(key.clone(), text);
+                info.insert(key.as_str(), text);
             }
         }
-        self.write_info_string(&info, &mut out);
+        self.write_info_string(&info, out);
 
         // FORMAT and the sample columns.
         let keys = vc.calc_vcf_genotype_keys(!self.header.samples.is_empty());
@@ -150,30 +169,52 @@ impl<'a> VcfEncoder<'a> {
                 self.check_header(self.header.has_format_line(key), key, "FORMAT", vc)?;
             }
             out.push('\t');
-            out.push_str(&keys.join(":"));
-            self.append_genotype_data(vc, &keys, &mut out)?;
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    out.push(':');
+                }
+                out.push_str(key);
+            }
+            self.append_genotype_data(vc, &keys, out)?;
         }
 
-        Ok(out)
+        Ok(())
     }
 
     /// `getFilterString`.
     ///
     /// The three states are distinct in the output: filtered prints the sorted filters, applied
     /// and passed prints `PASS`, never applied prints `.`.
-    fn filter_string(&self, vc: &VariantContext) -> Result<String, EncodeError> {
+    fn append_filter_string(
+        &self,
+        vc: &VariantContext,
+        out: &mut String,
+    ) -> Result<(), EncodeError> {
         if vc.is_filtered() {
-            let mut filters = vc.filters.clone().unwrap_or_default();
+            // Sorted by reference: the strings stay where they are and only the pointers move.
+            let mut filters: Vec<&str> = vc
+                .filters
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .map(String::as_str)
+                .collect();
             for f in &filters {
                 self.check_header(self.header.has_filter_line(f), f, "FILTER", vc)?;
             }
-            filters.sort();
-            Ok(filters.join(";"))
+            filters.sort_unstable();
+            for (index, f) in filters.iter().enumerate() {
+                if index > 0 {
+                    out.push(';');
+                }
+                out.push_str(f);
+            }
         } else if vc.filters_were_applied() {
-            Ok("PASS".to_string())
+            out.push_str("PASS");
         } else {
-            Ok(".".to_string())
+            out.push('.');
         }
+        Ok(())
     }
 
     /// `writeInfoString`.
@@ -184,7 +225,7 @@ impl<'a> VcfEncoder<'a> {
     /// `VCFCompoundHeaderLine.validate` for every type but `Flag`, so the guard is reachable
     /// only for lines that are flags already. Verified against the oracle, which throws
     /// `Invalid count number, with fixed count the number should be 1 or higher` on the attempt.
-    fn write_info_string(&self, info: &BTreeMap<String, String>, out: &mut String) {
+    fn write_info_string(&self, info: &BTreeMap<&str, String>, out: &mut String) {
         if info.is_empty() {
             out.push('.');
             return;
