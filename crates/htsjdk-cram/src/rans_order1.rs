@@ -43,7 +43,7 @@
 //! quarters belongs to the last lane alone.
 
 use crate::rans::{
-    EncodingSymbol, Order, LOWER_BOUND, NUMBER_OF_SYMBOLS, PREFIX_LENGTH, TOTAL_FREQ,
+    EncodingSymbol, Order, RansError, LOWER_BOUND, NUMBER_OF_SYMBOLS, PREFIX_LENGTH, TOTAL_FREQ,
     TOTAL_FREQ_SHIFT,
 };
 
@@ -277,12 +277,187 @@ pub fn compress_order1(input: &[u8]) -> Vec<u8> {
     out
 }
 
+/// The frequency table as the decoder holds it: a start and a frequency per (context, symbol), and
+/// a reverse lookup per context.
+pub struct Stats {
+    starts: Vec<[i32; NUMBER_OF_SYMBOLS]>,
+    frequencies: Vec<[i32; NUMBER_OF_SYMBOLS]>,
+    /// 256 tables of 4096 bytes. Allocated whole, as `ArithmeticDecoder[]` is, so an unwritten
+    /// context reads as symbol 0 rather than as a bounds failure.
+    reverse_lookup: Vec<Vec<u8>>,
+}
+
+impl Stats {
+    /// One symbol's frequency in one context, as the reader made it. The zero that means 4096 is
+    /// only visible here.
+    pub fn frequency(&self, context: usize, symbol: usize) -> i32 {
+        self.frequencies[context][symbol]
+    }
+}
+
+/// `RANS4x8Decode.readStatsOrder1`.
+///
+/// The zero that means 4096 lives here, and nowhere on the writing side.
+pub fn read_stats_order1(bytes: &[u8], at: &mut usize) -> Result<Stats, RansError> {
+    let next = |at: &mut usize| -> Result<u8, RansError> {
+        let byte = *bytes.get(*at).ok_or(RansError::Truncated)?;
+        *at += 1;
+        Ok(byte)
+    };
+
+    let mut stats = Stats {
+        starts: vec![[0i32; NUMBER_OF_SYMBOLS]; NUMBER_OF_SYMBOLS],
+        frequencies: vec![[0i32; NUMBER_OF_SYMBOLS]; NUMBER_OF_SYMBOLS],
+        reverse_lookup: vec![vec![0u8; TOTAL_FREQ as usize]; NUMBER_OF_SYMBOLS],
+    };
+
+    let mut run_contexts = 0i32;
+    let mut context = next(at)? as usize;
+    loop {
+        let mut run_symbols = 0i32;
+        let mut cumulative = 0i32;
+        let mut symbol = next(at)? as usize;
+        loop {
+            let first = next(at)?;
+            let mut frequency = if first >= 0x80 {
+                (i32::from(first & 0x7F) << 8) | i32::from(next(at)?)
+            } else {
+                i32::from(first)
+            };
+            // The reader-only rule: a zero is the whole table, not an absent symbol.
+            if frequency == 0 {
+                frequency = TOTAL_FREQ;
+            }
+
+            stats.starts[context][symbol] = cumulative;
+            stats.frequencies[context][symbol] = frequency;
+            let from = cumulative.max(0) as usize;
+            let to = (cumulative + frequency).max(0) as usize;
+            if to > TOTAL_FREQ as usize {
+                return Err(RansError::Truncated);
+            }
+            stats.reverse_lookup[context][from..to].fill(symbol as u8);
+            cumulative += frequency;
+
+            let peek = usize::from(*bytes.get(*at).ok_or(RansError::Truncated)?);
+            if run_symbols == 0 && symbol + 1 == peek {
+                symbol = next(at)? as usize;
+                run_symbols = i32::from(next(at)?);
+            } else if run_symbols != 0 {
+                run_symbols -= 1;
+                symbol += 1;
+            } else {
+                symbol = next(at)? as usize;
+            }
+            if symbol == 0 {
+                break;
+            }
+        }
+
+        let peek = usize::from(*bytes.get(*at).ok_or(RansError::Truncated)?);
+        if run_contexts == 0 && context + 1 == peek {
+            context = next(at)? as usize;
+            run_contexts = i32::from(next(at)?);
+        } else if run_contexts != 0 {
+            run_contexts -= 1;
+            context += 1;
+        } else {
+            context = next(at)? as usize;
+        }
+        if context == 0 {
+            break;
+        }
+    }
+    Ok(stats)
+}
+
+/// `RANSDecodingSymbol.advanceSymbolStep`, per context.
+fn advance_step(stats: &Stats, context: usize, symbol: usize, r: u64) -> u64 {
+    let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
+    let frequency = stats.frequencies[context][symbol] as u64;
+    let start = stats.starts[context][symbol] as u64;
+    (frequency * (r >> TOTAL_FREQ_SHIFT) + (r & mask)).wrapping_sub(start)
+}
+
+fn renormalise(r: u64, blob: &[u8], at: &mut usize) -> Result<u64, RansError> {
+    let mut r = r;
+    while r < LOWER_BOUND {
+        let byte = *blob.get(*at).ok_or(RansError::Truncated)?;
+        *at += 1;
+        r = (r << 8) | u64::from(byte);
+    }
+    Ok(r)
+}
+
+/// `RANS4x8Decode.uncompressOrder1Way4`, given the stream past its nine-byte prefix.
+pub(crate) fn uncompress_order1(
+    input: &[u8],
+    mut at: usize,
+    out_size: usize,
+) -> Result<Vec<u8>, RansError> {
+    let stats = read_stats_order1(input, &mut at)?;
+
+    let mut rans = [0u64; 4];
+    for state in rans.iter_mut() {
+        let bytes: [u8; 4] = input
+            .get(at..at + 4)
+            .ok_or(RansError::Truncated)?
+            .try_into()
+            .expect("four bytes");
+        *state = u64::from(u32::from_le_bytes(bytes));
+        at += 4;
+    }
+
+    let mut out = vec![0u8; out_size];
+    let quarter = out_size >> 2;
+    // Four contiguous quarters, not four interleaved positions.
+    let mut cursors = [0usize, quarter, 2 * quarter, 3 * quarter];
+    let mut last = [0u8; 4];
+
+    while cursors[0] < quarter {
+        let mut current = [0u8; 4];
+        for (lane, state) in rans.iter().enumerate() {
+            let cumulative = (state & (TOTAL_FREQ as u64 - 1)) as usize;
+            current[lane] = stats.reverse_lookup[last[lane] as usize][cumulative];
+        }
+        for lane in 0..4 {
+            out[cursors[lane]] = current[lane];
+        }
+        for lane in 0..4 {
+            rans[lane] = advance_step(
+                &stats,
+                last[lane] as usize,
+                current[lane] as usize,
+                rans[lane],
+            );
+        }
+        for state in rans.iter_mut() {
+            *state = renormalise(*state, input, &mut at)?;
+        }
+        last = current;
+        for cursor in cursors.iter_mut() {
+            *cursor += 1;
+        }
+    }
+
+    // The remainder past four quarters belongs to the last lane alone.
+    while cursors[3] < out_size {
+        let cumulative = (rans[3] & (TOTAL_FREQ as u64 - 1)) as usize;
+        let symbol = stats.reverse_lookup[last[3] as usize][cumulative];
+        out[cursors[3]] = symbol;
+        let advanced = advance_step(&stats, last[3] as usize, symbol as usize, rans[3]);
+        rans[3] = renormalise(advanced, input, &mut at)?;
+        last[3] = symbol;
+        cursors[3] += 1;
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The table holds three counts the input does not contain, one per lane that starts in the
-    /// middle of it.
     /// The table holds three counts the input does not contain, one per lane that starts in the
     /// middle of it.
     #[test]
@@ -301,5 +476,60 @@ mod tests {
         assert_eq!(frequencies[b'G' as usize][b'T' as usize], TOTAL_FREQ);
         // T is last, so it is a context of nothing.
         assert_eq!(frequencies[b'T' as usize].iter().sum::<i32>(), 0);
+    }
+
+    /// A frequency byte of zero is 4096 on the way in, and no writer ever emits one.
+    #[test]
+    fn a_zero_frequency_byte_reads_as_the_whole_table() {
+        let mut at = 0usize;
+        let stats = read_stats_order1(&[0x00, 0x41, 0x00, 0x00, 0x00], &mut at).expect("parses");
+        assert_eq!(stats.frequencies[0][0x41], TOTAL_FREQ);
+    }
+
+    #[test]
+    fn every_shape_round_trips() {
+        let mut inputs: Vec<Vec<u8>> = vec![
+            b"ACGT".to_vec(),
+            b"ACGTA".to_vec(),
+            b"ACGTAC".to_vec(),
+            b"ACGTACG".to_vec(),
+            b"ACGTACGT".to_vec(),
+            vec![b'A'; 1000],
+            (0..=255u8).collect(),
+        ];
+        for length in [1000, 1001, 1002, 1003] {
+            inputs.push(b"ACGT".iter().copied().cycle().take(length).collect());
+        }
+        inputs.push(
+            b"ACGTACGTAA"
+                .iter()
+                .copied()
+                .cycle()
+                .take(1000)
+                .collect::<Vec<u8>>(),
+        );
+        let mut seed = 0x1234_5678u64;
+        inputs.push(
+            (0..10_000)
+                .map(|_| {
+                    seed = seed
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    (seed >> 33) as u8
+                })
+                .collect(),
+        );
+
+        for input in inputs {
+            let compressed = compress_order1(&input);
+            let out_size =
+                i32::from_le_bytes(compressed[5..9].try_into().expect("four bytes")) as usize;
+            assert_eq!(
+                uncompress_order1(&compressed, PREFIX_LENGTH, out_size).map_err(|e| e.message()),
+                Ok(input.clone()),
+                "{} bytes",
+                input.len()
+            );
+        }
     }
 }

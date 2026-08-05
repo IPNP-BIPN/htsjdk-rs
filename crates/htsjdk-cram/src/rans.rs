@@ -43,6 +43,8 @@
 //! the next symbol byte is the current symbol plus one. The marker is inferred from the data and
 //! never signalled.
 //!
+//! Order 1 is [`crate::rans_order1`]: the same framing over a different arithmetic.
+//!
 //! # A uniform input's blob is four unchanged states
 //!
 //! Measured: 1000 identical bytes compress to 29. A single symbol normalises to the whole 4096, so
@@ -91,9 +93,6 @@ pub enum RansError {
     BadLength,
     /// The stream ended inside the frequency table or the blob.
     Truncated,
-    /// Order 1 is a separate slice of the port and is not here yet. htsjdk encodes and decodes it;
-    /// this says so rather than answering wrongly.
-    OrderOneNotPorted,
 }
 
 impl RansError {
@@ -104,7 +103,6 @@ impl RansError {
                 "Invalid input length detected in a CRAM rans 4x8 input stream.".to_string()
             }
             RansError::Truncated => "the rANS stream ends inside its own data".to_string(),
-            RansError::OrderOneNotPorted => "rANS 4x8 order 1 is not ported".to_string(),
         }
     }
 }
@@ -476,7 +474,7 @@ pub fn uncompress(input: &[u8]) -> Result<Vec<u8>, RansError> {
     }
     let out_size = i32::from_le_bytes(input[5..9].try_into().expect("four bytes")).max(0) as usize;
     if order == Order::One {
-        return Err(RansError::OrderOneNotPorted);
+        return crate::rans_order1::uncompress_order1(input, PREFIX_LENGTH, out_size);
     }
 
     let mut at = PREFIX_LENGTH;
