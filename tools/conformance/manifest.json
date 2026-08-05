@@ -600,7 +600,7 @@
         {
           "dump": "TribbleIndexDump",
           "golden": "crates/htsjdk-tribble/tests/data/tribble_index.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 29 rows. The port reads the two linear indexes byte for byte and refuses the interval-tree one rather than mis-parsing it, and answers 12 of the 18 queries \u2014 the other 6 belong to the index it refuses and are in the golden as a record of the reference rather than as a claim about the port. The .idx bytes carry a masked timestamp: indexedFileTS is the source file's modification time and was measured to change on every run, so a golden holding it would fail intermittently."
+          "why": "From the pinned container on a real x86-64 runner. 29 rows, and now BOTH index layouts: the linear one, whose N blocks are rebuilt from N+1 positions with the sizes derived, and the interval-tree one, whose sizes are stored and whose coordinates are 1-based where the BED was 0-based. Reading either with the other's assumptions produces plausible nonsense rather than an error, which is why the two are compared separately. The .idx bytes carry a masked timestamp because indexedFileTS was measured to change on every run."
         }
       ]
     }

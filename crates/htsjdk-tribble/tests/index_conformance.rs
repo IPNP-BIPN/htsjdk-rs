@@ -16,15 +16,24 @@
 //! intermittently — or be "repaired" by regeneration, which is how a suite quietly stops meaning
 //! anything. Everything else in the layout is still compared byte for byte.
 //!
-//! # Only the linear index is parsed
+//! # Both index types are parsed, and they are not the same shape
 //!
-//! The interval-tree chromosome record is a different shape, and this reader **refuses** it rather
-//! than guessing. The golden holds its rows too, so the suite records what the reference does for
-//! both and says plainly which half the port covers.
+//! The linear record is a bin width and a run of positions, from which **N blocks are rebuilt out
+//! of N+1 positions**. The interval-tree record is a flat list of `(start, end, position, size)`,
+//! where the **sizes are stored** rather than derived. Reading one layout with the other's
+//! assumptions produces plausible nonsense rather than an error, which is why the two are
+//! compared separately below.
+//!
+//! One thing the port does **not** reproduce, and says so rather than pretending: the reference
+//! sorts the interval-tree blocks with a comparator htsjdk itself calls "a little cryptic", and it
+//! is not a consistent one — `compare(a, a)` is `-1`, and blocks one byte apart compare equal. For
+//! any pair whose starts differ by two or more it is an ordinary ascending sort, which is what the
+//! port does. The other cases depend on TimSort's internals rather than on the data, and no index
+//! seen here contains such a pair.
 
 use std::io::Read;
 
-use htsjdk_tribble::index::{IndexError, TribbleIndex, INTERVAL_TREE, LINEAR, MAGIC_NUMBER};
+use htsjdk_tribble::index::{TribbleIndex, INTERVAL_TREE, MAGIC_NUMBER};
 
 fn golden() -> String {
     let path =
@@ -90,7 +99,7 @@ fn every_linear_index_parses_to_the_references_numbers() {
     let chr_rows = rows(&text, "chr");
     let header_rows = rows(&text, "header");
     let mut parsed = 0usize;
-    let mut refused = 0usize;
+    let refused = 0usize;
 
     for (label, timestamp_offset, bytes) in indexes(&text) {
         let header = header_rows
@@ -101,17 +110,9 @@ fn every_linear_index_parses_to_the_references_numbers() {
 
         let index_type: i32 = header[2].parse().expect("a type");
         match TribbleIndex::read(&bytes) {
-            Err(IndexError::UnsupportedType { found }) => {
-                // The interval-tree index is refused rather than mis-parsed, and the golden says
-                // the reference wrote one.
-                assert_eq!(found, INTERVAL_TREE, "{label}");
-                assert_eq!(index_type, INTERVAL_TREE, "{label}");
-                refused += 1;
-                continue;
-            }
             Err(other) => panic!("{label}: {other:?}"),
             Ok(index) => {
-                assert_eq!(index_type, LINEAR, "{label}");
+                assert_eq!(index.index_type, index_type, "{label}: type");
                 assert_eq!(index.version.to_string(), header[3], "{label}: version");
                 assert_eq!(index.flags.to_string(), header[4], "{label}: flags");
                 assert_eq!(
@@ -127,6 +128,42 @@ fn every_linear_index_parses_to_the_references_numbers() {
 
                 let expected: Vec<&Vec<&str>> =
                     chr_rows.iter().filter(|row| row[0] == label).collect();
+
+                if index_type == INTERVAL_TREE {
+                    assert_eq!(
+                        index.interval_contigs.len(),
+                        expected.len(),
+                        "{label}: contig count"
+                    );
+                    for (contig, row) in index.interval_contigs.iter().zip(&expected) {
+                        assert_eq!(contig.name, row[1], "{label}: contig name");
+                        assert_eq!(
+                            contig.intervals.len().to_string(),
+                            row[2],
+                            "{label}/{}: interval count",
+                            contig.name
+                        );
+                        // The sizes are stored here rather than derived, so they are compared
+                        // directly — the mistake this guards against is reading one layout with
+                        // the other's assumptions.
+                        let rendered: Vec<String> = contig
+                            .intervals
+                            .iter()
+                            .map(|i| {
+                                format!("{},{},{},{}", i.start, i.end, i.block.start, i.block.size)
+                            })
+                            .collect();
+                        assert_eq!(
+                            rendered.join(";"),
+                            row[3],
+                            "{label}/{}: intervals",
+                            contig.name
+                        );
+                    }
+                    parsed += 1;
+                    continue;
+                }
+
                 assert_eq!(index.contigs.len(), expected.len(), "{label}: contig count");
                 for (contig, row) in index.contigs.iter().zip(&expected) {
                     assert_eq!(contig.name, row[1], "{label}: contig name");
@@ -169,12 +206,18 @@ fn every_linear_index_parses_to_the_references_numbers() {
         }
     }
 
-    assert_eq!(parsed, 2, "the golden changed size");
+    assert_eq!(parsed, 3, "the golden changed size");
+    assert_eq!(refused, 0, "nothing in the corpus is refused any more");
+    let interval_trees = header_rows
+        .iter()
+        .filter(|row| row[2] == INTERVAL_TREE.to_string())
+        .count();
     assert_eq!(
-        refused, 1,
-        "the interval-tree index must still be in the corpus"
+        interval_trees, 1,
+        "the corpus must keep an interval-tree index: it is the layout the linear reader would \
+         mis-parse rather than refuse"
     );
-    println!("tribble index: {parsed} linear indexes parsed, {refused} refused as interval-tree");
+    println!("tribble index: {parsed} indexes parsed, {interval_trees} of them interval-tree");
 }
 
 #[test]
@@ -192,9 +235,7 @@ fn every_query_resolves_to_the_references_blocks() {
     for row in rows(&text, "query") {
         let (label, interval, expected) = (row[0], row[1], row[2]);
         let Some((_, index)) = parsed.iter().find(|(l, _)| l == label) else {
-            // An interval-tree index, which this reader does not parse; its query rows are in the
-            // golden as a record of the reference rather than as a claim about the port.
-            continue;
+            panic!("{label} is in the golden but did not parse");
         };
         let (contig, range) = interval.split_once(':').expect("contig:start-end");
         let (start, end) = range.split_once('-').expect("start-end");
@@ -224,14 +265,12 @@ fn every_query_resolves_to_the_references_blocks() {
                     .map(|b| format!("{},{}", b.start, b.size))
                     .collect();
                 assert_eq!(rendered.join("|"), expected, "{label} {interval}");
-                // Never a list: linear blocks are adjacent, so a query merges into one run.
-                assert_eq!(blocks.len(), 1, "{label} {interval}: one block or none");
             }
         }
         compared += 1;
     }
 
-    assert_eq!(compared, 12, "the golden changed size");
+    assert_eq!(compared, 18, "the golden changed size");
     assert!(
         refusals > 0 && empty > 0,
         "the corpus must keep both ways of getting nothing: a refused contig ({refusals}) and an \
