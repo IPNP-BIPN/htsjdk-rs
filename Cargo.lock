@@ -115,6 +115,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gkl-deflate"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "htsjdk-bam"
 version = "0.1.0"
 dependencies = [

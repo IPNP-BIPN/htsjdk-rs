@@ -1,0 +1,12 @@
+[package]
+name = "gkl-deflate"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A deflate compressor reproducing GKL's bytes, ported from zlib"
+
+[dependencies]
+
+[dev-dependencies]
+flate2.workspace = true
