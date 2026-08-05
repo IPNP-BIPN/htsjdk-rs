@@ -42,7 +42,9 @@
 //! an id byte of 255 is index -1. Measured: `Index 10 out of bounds for length 10` and
 //! `Index -1 out of bounds for length 10`.
 
-use crate::varint::RuntimeEof;
+use std::collections::BTreeMap;
+
+use crate::varint::{read_unsigned_itf8, write_unsigned_itf8, RuntimeEof};
 
 /// `DataSeriesType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,16 +244,188 @@ impl From<RuntimeEof> for EncodingMapError {
     }
 }
 
+/// The map, ordered by data series ordinal, which is the order it is written in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EncodingMap {
+    entries: BTreeMap<DataSeries, EncodingDescriptor>,
+}
+
+impl EncodingMap {
+    pub fn get(&self, series: DataSeries) -> Option<&EncodingDescriptor> {
+        self.entries.get(&series)
+    }
+
+    pub fn put(&mut self, series: DataSeries, descriptor: EncodingDescriptor) {
+        self.entries.insert(series, descriptor);
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The series it holds, in write order.
+    pub fn series(&self) -> Vec<DataSeries> {
+        self.entries.keys().copied().collect()
+    }
+
+    /// Read the map given its own bytes, without the length prefix that precedes it.
+    ///
+    /// `TC` and `TN` are parsed and then dropped, so a well-formed map can yield fewer entries than
+    /// its own count declared.
+    pub fn read(map: &[u8]) -> Result<Self, EncodingMapError> {
+        let mut at = 0usize;
+        let itf8 = |at: &mut usize| -> Result<i32, EncodingMapError> {
+            let (value, consumed) = read_unsigned_itf8(&map[(*at).min(map.len())..])?;
+            *at += consumed;
+            Ok(value)
+        };
+
+        let count = itf8(&mut at)?;
+        let mut out = Self::default();
+        for _ in 0..count.max(0) {
+            let name: [u8; 2] = map
+                .get(at..at + 2)
+                .ok_or(EncodingMapError::Truncated)?
+                .try_into()
+                .expect("two bytes");
+            at += 2;
+            let series = DataSeries::by_canonical_name(&name)
+                .ok_or(EncodingMapError::UnknownDataSeries(name))?;
+
+            // A signed byte read, then an unchecked array index.
+            let raw = i32::from(*map.get(at).ok_or(EncodingMapError::Truncated)? as i8);
+            at += 1;
+            let id =
+                EncodingId::from_id(raw).ok_or(EncodingMapError::EncodingIdOutOfBounds(raw))?;
+
+            let length = itf8(&mut at)?.max(0) as usize;
+            let parameters = map
+                .get(at..at + length)
+                .ok_or(EncodingMapError::Truncated)?
+                .to_vec();
+            at += length;
+
+            if series.is_read_by_htsjdk() {
+                out.entries
+                    .insert(series, EncodingDescriptor { id, parameters });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The map's own bytes. The count is computed and excludes `NULL` encodings, which is what
+    /// makes it a count rather than the preservation map's literal.
+    pub fn write(&self) -> Vec<u8> {
+        let live: Vec<(&DataSeries, &EncodingDescriptor)> = self
+            .entries
+            .iter()
+            .filter(|(_, descriptor)| descriptor.id != EncodingId::Null)
+            .collect();
+
+        let mut out = Vec::new();
+        push_itf8(live.len() as i32, &mut out);
+        for (series, descriptor) in live {
+            out.extend_from_slice(series.canonical_name().as_bytes());
+            out.push(descriptor.id as u8);
+            push_itf8(descriptor.parameters.len() as i32, &mut out);
+            out.extend_from_slice(&descriptor.parameters);
+        }
+        out
+    }
+
+    /// The map with the ITF8 length prefix that carries it in the compression header.
+    pub fn write_prefixed(&self) -> Vec<u8> {
+        let map = self.write();
+        let mut out = Vec::with_capacity(map.len() + 5);
+        push_itf8(map.len() as i32, &mut out);
+        out.extend_from_slice(&map);
+        out
+    }
+
+    /// Read the map from a compression header's content, past its length prefix. Returns the map
+    /// and how many bytes it occupied, prefix included.
+    pub fn read_prefixed(content: &[u8]) -> Result<(Self, usize), EncodingMapError> {
+        let (size, consumed) = read_unsigned_itf8(content)?;
+        let size = size.max(0) as usize;
+        let bytes = content
+            .get(consumed..consumed + size)
+            .ok_or(EncodingMapError::Truncated)?;
+        Ok((Self::read(bytes)?, consumed + size))
+    }
+}
+
+fn push_itf8(value: i32, out: &mut Vec<u8>) {
+    out.extend_from_slice(&write_unsigned_itf8(value).0);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The content ids are this implementation's, and they run 1 to 32 in enum order.
     /// The content ids are this implementation's, and they run 1 to 32 in enum order.
     #[test]
     fn the_content_ids_are_the_ordinal_plus_one() {
         for (ordinal, (_, _, content_id)) in DATA_SERIES.iter().enumerate() {
             assert_eq!(*content_id, ordinal as i32 + 1);
         }
+    }
+
+    /// Two series are parsed and then dropped, so the map can be smaller than its own count.
+    #[test]
+    fn tc_and_tn_are_read_and_dropped() {
+        let mut map = Vec::new();
+        push_itf8(3, &mut map);
+        for name in [b"BF", b"TC", b"TN"] {
+            map.extend_from_slice(name);
+            map.push(EncodingId::External as u8);
+            push_itf8(1, &mut map);
+            map.push(1);
+        }
+        let read = EncodingMap::read(&map).expect("parses");
+        assert_eq!(read.len(), 1, "three entries in, one kept");
+        assert_eq!(
+            read.series(),
+            vec![DataSeries::by_canonical_name(b"BF").unwrap()]
+        );
+    }
+
+    /// An id byte above 127 arrives as a negative index, because the read is signed.
+    #[test]
+    fn an_encoding_id_byte_of_255_is_index_minus_one() {
+        let mut map = Vec::new();
+        push_itf8(1, &mut map);
+        map.extend_from_slice(b"BF");
+        map.push(255);
+        push_itf8(0, &mut map);
+        let error = EncodingMap::read(&map).expect_err("refused");
+        assert_eq!(error, EncodingMapError::EncodingIdOutOfBounds(-1));
+        assert_eq!(error.message(), "Index -1 out of bounds for length 10");
+    }
+
+    /// The count is computed and excludes NULL, unlike the preservation map's literal 5.
+    #[test]
+    fn a_null_encoding_is_not_counted_and_not_written() {
+        let mut map = EncodingMap::default();
+        map.put(
+            DataSeries::by_canonical_name(b"BF").unwrap(),
+            EncodingDescriptor {
+                id: EncodingId::External,
+                parameters: vec![1],
+            },
+        );
+        map.put(
+            DataSeries::by_canonical_name(b"CF").unwrap(),
+            EncodingDescriptor {
+                id: EncodingId::Null,
+                parameters: Vec::new(),
+            },
+        );
+        let bytes = map.write();
+        assert_eq!(bytes[0], 1, "one entry counted, not two");
+        assert_eq!(EncodingMap::read(&bytes).expect("parses").len(), 1);
     }
 }
