@@ -809,6 +809,30 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31048058704, the golden-pending run of htsjdk-rs #120. 103 rows: 32 data series with their types and content ids, 10 encoding identifiers with which may live in an external block, 2 whole maps with their declared sizes, 52 entries field by field, the 26 series htsjdk writes in write order, the 2 it reads and drops, and 4 refusals. The refusals cannot come from a file: two are names no data series has and two are encoding ids past the end of the enum, one of them negative because the read is signed."
         }
       ]
+    },
+    {
+      "id": "cram-tag-encoding-map",
+      "status": "golden-pending",
+      "title": "The tag encoding map, whose keys are the tags themselves",
+      "harness": "tools/cram-conformance",
+      "why": "The compression header's third and last map, which closes it. Its entries have the same shape as the data series map's but its keys are integers, and THE KEY IS THE TAG, PACKED: nameType3BytesToInt shifts the two name bytes and the TYPE into twenty-four bits, so NMc is 5131619 and three spaces are 2105376, and the map needs no separate name field. THE TYPE IS PART OF THE KEY, so one name at two types is TWO entries with two external blocks: measured on a file carrying XX as a string on half its records and as an integer on the other half, the map holds XXZ then XXi because 0x5A is below 0x69. THE WRITE ORDER IS NUMERIC ORDER OF THAT KEY, because the map is a TreeMap<Integer>: measured, two files whose records introduce the same three tags in OPPOSITE orders produce BYTE-IDENTICAL maps, so the order the records arrived in is not in the file and a port that preserves insertion order writes something htsjdk never writes. THE COLLISION GUARD CANNOT FIRE: putTagBlockCompression refuses a tag id equal to a data series content id, and those are 1 to 32 while the smallest printable tag packs to 2105376, so it is real code no input can reach. AND THE TYPE IS THE VALUE'S RATHER THAN THE CALLER'S: htsjdk narrows an integer attribute to the smallest type that holds it, so NM at 1 to 4 is written NMc and NM at 100000 is written NMi from the same Java Integer, which changes the key and therefore the map.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 32,
+      "expect_contains": [
+        "order\ttagged\tMDZ,NMc,XXf",
+        "order\treverse-order\tMDZ,NMc,XXf",
+        "order\tsame-name-two-types\tXXZ,XXi",
+        "order\tlarge-integer\tNMi",
+        "guard\t32\ttagID 32 overlaps with data series content ID"
+      ],
+      "cases": [
+        {
+          "dump": "CramTagEncodingMapDump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [
