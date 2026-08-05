@@ -176,6 +176,37 @@ def parse_regex(path, compare_spec):
     return rows
 
 
+# The one bit pattern a comparison may not assert: the sign of a NaN.
+#
+# `Double.doubleToRawLongBits` records what the JVM held, which is the right thing for a dump to
+# do. It is the wrong thing to compare, because the sign of a NaN is not a property of the
+# arithmetic that produced it. commons-math3's `FastMathCalc` divides an overflowed exponential by
+# itself, and `inf / inf` gives x86's negative default quiet NaN when the FPU computes it and
+# Java's positive canonical NaN when the JIT folds it, on the same architecture, in the same
+# container. One CI host produced each.
+#
+# So a suite may declare `canonicalise_nan: true` and have every NaN-shaped field collapsed on both
+# sides. Only NaN patterns are touched: the guard is on the exponent and mantissa, so a value that
+# is an index, a count or any finite double travels unchanged. No index in any dump comes within
+# nine quintillion of the smallest NaN pattern.
+NAN_EXPONENT_MASK = 0x7FF0000000000000
+CANONICAL_NAN = 0x7FF8000000000000
+
+
+def _canonicalise_nan_fields(line):
+    """Replace every NaN-shaped integer field of a tab-separated line with the canonical one."""
+    fields = line.split("\t")
+    for i, field in enumerate(fields):
+        try:
+            value = int(field)
+        except ValueError:
+            continue
+        bits = value & 0xFFFFFFFFFFFFFFFF
+        if bits & NAN_EXPONENT_MASK == NAN_EXPONENT_MASK and bits & 0x000FFFFFFFFFFFFF:
+            fields[i] = str(CANONICAL_NAN)
+    return "\t".join(fields)
+
+
 def parse_lines(path, compare_spec):
     """Read a dump as a line sequence.
 
@@ -184,12 +215,14 @@ def parse_lines(path, compare_spec):
     only the last one.
     """
     skip_comments = compare_spec.get("skip_comment_lines", True)
+    canonicalise = compare_spec.get("canonicalise_nan", False)
     with _open(path) as fh:
-        return [
+        lines = [
             line.rstrip("\n")
             for line in fh
             if line.strip() and not (skip_comments and line.startswith("#"))
         ]
+    return [_canonicalise_nan_fields(line) for line in lines] if canonicalise else lines
 
 
 # --------------------------------------------------------------------------------------

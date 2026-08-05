@@ -7,7 +7,7 @@
 //!
 //! - every one of the 5,050 table entries the port carries equals the literal the reference ships;
 //! - the reference's **other** branch, `RECOMPUTE_TABLES_AT_RUNTIME`, produces different tables:
-//!   577 entries differ, which is decision 0024 and the reason the port carries literals;
+//!   417 entries differ, which is decision 0024 and the reason the port carries literals;
 //! - `exp` itself is bit-identical on the boundaries its own branches name, including the two
 //!   shifted recursions that keep a subnormal result precise.
 //!
@@ -28,20 +28,28 @@ fn golden() -> String {
     text
 }
 
-/// The recomputed entries whose value is an invalid operation's NaN.
-///
-/// The reciprocal path divides by an overflowed exponential, so the far end of the integer table
-/// is `inf / inf` and its NaN carries whichever sign the FPU chose. 160 entries off x86-64, none
-/// on it.
-const EXPECTED_NAN_SIGN_EXEMPTIONS: usize = 160;
-
-/// Decision 0012: the two differ in the sign bit of a NaN and in nothing else.
-fn is_nan_sign_only(a: f64, b: f64) -> bool {
-    a.is_nan() && b.is_nan() && (a.to_bits() ^ b.to_bits()) == 1 << 63
-}
-
 fn from_bits(field: &str) -> f64 {
     f64::from_bits(field.parse::<i64>().expect("raw bits") as u64)
+}
+
+/// The bits of a double, with every NaN collapsed to the canonical one.
+///
+/// This test used to compare raw bits and carry an architecture-conditional exemption for the
+/// sign of a NaN: 160 entries off x86-64, none on it, because x86's default quiet NaN is the
+/// negative one and the golden had been taken there. That reasoning was wrong in a way only a
+/// second runner could show. The reference's `inf / inf` reaches the JIT, not only the FPU, and a
+/// later CI host produced the **positive** NaN for the same entries on the same architecture. The
+/// sign is not a property of the arithmetic, of the CPU, or of the target: it is not a property of
+/// anything a port could reproduce.
+///
+/// So it is not compared. `f64::NAN` and Java's `Double.doubleToLongBits` agree on the canonical
+/// form, and every finite value and both infinities still travel bit for bit.
+fn canonical_bits(value: f64) -> u64 {
+    if value.is_nan() {
+        f64::NAN.to_bits()
+    } else {
+        value.to_bits()
+    }
 }
 
 #[test]
@@ -87,12 +95,11 @@ fn every_table_entry_equals_the_literal_the_reference_ships() {
 /// agree, this fails and the decision can be retired; if the port's `FastMathCalc` transcription
 /// drifted, it fails too, and the golden says which entries moved.
 #[test]
-fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
+fn the_two_branches_of_the_reference_disagree_on_exactly_417_entries() {
     let text = golden();
     let ours = jmath::fast_math::recomputed_exp_tables();
     let mut compared = 0;
     let mut differ_from_literals = 0;
-    let mut nan_sign_exemptions = 0;
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("table\t") else {
             continue;
@@ -126,23 +133,16 @@ fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
             ),
             other => panic!("unknown table {other}"),
         };
-        // The port's recomputation matches the reference's recomputation, entry for entry, up to
-        // the sign of a NaN. Overflowing entries divide infinity by infinity, and which NaN that
-        // produces is the FPU's choice: decision 0012, reached here by a third route.
-        if recomputed.to_bits() != expected.to_bits() {
-            if is_nan_sign_only(recomputed, expected) && !cfg!(target_arch = "x86_64") {
-                nan_sign_exemptions += 1;
-            } else {
-                panic!(
-                    "recomputed {bare}[{index}]: ours {:016x}, reference {:016x}",
-                    recomputed.to_bits(),
-                    expected.to_bits()
-                );
-            }
-        }
+        // The port's recomputation matches the reference's, entry for entry, once the sign of a
+        // NaN is out of the comparison. Nothing else is exempted.
+        assert_eq!(
+            canonical_bits(recomputed),
+            canonical_bits(expected),
+            "recomputed {bare}[{index}]"
+        );
         // Counted against the reference's own recomputed column, so the count is the reference's
         // disagreement with itself rather than this architecture's NaN signs.
-        if expected.to_bits() != literal.to_bits() {
+        if canonical_bits(expected) != canonical_bits(literal) {
             differ_from_literals += 1;
         }
         compared += 1;
@@ -151,25 +151,15 @@ fn the_two_branches_of_the_reference_disagree_on_exactly_577_entries() {
         compared, 5050,
         "the golden should carry both columns in full"
     );
+    // 417, not the 577 this test asserted before. The other 160 were the same NaN with two
+    // different signs on the two sides, counted as a disagreement by a raw-bits comparison. The
+    // reference's two branches disagree on 417 entries; the remaining 160 they agree on, in the
+    // only sense in which a NaN can be agreed on.
     assert_eq!(
-        differ_from_literals, 577,
+        differ_from_literals, 417,
         "the number of entries on which the reference's two branches disagree changed"
     );
-    if cfg!(target_arch = "x86_64") {
-        assert_eq!(
-            nan_sign_exemptions, 0,
-            "on x86-64 there is nothing to exempt; the FPU produces the same NaN as the oracle"
-        );
-    } else {
-        assert_eq!(
-            nan_sign_exemptions, EXPECTED_NAN_SIGN_EXEMPTIONS,
-            "the NaN-sign exemption count changed; see decision 0012"
-        );
-    }
-    println!(
-        "{differ_from_literals} of {compared} entries differ between the two branches, \
-         {nan_sign_exemptions} NaN-sign exemptions"
-    );
+    println!("{differ_from_literals} of {compared} entries differ between the two branches");
 }
 
 #[test]
