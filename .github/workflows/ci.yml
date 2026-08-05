@@ -132,16 +132,16 @@ jobs:
             suites: "vcf-header vcf-header-parse vcf-header-lines vcf-record vcf-file"
           - group: oracle-backed
             index: "5/8"
-            suites: "vcf-record-parse vcf-genotype-parse vcf-read vcf-genotype-likelihoods vcf-chromosome-counts"
+            suites: "vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods"
           - group: oracle-backed
             index: "6/8"
-            suites: "vcf-genotype-type rg-checksum cigar-clip mateinfo percentile"
+            suites: "vcf-chromosome-counts vcf-genotype-type rg-checksum cigar-clip mateinfo"
           - group: oracle-backed
             index: "7/8"
-            suites: "fastmath-exp gamma-erf-normal saddle-point variant-comparator smart-merge-headers"
+            suites: "percentile fastmath-exp gamma-erf-normal saddle-point variant-comparator"
           - group: oracle-backed
             index: "8/8"
-            suites: "tribble-index tribble-index-write"
+            suites: "smart-merge-headers tribble-index tribble-index-write"
           - group: unchecked
             index: "1/1"
             suites: "format"

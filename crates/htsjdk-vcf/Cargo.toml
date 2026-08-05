@@ -9,6 +9,11 @@ description = "Port of htsjdk's VCF support"
 [dependencies]
 # For `Math.round`, which is a `java.lang.Math` function and belongs there rather than here.
 jmath.workspace = true
+# The writer builds a Tribble index while it writes, so the creator lives on the other side of
+# this edge rather than being duplicated here. The dependency runs this way and not the other:
+# `htsjdk-tribble` has a VCF codec but knows nothing about writing one.
+htsjdk-tribble = { path = "../htsjdk-tribble" }
 
 [dev-dependencies]
 flate2.workspace = true
+htsjdk-tribble = { path = "../htsjdk-tribble" }
