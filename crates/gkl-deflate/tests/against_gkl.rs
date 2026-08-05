@@ -153,10 +153,23 @@ fn byte_identical_to_gkl_at_levels_three_to_nine() {
 #[test]
 fn levels_one_and_two_go_through_isal_and_match_gkl() {
     if !gkl_deflate::igzip_available() {
-        // Not a skip that hides a failure. On this host ISA-L fell back to its readable C, and the
-        // crate already refuses levels 1 and 2 rather than answering with those bytes; the test
-        // below asserts exactly that. Running the comparison here would restate a refusal as a
-        // byte mismatch and read as a port bug.
+        // A skip on a host that *should* be able to prove it is a failure, not a skip.
+        //
+        // Without this, the two outcomes are indistinguishable from outside: a CI run that
+        // compared eight fixtures and a CI run that quietly compared none both report a green
+        // test. Since the comparison exists precisely because ISA-L can be silently wrong, an
+        // untested green here would be the same defect one level up.
+        //
+        // x86-64 with SSE4.2 is the condition under which decision 0033 says the kernels run, so
+        // it is the condition under which the canary must pass. If it does not, the build lost
+        // its assembler.
+        #[cfg(target_arch = "x86_64")]
+        assert!(
+            !std::arch::is_x86_feature_detected!("sse4.2"),
+            "this host is x86-64 with SSE4.2, so ISA-L should reproduce GKL and does not. The \
+             likeliest cause is a build without nasm, which leaves ISA-L on its readable C."
+        );
+        // Anywhere else the refusal is the correct behaviour and is asserted by the next test.
         println!("gkl-deflate: igzip unavailable on this host; the refusal is tested instead");
         return;
     }
@@ -173,6 +186,12 @@ fn levels_one_and_two_go_through_isal_and_match_gkl() {
             }
         }
     }
+    // Asserted rather than printed, because `cargo test` captures output and a count nobody reads
+    // cannot distinguish "compared eight" from "compared none".
+    assert_eq!(
+        compared, 8,
+        "the igzip comparison ran on fewer pairs than it claims"
+    );
     println!("gkl-deflate: {compared} (fixture, level) pairs compared against GKL's igzip");
     assert!(
         failures.is_empty(),
