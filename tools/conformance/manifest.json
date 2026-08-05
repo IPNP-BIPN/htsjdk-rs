@@ -727,26 +727,18 @@
     },
     {
       "id": "cram-rans",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "rANS 4x8 order 0, the codec an ordinary CRAM uses",
       "harness": "tools/cram-conformance",
       "why": "cram-block measured the compression methods present in a four-read CRAM and found RAW, GZIP and rANS, so this is required rather than optional. Six things are arithmetic rather than layout, and arithmetic is where a port diverges in silence. AN EMPTY INPUT PRODUCES ZERO BYTES, not a nine-byte prefix over an empty table, so a decoder that reads the prefix unconditionally fails on the one input it should find easiest. THE REQUESTED ORDER IS NOT ALWAYS THE WRITTEN ORDER: below MINIMUM_ORDER_1_SIZE = 4 bytes compress uses order 0 whatever the parameters say and the order byte records the order it used, so asking for order 1 on three bytes writes a stream that says 0. THE FOUR FINAL STATES ARE WRITTEN BIG ENDIAN AND THE WHOLE BLOB IS THEN REVERSED, two reversals that cancel, so they arrive at the head of the blob little-endian and in the order rans0, rans1, rans2, rans3, the opposite of the order they were written in. THE NORMALISATION IS FIXED POINT, NOT A DIVISION: tr = (4096 << 31) / T + (1 << 30) / T, then F[j] = (F[j] * tr) >> 31 with a floor of 1, and THE WHOLE ROUNDING RESIDUE IS DUMPED ON ONE SYMBOL, the one with the largest RAW count, ties to the LOWEST index. It is not a nudge: on an input holding symbol i exactly i times, symbol 254 normalises to 31 and symbol 255, whose fair share is the same 31, is written as 152. THE FREQUENCY TABLE'S RUN LENGTHS START AT THE SECOND CONSECUTIVE SYMBOL, so a run of exactly two writes a run byte of 0, and the decoder infers that a run byte follows by peeking at whether the next symbol byte is the current symbol plus one: the marker is inferred from the data and never signalled. AND A UNIFORM INPUT'S BLOB IS FOUR UNCHANGED STATES, because one symbol takes the whole 4096, its complement frequency is zero and its bias is zero, so 1000 identical bytes compress to 29.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 1782,
-      "expect_contains": [
-        "orderused\t3\tONE\t0",
-        "orderused\t4\tONE\t1",
-        "enc\tempty\t0\t",
-        "norm\tskewed-256\t255\t255\t152",
-        "freqtab\tuniform-1000\t4\t41900000",
-        "states\tuniform-1000\t8388608\t8388608\t8388608\t8388608"
-      ],
       "cases": [
         {
           "dump": "CramRansDump",
-          "golden": null
+          "golden": "crates/htsjdk-cram/tests/data/cram_rans.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31039805225, the golden-pending run of htsjdk-rs #114. 1782 rows over eighteen inputs: 18 input digests, 18 compressed streams by length and digest, 15 of those whole in hex, 17 prefixes, 822 normalised frequencies beside the raw counts they came from, 17 frequency tables as bytes, 822 encoding symbols field by field, 17 state quadruples, 18 round trips and 18 order decisions. The three largest streams travel as a digest alone; the digest still fails on one wrong byte. The inputs are rebuilt in the Rust test rather than carried here, and the input digests are what say the reconstruction did not drift."
         }
       ]
     }

@@ -9,3 +9,6 @@ repository.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
+# Only to compare against the sha256 columns the oracle recorded for the inputs and for the three
+# streams too long to carry inline; nothing in the crate hashes.
+sha2 = "0.10"
