@@ -379,6 +379,34 @@
       ]
     },
     {
+      "id": "vcf-read",
+      "status": "golden-pending",
+      "title": "Reading a whole VCF file",
+      "harness": "tools/vcf-conformance",
+      "why": "H.2's read side above the line: the loop that joins the header frame, one data line and one genotype block, each of which already has a suite, into a whole file. The state the codec carries BETWEEN those calls is what this measures, and none of it is visible in a single line. The line counter is shared and incremented in two places, so the SAME malformed line reports two different numbers: decodeLine's column check runs before parseVCFLine's lineNo++ and generateException runs after it, measured here as Line 12 and line number 13 for two records at the same file line. A line beginning with '#' anywhere in the body decodes to null rather than to a record or a refusal, so a reader that collects decode results silently loses records. The version is read once and it selects a text transformer applied to every INFO and every genotype value for the rest of the file, so the same data line means different things in a v4.2 file and a v4.3 one; the decode also runs BEFORE the Flag test, so under 4.3 a declared Flag written DB=%30 is dropped exactly as DB=0 is. That transformer's decoder is Integer.parseInt(s, 16), which accepts a sign, so %+1 is U+0001 and %-1 is left alone, and a failed escape is emitted with the '%' NOT skipped, which is why %%41 decodes to %A. And the header handed back is not the header the file contains: doOnTheFlyModifications defaults to true, so a standard INFO or FORMAT ID whose count or type disagrees with htsjdk's is replaced WHOLESALE, description included, while a description that disagrees on its own is kept because REPAIR_BAD_DESCRIPTIONS is false; and the file's own fileformat line is deleted by the VCFHeader constructor and a SYNTHESIZED one prepended by getMetaDataInInputOrder, which says VCFv4.2 for everything below 4.3, so a v4.0 file reads back claiming to be v4.2. The repair also rebuilds the header through a constructor that takes no version and re-attaches it only from 4.3, so below 4.3 the codec knows the version and the header does not. The round trip is measured rather than assumed: reading a file and writing it back is not the identity, and a v4.3 file cannot be written back at all.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 102,
+      "expect_contains": [
+        "\tLine 12: there aren't enough columns",
+        "at approximately line number 13:",
+        "hdr\tfileformat-4-0\tVCFv4.0\tnone\tfileformat=VCFv4.2",
+        "hdr\trepair-wrong-type\tVCFv4.2\tnone\tfileformat=VCFv4.2 | INFO=<ID=DP,Number=1,Type=Integer,",
+        "pct\t%%41\t%A\t%%41",
+        "pct\t%+1\t\\u0001\t%+1",
+        "pct\t%-1\t%-1\t%-1",
+        "Writing VCF version VCF4_3 is not implemented"
+      ],
+      "cases": [
+        {
+          "dump": "VcfReadDump",
+          "golden": null,
+          "why": "Awaiting the artefact from a real x86-64 CI run: decision 0008 forbids a golden written on a developer machine, and this laptop is Apple Silicon."
+        }
+      ]
+    },
+    {
       "id": "vcf-genotype-likelihoods",
       "title": "GL to PL, and the double parser under it",
       "status": "oracle-backed",

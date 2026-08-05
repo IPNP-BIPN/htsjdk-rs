@@ -37,6 +37,8 @@
 
 use crate::allele::Allele;
 use crate::header::{HeaderLine, LineType, VcfHeader};
+use crate::header_parse::VcfVersion;
+use crate::text_transformer::TextTransformer;
 use crate::variant::{Value, VariantContext, NO_LOG10_PERROR};
 
 /// `VCFConstants.MISSING_VALUE_v4`.
@@ -170,6 +172,7 @@ pub fn decode_line(
     line: &str,
     header: &VcfHeader,
     line_number: usize,
+    version: VcfVersion,
 ) -> Result<Option<DecodedRecord>, RecordError> {
     if line.starts_with('#') {
         return Ok(None);
@@ -185,16 +188,22 @@ pub fn decode_line(
         NUM_STANDARD_FIELDS
     };
     if parts.len() != expected {
+        // The number in the message is **not** the number that was just checked. Upstream the
+        // check is `header.hasGenotypingData() ? 9 : 8` and the message is
+        // `header == null ? 8 : 9`, so a sites-only file, whose records are checked against 8,
+        // is told it was expecting 9. A port that formats `expected` into the message agrees with
+        // the check and disagrees with htsjdk.
         return Err(RecordError::Tribble(format!(
-            "Line {line_number}: there aren't enough columns for line {line} (we expected \
-             {expected} tokens, and saw {} )",
+            "Line {line_number}: there aren't enough columns for line {line} (we expected {} \
+             tokens, and saw {} )",
+            NUM_STANDARD_FIELDS + 1,
             parts.len()
         )));
     }
 
     // `parseVCFLine` increments the line counter on entry, so every field error below reports one
     // more than the column check above does.
-    parse_vcf_line(&parts, header, line_number + 1).map(Some)
+    parse_vcf_line(&parts, header, line_number + 1, version).map(Some)
 }
 
 /// `AbstractVCFCodec.parseVCFLine`.
@@ -202,6 +211,7 @@ fn parse_vcf_line(
     parts: &[String],
     header: &VcfHeader,
     line_number: usize,
+    version: VcfVersion,
 ) -> Result<DecodedRecord, RecordError> {
     let contig = parts[0].clone();
 
@@ -232,7 +242,7 @@ fn parse_vcf_line(
 
     let log10_p_error = parse_qual(&parts[5])?;
     let filters = parse_filters(&parts[6], line_number)?;
-    let attributes = parse_info(&parts[7], header, line_number)?;
+    let attributes = parse_info(&parts[7], header, line_number, version)?;
 
     // `END` wins over the reference allele's length, and nothing checks that the result is sane.
     let stop = match attributes.iter().find(|(key, _)| key == "END") {
@@ -328,8 +338,12 @@ fn parse_info(
     text: &str,
     header: &VcfHeader,
     line_number: usize,
+    version: VcfVersion,
 ) -> Result<Vec<(String, Value)>, RecordError> {
     let mut attributes: Vec<(String, Value)> = Vec::new();
+    // The transformer runs on the value **before** the Flag test below, so under 4.3 a declared
+    // Flag written as `DB=%30` is dropped exactly as `DB=0` is. The key is never transformed.
+    let transformer = TextTransformer::for_version(version);
 
     if text.is_empty() {
         return Err(generate_exception(
@@ -357,15 +371,21 @@ fn parse_info(
                 let raw = &field[equals + 1..];
                 let parts: Vec<&str> = raw.split(',').collect();
                 if parts.len() == 1 {
+                    let decoded = transformer.decode(parts[0]);
                     // A declared Flag written as `KEY=0` is dropped rather than stored.
-                    if info_type(header, &key) == Some(LineType::Flag) && parts[0] == "0" {
+                    if info_type(header, &key) == Some(LineType::Flag) && decoded == "0" {
                         continue;
                     }
-                    (key, Value::Str(parts[0].to_string()))
+                    (key, Value::Str(decoded))
                 } else {
                     (
                         key,
-                        Value::List(parts.iter().map(|p| Value::Str(p.to_string())).collect()),
+                        Value::List(
+                            parts
+                                .iter()
+                                .map(|p| Value::Str(transformer.decode(p)))
+                                .collect(),
+                        ),
                     )
                 }
             }

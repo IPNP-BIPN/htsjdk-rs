@@ -15,7 +15,10 @@ pub mod header_lines;
 pub mod header_parse;
 pub mod jformat;
 pub mod merge;
+pub mod reader;
 pub mod record_parse;
+pub mod standard_header_lines;
+pub mod text_transformer;
 pub mod variant;
 pub mod vcf_file;
 

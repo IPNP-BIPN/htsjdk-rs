@@ -22,6 +22,7 @@
 
 use crate::encoder::{EncodeError, VcfEncoder};
 use crate::header::VcfHeader;
+use crate::header_parse::VcfVersion;
 use crate::variant::VariantContext;
 
 /// `VCFWriter.VERSION_LINE`.
@@ -36,6 +37,23 @@ pub fn write_vcf(header: &VcfHeader, records: &[VariantContext]) -> Result<Strin
         out.push('\n');
     }
     Ok(out)
+}
+
+/// `VCFWriter.rejectVCFV43Headers`, which is why a VCF 4.3 file can be read and not written back.
+///
+/// The test is on `getVCFHeaderVersion()`, the header's own field, and that field is `None` below
+/// 4.3 because `repairStandardHeaderLines` re-attaches the version only from 4.3 up. So this
+/// refusal and the forgotten version of [`crate::reader`] are the same mechanism seen from two
+/// sides: the writer can refuse a 4.3 header precisely because a 4.2 one no longer knows what it
+/// is. The message interpolates the **enum constant**, `VCF4_3`, not the version string.
+pub fn reject_vcf_v43_headers(version: Option<VcfVersion>) -> Result<(), String> {
+    match version {
+        Some(version) if version.is_at_least(VcfVersion::Vcf4_3) => Err(format!(
+            "Writing VCF version {} is not implemented",
+            version.constant_name()
+        )),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
