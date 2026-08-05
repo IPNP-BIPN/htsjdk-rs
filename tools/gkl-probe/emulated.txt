@@ -1,5 +1,6 @@
 env	gkl-native=true	java=17.0.19	arch=amd64
 cpu	VirtualApple @ 2.50GHz
+flags	avx,avx2,pclmulqdq,sse4_1,sse4_2
 default-bgzf-level	5
 fixture	acgt	60000	9121c7902ca39e0fb0f4d2d4bda09701a8556f8f918b510ec1a648a35ee4c2f5
 fixture	runs	60000	9ee076429f1d2a01c0dfdd7ed9068e5a05d01290ddcfe4cbed1e2aba9cfd110a

@@ -86,11 +86,14 @@ There would then be no fixed target to port to, and the same BAM written on two 
 differ. That is a larger result than any amount of porting, so it is settled first, and the same
 way 0007 settled `pow`: regenerate on a second machine and diff.
 
-`tools/gkl-probe/emulated.txt` is the first machine. It was produced on Apple Silicon, where
-Docker translates `linux/amd64` through Rosetta. Its `cpu` line reads `VirtualApple @ 2.50GHz`,
-and Rosetta implements no AVX, so that column is igzip's SSE path. The `igzip-portability` CI job
-is the second machine: it reruns the probe in the same pinned image on a real x86-64 GitHub
-runner, prints that host's CPU and AVX flags, and diffs every hash.
+`tools/gkl-probe/emulated.txt` is the first machine, produced on Apple Silicon where Docker
+translates `linux/amd64` through Rosetta. The `igzip-portability` CI job is the second: it reruns
+the probe in the same pinned image on a real x86-64 GitHub runner and diffs every hash.
+
+*(This section first claimed that column was igzip's SSE path "because Rosetta implements no AVX".
+That was asserted, not read. Measured, Rosetta advertises `avx,avx2,pclmulqdq,sse4_1,sse4_2`. The
+probe now prints its own flags line into both columns, and the correction is in "The answer"
+below.)*
 
 The probe hashes rather than measures lengths, because two deflate streams of equal length are not
 equal streams: the `random` fixture at level 5 produces 60074 bytes through both deflaters and
@@ -113,17 +116,28 @@ and 4, measured rather than assumed. Two match-finders can agree on data that si
 |---|---|---|
 | host | Apple Silicon under Rosetta | GitHub `ubuntu-latest` |
 | `cpu` line | `VirtualApple @ 2.50GHz` | `AMD EPYC 7763 64-Core Processor` |
-| AVX flags | none | `avx avx2 sse4_2` (no `avx512f`) |
+| dispatch flags | `avx,avx2,pclmulqdq,sse4_1,sse4_2` | `avx,avx2,pclmulqdq,sse4_1,sse4_2` |
 
 Every hash agrees: four fixtures times nine levels of raw deflate through both deflaters, plus the
 BGZF streams at levels 1, 5 and 9, plus the input hashes and the default level.
 
-**igzip's output is a property of the algorithm, not of the kernel that ran it.** So H.4 has a
-fixed target after all: a port can be checked against a byte sequence rather than against a
-machine, and a BAM written on one host is the BAM written on another. This is the opposite of what
-decision 0007 found for `Math.pow`, and it is the answer that made the porting work worth sizing.
+**GKL's output does not move with the microarchitecture.** Two different chips, one of them
+emulated, produce the same bytes, so H.4 has a fixed target: a port can be checked against a byte
+sequence rather than against a machine, and a BAM written on one host is the BAM written on
+another. That is the opposite of what decision 0007 found for `Math.pow`.
 
-Two limits, stated rather than implied. Only two microarchitectures have been compared, and
-neither of them exercises igzip's AVX512 kernel, since the EPYC 7763 reports no `avx512f`. The
-result stands for the SSE and AVX2 paths; a host with AVX512 would be a third column and has not
-been run.
+**But it did not test the kernel dispatch, which is what this section was written to test.** The
+two hosts advertise identical flags, so both took the same path through both backends: the same
+`isal_deflate_body_*` variant, and the same branch of Intel's `x86_cpu_has_sse42` hash. The claim
+this experiment can support is "the same code produces the same bytes on two chips", not "the SSE
+and AVX2 kernels agree".
+
+The original write-up said the Rosetta column was the SSE path because Rosetta implements no AVX.
+That was inferred from the host, not read from it, and it is false: Rosetta reports `avx` and
+`avx2`. The probe now prints a flags line into both columns and the CI job says out loud when the
+two match, so the reach of the experiment travels with its result instead of being reconstructed
+later. Nothing in the hashes changes: the same 101 rows, still 0 differing.
+
+The kernel question therefore stays open, and it needs a host whose flags differ, which neither
+this laptop nor a GitHub runner provides. Nor does either exercise the AVX512 kernel: the EPYC
+7763 reports no `avx512f`.

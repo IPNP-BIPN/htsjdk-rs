@@ -21,10 +21,13 @@
  * `Math.pow` does in decision 0007. That would move H.4 out of the reproducible column entirely,
  * which is a larger result than any amount of porting.
  *
- * It is answered the way 0007 answered pow: run here, run on a real x86-64 CI host, diff. This
- * laptop translates linux/amd64 through Rosetta, which does not implement AVX2, so the local run
- * exercises igzip's SSE path while the CI run exercises its AVX2 path. The two columns are the
- * experiment.
+ * It is answered the way 0007 answered pow: run here, run on a real x86-64 CI host, diff.
+ *
+ * WHICH KERNEL EACH HOST PICKS IS ITSELF MEASURED, not assumed from the host. Both backends
+ * dispatch on CPUID: ISA-L ships `isal_deflate_body_01/_02/_04` for SSE, AVX and AVX2, and Intel's
+ * zlib fork gates its hash on `x86_cpu_has_sse42`. So the flags line below is part of the result:
+ * two hosts that advertise the same flags take the same path, and comparing them says nothing
+ * about the kernels at all. Assuming instead of reading them is the mistake decision 0028 made.
  *
  * Output is a hash per (fixture, level, backend), not a length, because two deflate streams of
  * equal length are not equal streams and a length-only comparison would report an agreement it
@@ -39,6 +42,7 @@
  *
  *     env\t<gkl native>\t<java version>\t<os.arch>
  *     cpu\t<model name, or "unavailable">
+ *     flags\t<the dispatch-relevant CPUID flags this host advertises>
  *     default-bgzf-level\t<level>
  *     fixture\t<name>\t<bytes>\t<sha256 of the input>
  *     deflate\t<fixture>\t<level>\t<gkl|jdk>\t<bytes>\t<sha256 of the output>
@@ -78,6 +82,7 @@ public class GklProbe {
         System.out.printf("env\tgkl-native=true\tjava=%s\tarch=%s%n",
                 System.getProperty("java.version"), System.getProperty("os.arch"));
         System.out.printf("cpu\t%s%n", cpuModel());
+        System.out.printf("flags\t%s%n", cpuFlags());
         System.out.printf("default-bgzf-level\t%d%n",
                 BlockCompressedStreamConstants.DEFAULT_COMPRESSION_LEVEL);
 
@@ -184,19 +189,43 @@ public class GklProbe {
         return "0".repeat(64 - hex.length()) + hex;
     }
 
+    static String cpuFlags() {
+        // Only the flags the two backends actually dispatch on. Printing all of them would bury
+        // the four that decide which kernel runs.
+        final java.util.Set<String> interesting =
+                java.util.Set.of("sse4_1", "sse4_2", "pclmulqdq", "avx", "avx2", "avx512f");
+        for (final String line : procCpuInfo()) {
+            if (line.startsWith("flags")) {
+                final java.util.List<String> found = new java.util.ArrayList<>();
+                for (final String flag : line.substring(line.indexOf(':') + 1).trim().split(" ")) {
+                    if (interesting.contains(flag)) {
+                        found.add(flag);
+                    }
+                }
+                java.util.Collections.sort(found);
+                return found.isEmpty() ? "none-of-interest" : String.join(",", found);
+            }
+        }
+        return "unavailable";
+    }
+
     static String cpuModel() {
         // Self-describing output: the CPU is this experiment's independent variable, so a run that
         // does not say which one it was cannot be compared against another.
-        try {
-            for (final String line : Files.readAllLines(Path.of("/proc/cpuinfo"),
-                    StandardCharsets.UTF_8)) {
-                if (line.startsWith("model name")) {
-                    return line.substring(line.indexOf(':') + 1).trim();
-                }
+        for (final String line : procCpuInfo()) {
+            if (line.startsWith("model name")) {
+                return line.substring(line.indexOf(':') + 1).trim();
             }
-        } catch (final Exception ignored) {
-            // Not Linux, or no procfs. The line still prints, saying so.
         }
         return "unavailable";
+    }
+
+    static java.util.List<String> procCpuInfo() {
+        try {
+            return Files.readAllLines(Path.of("/proc/cpuinfo"), StandardCharsets.UTF_8);
+        } catch (final Exception ignored) {
+            // Not Linux, or no procfs. The callers still print a line, saying so.
+            return java.util.List.of();
+        }
     }
 }
