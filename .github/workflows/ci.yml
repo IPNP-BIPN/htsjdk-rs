@@ -130,13 +130,10 @@ jobs:
             suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
           - group: oracle-backed
             index: "7/7"
-            suites: "gamma-erf-normal saddle-point variant-comparator smart-merge-headers"
+            suites: "gamma-erf-normal saddle-point variant-comparator smart-merge-headers tribble-index"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "tribble-index"
     steps:
       - uses: actions/checkout@v4
 

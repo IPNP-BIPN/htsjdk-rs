@@ -589,7 +589,7 @@
     },
     {
       "id": "tribble-index",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The .idx file, and the blocks a query resolves to",
       "harness": "tools/tribble-conformance",
       "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant \u2014 16000 for one contig and 8000 for another in the same file \u2014 so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
@@ -599,17 +599,9 @@
       "cases": [
         {
           "dump": "TribbleIndexDump",
-          "golden": null,
-          "why": "The dump grew the interval-tree chromosome rows, so the golden is regenerated from the pinned container on a real x86-64 runner."
+          "golden": "crates/htsjdk-tribble/tests/data/tribble_index.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner. 29 rows, and now BOTH index layouts: the linear one, whose N blocks are rebuilt from N+1 positions with the sizes derived, and the interval-tree one, whose sizes are stored and whose coordinates are 1-based where the BED was 0-based. Reading either with the other's assumptions produces plausible nonsense rather than an error, which is why the two are compared separately. The .idx bytes carry a masked timestamp because indexedFileTS was measured to change on every run."
         }
-      ],
-      "expect_rows": 29,
-      "expect_contains": [
-        "header\tlinear-bed\t1480870228\t1\t3\t",
-        "header\tinterval-bed\t1480870228\t2\t3\t",
-        "chr\tlinear-bed\tchr1\t16000\t2\t600\t0\t4\t0,59,80",
-        "chr\tinterval-bed\tchr1\t1\t101,20010,0,80",
-        "query\tlinear-bed\tchrX:1-10\tE:java.lang.IllegalArgumentException"
       ]
     }
   ],
