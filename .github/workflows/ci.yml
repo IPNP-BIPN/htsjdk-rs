@@ -130,13 +130,10 @@ jobs:
             suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
           - group: oracle-backed
             index: "7/7"
-            suites: "gamma-erf-normal saddle-point variant-comparator"
+            suites: "gamma-erf-normal saddle-point variant-comparator smart-merge-headers"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "smart-merge-headers"
     steps:
       - uses: actions/checkout@v4
 
