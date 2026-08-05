@@ -86,9 +86,15 @@ There would then be no fixed target to port to, and the same BAM written on two 
 differ. That is a larger result than any amount of porting, so it is settled first, and the same
 way 0007 settled `pow`: regenerate on a second machine and diff.
 
-`tools/gkl-probe/emulated.txt` is the first machine, produced on Apple Silicon where Docker
-translates `linux/amd64` through Rosetta. The `igzip-portability` CI job is the second: it reruns
-the probe in the same pinned image on a real x86-64 GitHub runner and diffs every hash.
+The first machine was Apple Silicon, where Docker translates `linux/amd64` through Rosetta, and its
+column was committed at the time. The `igzip-portability` CI job was the second: it reran the probe
+in the same pinned image on a real x86-64 GitHub runner and diffed every hash.
+
+*(The committed column is no longer that one. It was written on a developer machine, which decision
+0008 forbids for a golden, and it became a golden later when `crates/gkl-deflate` started comparing
+against it. It is now `tools/gkl-probe/real-x86-64.txt`, derived by the CI runner itself and
+published as an artefact by the same job. Every measured row was identical between the two; only
+the `env`, `cpu` and `flags` lines changed, which is what the experiment below is about.)*
 
 *(This section first claimed that column was igzip's SSE path "because Rosetta implements no AVX".
 That was asserted, not read. Measured, Rosetta advertises `avx,avx2,pclmulqdq,sse4_1,sse4_2`. The

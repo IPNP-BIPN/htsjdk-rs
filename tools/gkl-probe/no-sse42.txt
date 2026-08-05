@@ -25,7 +25,7 @@
 # So a BAM written by GATK at the default level is not one byte sequence: it is one per CPU class.
 # The portability job could not see this, because both hosts it has ever run on report SSE4.2.
 #
-# Format matches emulated.txt, with `gkl-no-sse42` where that file says `gkl`.
+# Format matches real-x86-64.txt, with `gkl-no-sse42` where that file says `gkl`.
 deflate	acgt	3	gkl-no-sse42	18411	f904848da9e6075568c875a06c63fa38dc36ed89afc9004cea3513dcdfa03c9d
 deflate	acgt	4	gkl-no-sse42	18451	7be71020a360ec68d311ff5fe982177e2af576833ebe9f9db7e650be618fad89
 deflate	acgt	5	gkl-no-sse42	18184	81c6728940cf134f0569444777c1a1f59319967f2df5f87a2b1cb33c5a454163

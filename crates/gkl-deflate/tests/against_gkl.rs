@@ -1,6 +1,6 @@
 //! The GKL flavour, checked against GKL itself.
 //!
-//! `tools/gkl-probe/emulated.txt` was produced by running Intel's own `IntelDeflater` in the
+//! `tools/gkl-probe/real-x86-64.txt` was produced by running Intel's own `IntelDeflater` in the
 //! pinned oracle container. This test recomputes the same fixtures, compresses them with this
 //! crate, and compares sha256 against that file. So the assertion is against the real library's
 //! bytes, not against a reading of its source, and it fails if the port drifts *or* if the
@@ -84,7 +84,7 @@ fn sha256(data: &[u8]) -> String {
 
 /// The oracle column, keyed the way the file writes it.
 fn recorded() -> (HashMap<String, String>, HashMap<(String, usize), String>) {
-    let text = include_str!("../../../tools/gkl-probe/emulated.txt");
+    let text = include_str!("../../../tools/gkl-probe/real-x86-64.txt");
     let mut inputs = HashMap::new();
     let mut outputs = HashMap::new();
     for line in text.lines() {
@@ -105,7 +105,7 @@ fn recorded() -> (HashMap<String, String>, HashMap<(String, usize), String>) {
 #[test]
 fn the_fixtures_are_the_ones_the_oracle_compressed() {
     let (inputs, _) = recorded();
-    assert!(!inputs.is_empty(), "no fixture rows in emulated.txt");
+    assert!(!inputs.is_empty(), "no fixture rows in real-x86-64.txt");
     for (name, data) in fixtures() {
         assert_eq!(
             sha256(&data),
