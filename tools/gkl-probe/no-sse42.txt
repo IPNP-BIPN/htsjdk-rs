@@ -1,0 +1,56 @@
+# GKL's zlib with SSE4.2 forced off.
+#
+# NOT an oracle column, and it must not be treated as one. Every other golden in this repository
+# comes from running the real library in the pinned container; this one cannot, because no host
+# available here lacks SSE4.2. It was produced instead from Intel's own source, jtkukunas/zlib
+# (zlib 1.2.13, the version and the patches `libgkl_compression.so` carries), built for
+# linux/amd64 with one line changed:
+#
+#     x86.c:  x86_cpu_has_sse42 = regs[C] & bit_SSE4_2;   ->   x86_cpu_has_sse42 = 0;
+#
+# That source was first checked against the real library with the flag left alone: at levels 3 to
+# 9 it reproduces the recorded GKL column exactly, 28 rows of 28. So the build is the right one,
+# and this file is what it emits on the other branch of its own CPU check.
+#
+# WHY IT IS WORTH HAVING. GKL's output depends on the CPU. With SSE4.2 the fork hashes with a
+# CRC-32C of the bytes at the position; without it, with zlib's multiplicative rolling hash. The
+# chains fill differently and the match finder answers differently:
+#
+#     level 3    1 of 4 fixtures unchanged
+#     level 4    0 of 4
+#     level 5    0 of 4      <- htsjdk's BGZF default
+#     level 6    3 of 4
+#     levels 7-9 4 of 4      <- the search is thorough enough that chain order stops mattering
+#
+# So a BAM written by GATK at the default level is not one byte sequence: it is one per CPU class.
+# The portability job could not see this, because both hosts it has ever run on report SSE4.2.
+#
+# Format matches emulated.txt, with `gkl-no-sse42` where that file says `gkl`.
+deflate	acgt	3	gkl-no-sse42	18411	f904848da9e6075568c875a06c63fa38dc36ed89afc9004cea3513dcdfa03c9d
+deflate	acgt	4	gkl-no-sse42	18451	7be71020a360ec68d311ff5fe982177e2af576833ebe9f9db7e650be618fad89
+deflate	acgt	5	gkl-no-sse42	18184	81c6728940cf134f0569444777c1a1f59319967f2df5f87a2b1cb33c5a454163
+deflate	acgt	6	gkl-no-sse42	17897	189987535c5f72b1946eafae69f67ba60b3a34885e4d3e43c626433be906255a
+deflate	acgt	7	gkl-no-sse42	17975	8e5f7c6c76ab465f860bc93b6b02a78beb9c327b8428f2c2c802f761e20ab986
+deflate	acgt	8	gkl-no-sse42	18104	1daebdb7da7536823ba752dbb6aad0bc9a0b9e84c4623f6bacb53784a93bb3d3
+deflate	acgt	9	gkl-no-sse42	18104	1daebdb7da7536823ba752dbb6aad0bc9a0b9e84c4623f6bacb53784a93bb3d3
+deflate	acgt-2blocks	3	gkl-no-sse42	61144	ef9d148c1ab5df9f910dca9984129de5c4ace0a3274be7b3c30b67ebb71cb384
+deflate	acgt-2blocks	4	gkl-no-sse42	61374	cd9bcd708ba5fb0ab6d4d23945770eab49ff44f660ca0255b70ddb995842e59a
+deflate	acgt-2blocks	5	gkl-no-sse42	60263	3a6892e40d60b4634fa5fae13992a7a0a0ae46213c6dc108184adb992851bc06
+deflate	acgt-2blocks	6	gkl-no-sse42	58817	77ab6aa6b434d18d0694274901d0bc1d839c43c07d254c54e854862cdab27680
+deflate	acgt-2blocks	7	gkl-no-sse42	58638	9d5903c0584c50e97a22c09f50ed279032b0f7c8b8d0bbafc7c379f662117cdf
+deflate	acgt-2blocks	8	gkl-no-sse42	58174	5a304385096acfa23b4ad9dbb4d71bb13a599020176b4176b7eef8cecc619929
+deflate	acgt-2blocks	9	gkl-no-sse42	58174	5a304385096acfa23b4ad9dbb4d71bb13a599020176b4176b7eef8cecc619929
+deflate	random	3	gkl-no-sse42	60020	d968bda1d2b28bf2b43e875b7485ebe20c51e5dfff79f8c3f0f12295b665d33a
+deflate	random	4	gkl-no-sse42	60020	242d574d781b0a595fc0875fae390b73e3bd473b9ed9251aa04d9144a29bd1a9
+deflate	random	5	gkl-no-sse42	60020	242d574d781b0a595fc0875fae390b73e3bd473b9ed9251aa04d9144a29bd1a9
+deflate	random	6	gkl-no-sse42	60020	242d574d781b0a595fc0875fae390b73e3bd473b9ed9251aa04d9144a29bd1a9
+deflate	random	7	gkl-no-sse42	60020	4853ab91916eba89922956848d27b4e30e46317b56778278ec26327ce632877b
+deflate	random	8	gkl-no-sse42	60020	4853ab91916eba89922956848d27b4e30e46317b56778278ec26327ce632877b
+deflate	random	9	gkl-no-sse42	60020	4853ab91916eba89922956848d27b4e30e46317b56778278ec26327ce632877b
+deflate	runs	3	gkl-no-sse42	638	5764afeacac0edec5b9c92cc5ebf51e69bc51bd79c584a09cfce590da18b7e2c
+deflate	runs	4	gkl-no-sse42	748	253a4493eef84dafdd4adeddd8658dfb298dcfd5a956869149891520340de2a1
+deflate	runs	5	gkl-no-sse42	736	a94d78eac5eb008a518394e4f0e2e11bdbeda5a0300b813965b5cf497033dfb8
+deflate	runs	6	gkl-no-sse42	467	5060727f5af5d414b95cde561a1cb2d6fa94d478c850f5774815705e5b8dec14
+deflate	runs	7	gkl-no-sse42	598	b882d63f05764617436a434e4f5b6f05e04669f05805496fc65272d8c0e3cb32
+deflate	runs	8	gkl-no-sse42	307	8e993ed3f9be569bbace91ff7a27840b798e0ced2c358907c14e892cf6298d22
+deflate	runs	9	gkl-no-sse42	307	8e993ed3f9be569bbace91ff7a27840b798e0ced2c358907c14e892cf6298d22

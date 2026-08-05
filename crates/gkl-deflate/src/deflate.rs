@@ -124,6 +124,64 @@ const CONFIGURATION_TABLE: [Config; 10] = [
     },
 ];
 
+/// Which deflater is being reproduced.
+///
+/// The two differ in three ways that all change the bytes: which block function each level uses,
+/// which hash feeds the chains, and, on the Intel side, whether the CPU supports SSE4.2 at all.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Flavour {
+    /// Stock zlib, which is what `java.util.zip.Deflater` routes to. Levels 1 to 3 fast, 4 to 9
+    /// slow, multiplicative rolling hash throughout.
+    Jdk,
+    /// Intel's zlib 1.2.13 fork inside `libgkl_compression.so`, the one GKL uses at levels 3 to 9.
+    /// Adds `deflate_medium` at levels 4 to 6 and swaps the hash for a CRC-32C of the bytes at the
+    /// position, which is not a rolling hash at all.
+    ///
+    /// `sse42` is the value of the fork's `x86_cpu_has_sse42`, read from CPUID at load time. **It
+    /// changes the output**, because the two hashes fill the chains differently, so a GKL claim
+    /// is a claim about a CPU as much as about a level. The default is `true`: every host the
+    /// oracle has run on reports SSE4.2, and that is the column the goldens were measured in.
+    Gkl { sse42: bool },
+}
+
+/// The hash a flavour uses to index the chains.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hash {
+    /// zlib's `UPDATE_HASH`: `h = ((h << 5) ^ c) & mask`, rolling over three bytes.
+    Multiplicative,
+    /// Intel's `UPDATE_HASH_CRC`: a CRC-32C of the four bytes at the position, or of three when
+    /// the level is 6 or above. Not rolling: it depends only on the window, never on the previous
+    /// value, which is why the priming assignments around it are skipped.
+    Crc32c { three_byte: bool },
+}
+
+/// The CRC-32C the SSE4.2 `crc32` instruction computes: reflected, polynomial 0x1EDC6F41, and no
+/// final inversion. `_mm_crc32_u32(0, val)` processes `val`'s four bytes least-significant first.
+fn crc32c_u32(val: u32) -> u32 {
+    let mut crc = 0u32;
+    for byte in val.to_le_bytes() {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc
+}
+
+/// One match, as `deflate_medium.c` carries it: where it starts in the window, where it matched,
+/// how long it is, and how far its span has already been inserted into the chains.
+#[derive(Clone, Copy, Default)]
+struct Match {
+    match_start: usize,
+    match_length: usize,
+    strstart: usize,
+    orgstart: usize,
+}
+
 pub struct Deflater<'a> {
     input: &'a [u8],
     next_in: usize,
@@ -145,12 +203,25 @@ pub struct Deflater<'a> {
     insert: usize,
 
     config: Config,
+    hash: Hash,
+    /// True for Intel's levels 4 to 6, where `deflate_medium` replaces `deflate_slow`.
+    medium: bool,
     trees: Trees,
     out: Vec<u8>,
 }
 
 impl<'a> Deflater<'a> {
-    pub fn new(input: &'a [u8], level: usize) -> Self {
+    pub fn new(input: &'a [u8], level: usize, flavour: Flavour) -> Self {
+        let (hash, medium) = match flavour {
+            Flavour::Jdk => (Hash::Multiplicative, false),
+            Flavour::Gkl { sse42: false } => (Hash::Multiplicative, (4..=6).contains(&level)),
+            Flavour::Gkl { sse42: true } => (
+                Hash::Crc32c {
+                    three_byte: level >= 6,
+                },
+                (4..=6).contains(&level),
+            ),
+        };
         Deflater {
             input,
             next_in: 0,
@@ -168,13 +239,17 @@ impl<'a> Deflater<'a> {
             match_available: false,
             insert: 0,
             config: CONFIGURATION_TABLE[level],
+            hash,
+            medium,
             trees: Trees::new(LIT_BUFSIZE),
             out: Vec::with_capacity(input.len() / 2 + 64),
         }
     }
 
     pub fn finish(mut self) -> Vec<u8> {
-        if self.config.slow {
+        if self.medium {
+            self.deflate_medium();
+        } else if self.config.slow {
             self.deflate_slow();
         } else {
             self.deflate_fast();
@@ -182,16 +257,43 @@ impl<'a> Deflater<'a> {
         self.out
     }
 
+    /// zlib's `UPDATE_HASH`, and only reachable on the multiplicative path. Intel's macro has the
+    /// same name and the same call sites but ignores the running value entirely, which is why the
+    /// hash is recomputed from `str_pos` rather than fed a byte.
     #[inline]
     fn update_hash(&mut self, c: u8) {
         self.ins_h = ((self.ins_h << HASH_SHIFT) ^ c as usize) & HASH_MASK;
+    }
+
+    /// The hash of the string starting at `str_pos`, by whichever rule this flavour uses.
+    ///
+    /// Intel's macro reaches the position by subtracting `MIN_MATCH - 1` from the address of the
+    /// byte it was handed, which is how a rolling-hash call site ends up computing a positional
+    /// hash. The four-byte load is a plain little-endian read of the window.
+    #[inline]
+    fn hash_at(&mut self, str_pos: usize) {
+        match self.hash {
+            Hash::Multiplicative => self.update_hash(self.window[str_pos + MIN_MATCH - 1]),
+            Hash::Crc32c { three_byte } => {
+                let mut val = u32::from_le_bytes([
+                    self.window[str_pos],
+                    self.window[str_pos + 1],
+                    self.window[str_pos + 2],
+                    self.window[str_pos + 3],
+                ]);
+                if three_byte {
+                    val &= 0x00FF_FFFF;
+                }
+                self.ins_h = crc32c_u32(val) as usize & HASH_MASK;
+            }
+        }
     }
 
     /// Ported from zlib's `INSERT_STRING`. Returns the previous head of this hash's chain, which
     /// is where a match search starts.
     #[inline]
     fn insert_string(&mut self, str_pos: usize) -> u16 {
-        self.update_hash(self.window[str_pos + MIN_MATCH - 1]);
+        self.hash_at(str_pos);
         let head = self.head[self.ins_h];
         self.prev[str_pos & W_MASK] = head;
         self.head[self.ins_h] = str_pos as u16;
@@ -251,10 +353,14 @@ impl<'a> Deflater<'a> {
             // hashed then. Without this the chains would have holes and the matches would differ.
             if self.lookahead + self.insert >= MIN_MATCH {
                 let mut str_pos = self.strstart - self.insert;
-                self.ins_h = self.window[str_pos] as usize;
-                self.update_hash(self.window[str_pos + 1]);
+                // Priming the rolling value, which the CRC hash does not have. Intel guards this
+                // with `if (!x86_cpu_has_sse42)` for exactly that reason.
+                if self.hash == Hash::Multiplicative {
+                    self.ins_h = self.window[str_pos] as usize;
+                    self.update_hash(self.window[str_pos + 1]);
+                }
                 while self.insert != 0 {
-                    self.update_hash(self.window[str_pos + MIN_MATCH - 1]);
+                    self.hash_at(str_pos);
                     self.prev[str_pos & W_MASK] = self.head[self.ins_h];
                     self.head[self.ins_h] = str_pos as u16;
                     str_pos += 1;
@@ -395,8 +501,11 @@ impl<'a> Deflater<'a> {
                 } else {
                     self.strstart += self.match_length;
                     self.match_length = 0;
-                    self.ins_h = self.window[self.strstart] as usize;
-                    self.update_hash(self.window[self.strstart + 1]);
+                    // The same priming, and Intel skips it on the same condition.
+                    if self.hash == Hash::Multiplicative {
+                        self.ins_h = self.window[self.strstart] as usize;
+                        self.update_hash(self.window[self.strstart + 1]);
+                    }
                 }
             } else {
                 bflush = self.trees.tally_lit(self.window[self.strstart]);
@@ -409,6 +518,247 @@ impl<'a> Deflater<'a> {
         }
         self.insert = self.strstart.min(MIN_MATCH - 1);
         self.flush_block(true);
+    }
+
+    /// Ported from zlib 1.2.13's `deflate_medium.c` in Intel's fork (zlib licence), the block
+    /// function that fork uses at levels 4 to 6. **htsjdk's BGZF default is level 5, so this is the function that decides the
+    /// bytes of every BAM GATK writes** without `--use-jdk-deflater`.
+    ///
+    /// It is a different idea from `deflate_slow`, not a tuning of it. `deflate_slow` looks one
+    /// byte ahead and keeps whichever of the two matches is longer. This looks one *match* ahead:
+    /// it finds the match at the current position, then the match at the position that one would
+    /// end at, and emits the current one regardless, carrying the second forward so it is never
+    /// searched twice. The lookahead is therefore about avoiding work, not about choosing better.
+    ///
+    /// [`Self::fizzle_matches`] runs between the two searches and can rewrite both.
+    fn deflate_medium(&mut self) {
+        // `current` is always assigned before it is read; the initialiser only satisfies the
+        // compiler, as `memset` does in the C.
+        let mut current;
+        let mut next = Match::default();
+
+        loop {
+            let mut hash_head: u16 = 0;
+            if self.lookahead < MIN_LOOKAHEAD {
+                self.fill_window();
+                if self.lookahead == 0 {
+                    break;
+                }
+                next.match_length = 0;
+            }
+
+            // Every search starts from a best-so-far of 2, unlike deflate_slow where the previous
+            // match's length carries in.
+            self.prev_length = 2;
+
+            if next.match_length > 0 {
+                current = next;
+                next.match_length = 0;
+            } else {
+                if self.lookahead >= MIN_MATCH {
+                    hash_head = self.insert_string(self.strstart);
+                }
+                if hash_head != 0 && hash_head as usize == self.strstart {
+                    hash_head -= 1;
+                }
+                current = Match {
+                    match_start: 0,
+                    match_length: 1,
+                    strstart: self.strstart,
+                    orgstart: self.strstart,
+                };
+                if hash_head != 0 && self.strstart - hash_head as usize <= MAX_DIST {
+                    current.match_length = self.longest_match(hash_head as usize);
+                    current.match_start = self.match_start;
+                    if current.match_length < MIN_MATCH {
+                        current.match_length = 1;
+                    }
+                    if current.match_start >= current.strstart {
+                        current.match_length = 1;
+                    }
+                }
+            }
+
+            self.insert_match(current);
+
+            // Look one match ahead, and only if there is room. The search leaves `strstart`
+            // where it found it, so the emit below is unaffected.
+            if self.lookahead - current.match_length > MIN_LOOKAHEAD {
+                self.strstart = current.strstart + current.match_length;
+                hash_head = self.insert_string(self.strstart);
+                if hash_head != 0 && hash_head as usize == self.strstart {
+                    hash_head -= 1;
+                }
+                next = Match {
+                    match_start: 0,
+                    match_length: 1,
+                    strstart: self.strstart,
+                    orgstart: self.strstart,
+                };
+                if hash_head != 0 && self.strstart - hash_head as usize <= MAX_DIST {
+                    next.match_length = self.longest_match(hash_head as usize);
+                    next.match_start = self.match_start;
+                    if next.match_start >= next.strstart {
+                        next.match_length = 1;
+                    }
+                    if next.match_length < MIN_MATCH {
+                        next.match_length = 1;
+                    } else {
+                        self.fizzle_matches(&mut current, &mut next);
+                    }
+                }
+                // A three-byte match from very far away is dropped, on a threshold of its own
+                // that has nothing to do with `deflate_slow`'s TOO_FAR of 4096.
+                if next.match_length == 3 && next.strstart - next.match_start > 12000 {
+                    next.match_length = 1;
+                }
+                self.strstart = current.strstart;
+            } else {
+                next.match_length = 0;
+            }
+
+            let bflush = self.emit_match(current);
+            self.strstart += current.match_length;
+            if bflush {
+                self.flush_block(false);
+            }
+        }
+        self.insert = self.strstart.min(MIN_MATCH - 1);
+        self.flush_block(true);
+    }
+
+    /// Ported from zlib 1.2.13's `deflate_medium.c`, function `fizzle_matches`: slide the *next* match backwards, one
+    /// byte at a time, for as long as the byte before it still matches, shortening the current one
+    /// to pay for it.
+    ///
+    /// It only commits when the current match has been shortened to nothing, so the trade it is
+    /// looking for is "two matches" becoming "one longer match". Anything less is abandoned, which
+    /// is why both sides are walked on copies and written back only at the end.
+    ///
+    /// Worth being explicit about, because it is easy to read this function as dead code: the two
+    /// assignments that commit the result are `*current = c;` and `*next = n;` on the last branch,
+    /// and every other path leaves both arguments alone. Reading it as a no-op costs six differing
+    /// bytes in 18 kilobytes, which is what it cost here before the symbol-stream trace found it.
+    fn fizzle_matches(&mut self, current: &mut Match, next: &mut Match) {
+        if current.match_length <= 1
+            || current.match_length > 1 + next.match_start
+            || current.match_length > 1 + next.strstart
+        {
+            return;
+        }
+        // The cheap rejection: the byte each match would have to grow into, on both sides.
+        let back = current.match_length - 1;
+        if self.window[next.match_start - back] != self.window[next.strstart - back] {
+            return;
+        }
+        // Overlapping matches are given up on rather than handled.
+        if next.match_start + next.match_length >= current.strstart {
+            return;
+        }
+
+        let mut c = *current;
+        let mut n = *next;
+        let limit = next.strstart.saturating_sub(MAX_DIST);
+        let mut match_at = n.match_start as isize - 1;
+        let mut orig_at = n.strstart as isize - 1;
+        let mut changed = 0;
+
+        while match_at >= 0
+            && orig_at >= 0
+            && self.window[match_at as usize] == self.window[orig_at as usize]
+        {
+            if c.match_length < 1
+                || n.strstart <= limit
+                || n.match_length >= 256
+                || n.match_start == 0
+            {
+                break;
+            }
+            n.strstart -= 1;
+            n.match_start -= 1;
+            n.match_length += 1;
+            c.match_length -= 1;
+            match_at -= 1;
+            orig_at -= 1;
+            changed += 1;
+            if match_at < 0 || orig_at < 0 {
+                break;
+            }
+        }
+
+        if changed == 0 {
+            return;
+        }
+        // Committed only when the current match has been consumed entirely. `orgstart` moves with
+        // it so the chain insertion that follows does not redo the span this just claimed.
+        if c.match_length <= 1 && n.match_length != 2 {
+            n.orgstart += 1;
+            *current = c;
+            *next = n;
+        }
+    }
+
+    /// Ported from zlib 1.2.13's `deflate_medium.c`, function `emit_match`. A "match" shorter than MIN_MATCH is a run of
+    /// literals rather than a match, which is how the function represents having found nothing.
+    fn emit_match(&mut self, mut m: Match) -> bool {
+        let mut flush = false;
+        if m.match_length < MIN_MATCH {
+            while m.match_length != 0 {
+                flush |= self.trees.tally_lit(self.window[m.strstart]);
+                self.lookahead -= 1;
+                m.strstart += 1;
+                m.match_length -= 1;
+            }
+            return flush;
+        }
+        flush |= self
+            .trees
+            .tally_dist(m.strstart - m.match_start, m.match_length - MIN_MATCH);
+        self.lookahead -= m.match_length;
+        flush
+    }
+
+    /// Ported from zlib 1.2.13's `deflate_medium.c`, function `insert_match`: hash the positions a match covers, so the
+    /// chains stay complete even though the match finder skipped over them.
+    ///
+    /// The `strstart >= orgstart` guard is what keeps the lookahead honest. A match carried over
+    /// from the previous iteration has already had part of its span inserted, and `orgstart`
+    /// remembers where that stopped.
+    fn insert_match(&mut self, mut m: Match) {
+        if self.lookahead <= m.match_length + MIN_MATCH {
+            return;
+        }
+        if m.match_length < MIN_MATCH {
+            while m.match_length != 0 {
+                m.strstart += 1;
+                m.match_length -= 1;
+                if m.match_length != 0 && m.strstart >= m.orgstart {
+                    self.insert_string(m.strstart);
+                }
+            }
+            return;
+        }
+        // Sixteen times `max_insert_length`, where `deflate_fast` uses one: this function is
+        // willing to pay much more for complete chains.
+        if m.match_length <= 16 * self.config.max_lazy && self.lookahead >= MIN_MATCH {
+            m.match_length -= 1;
+            loop {
+                m.strstart += 1;
+                if m.strstart >= m.orgstart {
+                    self.insert_string(m.strstart);
+                }
+                m.match_length -= 1;
+                if m.match_length == 0 {
+                    break;
+                }
+            }
+        } else {
+            m.strstart += m.match_length;
+            self.ins_h = self.window[m.strstart] as usize;
+            if m.strstart >= 1 {
+                self.insert_string(m.strstart - 1);
+            }
+        }
     }
 
     /// Ported from zlib's `deflate_slow`, used at levels 4 to 9: hold each match for one byte to

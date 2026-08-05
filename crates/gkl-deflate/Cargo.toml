@@ -10,3 +10,5 @@ description = "A deflate compressor reproducing GKL's bytes, ported from zlib"
 
 [dev-dependencies]
 flate2.workspace = true
+# Only to compare against the sha256 column the oracle recorded; nothing in the crate hashes.
+sha2 = "0.10"
