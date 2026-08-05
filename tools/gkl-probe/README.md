@@ -31,3 +31,18 @@ this column is igzip's SSE path.
 It is a **reference, not a golden**: nothing in the Rust tests reads it. Its only consumer is the
 `igzip-portability` CI job, which reruns the probe on a real x86-64 host and diffs. Question 2 is
 that diff.
+
+## Which backend a level reaches
+
+The probe measures *that* a level differs from the JDK, not *why*. The why is in the library, and
+decision 0029 corrects the inference 0028 drew from the numbers alone. Reproduce it with:
+
+```sh
+unzip -o gkl.jar -d jar
+S=jar/com/intel/gkl/native/libgkl_compression.so
+# the level branch: (level - 1) <= 1 goes to isal_deflate_stateless_init, else deflateInit2_
+llvm-objdump -d --start-address=0x53e0 --stop-address=0x5628 "$S"
+# Intel's zlib patches, absent from stock zlib
+llvm-nm "$S" | grep -E 'deflate_medium|slide_hash_sse|longest_match'
+strings "$S" | grep -m1 'deflate 1\.'
+```
