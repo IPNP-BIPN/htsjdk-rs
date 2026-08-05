@@ -586,6 +586,23 @@
           "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 16 rows, no corrections \u2014 to the golden. It corrected the port three times before a single row was compared: the prepended fileformat line, the version being a field rather than a line, and both promotion arms being no-ops."
         }
       ]
+    },
+    {
+      "id": "tribble-index",
+      "status": "oracle-backed",
+      "title": "The .idx file, and the blocks a query resolves to",
+      "harness": "tools/tribble-conformance",
+      "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant \u2014 16000 for one contig and 8000 for another in the same file \u2014 so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "TribbleIndexDump",
+          "golden": "crates/htsjdk-tribble/tests/data/tribble_index.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 29 rows. The port reads the two linear indexes byte for byte and refuses the interval-tree one rather than mis-parsing it, and answers 12 of the 18 queries \u2014 the other 6 belong to the index it refuses and are in the golden as a record of the reference rather than as a claim about the port. The .idx bytes carry a masked timestamp: indexedFileTS is the source file's modification time and was measured to change on every run, so a golden holding it would fail intermittently."
+        }
+      ]
     }
   ],
   "probes": [
