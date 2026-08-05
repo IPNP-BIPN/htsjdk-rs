@@ -12,7 +12,7 @@
 //! chr  mixed-linear         chr2 512000    2   10  2  67293,67311,67335
 //! ```
 //!
-//! And the ones where the same data produces two different index *types*:
+//! And the ones where the same data produces two different index *types*, each written in full:
 //!
 //! ```text
 //! idx  sparse-dynamic-seek  LinearIndex
@@ -32,9 +32,10 @@
 use std::io::Read;
 
 use htsjdk_tribble::index::TribbleIndex;
+use htsjdk_tribble::index::{INTERVAL_TREE, LINEAR};
 use htsjdk_tribble::index_write::{
-    check_ordering, BalanceApproach, ChosenIndex, DynamicIndexCreator, Feature, LinearIndexCreator,
-    DEFAULT_BIN_WIDTH,
+    check_ordering, BalanceApproach, BuiltIndex, DynamicIndexCreator, Feature,
+    IntervalIndexCreator, LinearIndexCreator, DEFAULT_BIN_WIDTH, DEFAULT_FEATURE_COUNT,
 };
 
 /// How each case was built, mirroring the dump's third argument.
@@ -158,12 +159,8 @@ fn row(text: &str, prefix: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// What a built case yields: the layout chosen, the contigs, and the header properties.
-type Built = (
-    ChosenIndex,
-    Vec<htsjdk_tribble::index::ChrIndex>,
-    Vec<(String, String)>,
-);
+/// What a built case yields: the index itself and the header properties.
+type Built = (BuiltIndex, Vec<(String, String)>);
 
 /// Build a case, returning either that or the refusal a row would carry.
 fn build(name: &str, how: How) -> Result<Built, String> {
@@ -174,7 +171,16 @@ fn build(name: &str, how: How) -> Result<Built, String> {
     check_ordering(&plain, "SOURCE").map_err(|error| error.message())?;
 
     match how {
-        How::IntervalTree => Err("interval tree".to_string()),
+        How::IntervalTree => {
+            let mut creator = IntervalIndexCreator::new(DEFAULT_FEATURE_COUNT);
+            for (feature, position) in &features {
+                creator.add_feature(feature, *position);
+            }
+            Ok((
+                BuiltIndex::IntervalTree(creator.finalize(final_position)),
+                Vec::new(),
+            ))
+        }
         How::Linear => {
             let mut creator = LinearIndexCreator::new(DEFAULT_BIN_WIDTH);
             for (feature, position) in &features {
@@ -182,7 +188,7 @@ fn build(name: &str, how: How) -> Result<Built, String> {
             }
             creator
                 .finalize(final_position, Vec::new())
-                .map(|contigs| (ChosenIndex::Linear, contigs, Vec::new()))
+                .map(|contigs| (BuiltIndex::Linear(contigs), Vec::new()))
                 .map_err(|error| error.message())
         }
         How::Dynamic(approach) => {
@@ -191,13 +197,9 @@ fn build(name: &str, how: How) -> Result<Built, String> {
                 creator.add_feature(feature, *position);
             }
             let properties = creator.properties();
-            let chosen = creator.chosen();
-            if chosen == ChosenIndex::IntervalTree {
-                return Err("interval tree".to_string());
-            }
             creator
                 .finalize(final_position)
-                .map(|(chosen, contigs)| (chosen, contigs, properties))
+                .map(|built| (built, properties))
                 .map_err(|error| error.message())
         }
     }
@@ -207,23 +209,13 @@ fn build(name: &str, how: How) -> Result<Built, String> {
 fn every_index_is_built_as_the_reference_builds_it() {
     let text = corpus();
     let mut compared = 0;
-    let mut refused = 0;
+    let mut trees = 0;
 
     for (label, name, how) in CASES {
         let golden_idx = row(&text, &format!("idx\t{label}\t"));
         let golden_err = row(&text, &format!("err\t{label}\t"));
 
         match build(name, *how) {
-            Err(message) if message == "interval tree" => {
-                // The dump built one; this port refuses to, and says so rather than producing
-                // plausible bytes. The golden still records which type won.
-                let idx = golden_idx.expect("an interval-tree case still produced a file");
-                assert!(
-                    idx.starts_with("IntervalTreeIndex\t"),
-                    "{label}: refused as an interval tree, but the reference chose {idx:.30}"
-                );
-                refused += 1;
-            }
             Err(message) => {
                 let golden = golden_err
                     .unwrap_or_else(|| panic!("{label}: the port refused and the golden did not"));
@@ -243,26 +235,46 @@ fn every_index_is_built_as_the_reference_builds_it() {
                 );
                 compared += 1;
             }
-            Ok((chosen, contigs, properties)) => {
-                assert_eq!(chosen, ChosenIndex::Linear, "{label}");
+            Ok((built, properties)) => {
                 let idx = golden_idx.unwrap_or_else(|| {
                     panic!("{label}: the port built a file and the golden did not")
                 });
                 let fields: Vec<&str> = idx.split('\t').collect();
-                assert_eq!(fields[0], "LinearIndex", "{label}: index type");
+                let expected_class = match built {
+                    BuiltIndex::Linear(_) => "LinearIndex",
+                    BuiltIndex::IntervalTree(_) => {
+                        trees += 1;
+                        "IntervalTreeIndex"
+                    }
+                };
+                assert_eq!(fields[0], expected_class, "{label}: index type");
                 let timestamp_offset: usize = fields[1].parse().expect("an offset");
                 let golden_bytes = base64_decode(fields[2]);
 
                 // The header facts about the run, taken from the golden and handed back, so what
                 // is compared is what this port decides.
-                let reference =
-                    TribbleIndex::read(&golden_bytes).expect("the golden parses as a linear index");
-                let mine = TribbleIndex {
-                    contigs,
-                    properties,
-                    ..reference.clone()
+                let reference = TribbleIndex::read(&golden_bytes).expect("the golden parses");
+                let mine = match built {
+                    BuiltIndex::Linear(contigs) => TribbleIndex {
+                        index_type: LINEAR,
+                        contigs,
+                        interval_contigs: Vec::new(),
+                        properties,
+                        ..reference.clone()
+                    },
+                    BuiltIndex::IntervalTree(interval_contigs) => TribbleIndex {
+                        index_type: INTERVAL_TREE,
+                        contigs: Vec::new(),
+                        interval_contigs,
+                        properties,
+                        ..reference.clone()
+                    },
                 };
-                let mut bytes = mine.write().expect("a linear index writes");
+                assert_eq!(
+                    mine.index_type, reference.index_type,
+                    "{label}: the port chose a different layout from the reference"
+                );
+                let mut bytes = mine.write().expect("an index writes");
                 assert!(
                     timestamp_offset + 8 <= bytes.len(),
                     "{label}: the timestamp offset is past the end"
@@ -287,8 +299,8 @@ fn every_index_is_built_as_the_reference_builds_it() {
     }
 
     // Named rather than implied: a run that compared nothing would otherwise pass.
-    assert_eq!(compared, 10, "cases compared byte for byte or by refusal");
-    assert_eq!(refused, 3, "cases the reference built as an interval tree");
+    assert_eq!(compared, 13, "cases compared byte for byte or by refusal");
+    assert_eq!(trees, 3, "cases the reference built as an interval tree");
 }
 
 /// The per-contig rows, checked on their own so a divergence names the contig rather than a byte
@@ -300,7 +312,7 @@ fn every_contig_carries_the_width_the_optimizer_chose() {
     let mut compared = 0;
 
     for (label, name, how) in CASES {
-        let Ok((_, contigs, _)) = build(name, *how) else {
+        let Ok((BuiltIndex::Linear(contigs), _)) = build(name, *how) else {
             continue;
         };
         for contig in &contigs {
