@@ -141,13 +141,10 @@ jobs:
             suites: "mateinfo percentile fastmath-exp gamma-erf-normal saddle-point"
           - group: oracle-backed
             index: "8/8"
-            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write"
+            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "cram-varint"
     steps:
       - uses: actions/checkout@v4
 

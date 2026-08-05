@@ -676,26 +676,18 @@
     },
     {
       "id": "cram-varint",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "ITF8 and LTF8, the integers CRAM is measured in",
       "harness": "tools/cram-conformance",
       "why": "The floor of H.3. A container header is a run of ITF8s, a slice header is a run of ITF8s, and a compression header's encoding parameters are ITF8s inside a byte array, so nothing above them can be checked until they are. Two properties are not in the specification. THE FIVE-BYTE ITF8 STORES FOUR BITS TWICE: the writer puts (value >> 4) & 0xFF in byte four and value & 0xFF in byte five, and the reader takes byte four whole while masking byte five to its low nibble, so f000000112 and f0000001f2 both read 18 and a stream whose two copies disagree resolves silently to byte four's. A port that reads the fifth byte whole answers differently on exactly those streams. AND A TRUNCATED STREAM IS A NUMBER, NOT A REFUSAL: InputStream.read() returns -1 at end of stream and nothing checks it after the first byte, so the two-byte form 80 reads -1 and the five-byte form f000 reads -1. Only a stream empty at the FIRST byte throws, and it throws RuntimeEOFException with a null message. So a truncated CRAM does not fail here, it produces a number. Reproducing the refusal a port would naturally add would be the divergence. Negative ints also round-trip through the five-byte form, so \"unsigned\" in the method name is a misnomer the type does not carry.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 63,
-      "expect_contains": [
-        "itf8read\tfive-byte-agreeing\tf000000112\t18",
-        "itf8read\tfive-byte-nibble-disagrees\tf0000001f2\t18",
-        "itf8read\ttruncated-two\t80\t-1",
-        "itf8read\tempty\t-\tE:htsjdk.samtools.util.RuntimeEOFException:null",
-        "itf8\t-1\tffffffffff\t40\t-1"
-      ],
       "cases": [
         {
           "dump": "CramVarintDump",
-          "golden": null,
-          "why": "Awaiting the artefact from a real x86-64 CI run: decision 0008 forbids a golden written on a developer machine."
+          "golden": "crates/htsjdk-cram/tests/data/cram_varint.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #103. 63 rows: 25 ITF8 round trips with their bytes and the bit count the writer returns, 23 LTF8 round trips, and 15 hand-made streams the writer would never produce. The last group is what the suite exists for: two streams differing in one byte that read the same, and truncations that read -1 rather than failing."
         }
       ]
     }
