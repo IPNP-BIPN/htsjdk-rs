@@ -56,7 +56,13 @@ pub const RR: &[u8; 2] = b"RR";
 pub const SM: &[u8; 2] = b"SM";
 pub const TD: &[u8; 2] = b"TD";
 
-use crate::varint::{read_unsigned_itf8, RuntimeEof};
+use crate::varint::{read_unsigned_itf8, write_unsigned_itf8, RuntimeEof};
+
+/// [`write_unsigned_itf8`] returns the bytes and the bit count htsjdk's writer returns; only the
+/// bytes are wanted here.
+fn push_itf8(value: i32, out: &mut Vec<u8>) {
+    out.extend_from_slice(&write_unsigned_itf8(value).0);
+}
 
 /// What a preservation map is refused with.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +191,35 @@ impl PreservationMap {
         Ok(out)
     }
 
+    /// The map's own bytes, in htsjdk's write order and with its constant count.
+    pub fn write(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_itf8(WRITTEN_MAP_SIZE, &mut out);
+
+        out.extend_from_slice(RN);
+        out.push(u8::from(self.preserve_read_names));
+        out.extend_from_slice(AP);
+        out.push(u8::from(self.ap_delta));
+        out.extend_from_slice(RR);
+        out.push(u8::from(self.reference_required));
+        out.extend_from_slice(SM);
+        out.extend_from_slice(&self.substitution_matrix);
+        out.extend_from_slice(TD);
+        let dictionary = dictionary_to_bytes(&self.tag_id_dictionary);
+        push_itf8(dictionary.len() as i32, &mut out);
+        out.extend_from_slice(&dictionary);
+        out
+    }
+
+    /// The map with the ITF8 length prefix that carries it in the compression header.
+    pub fn write_prefixed(&self) -> Vec<u8> {
+        let map = self.write();
+        let mut out = Vec::with_capacity(map.len() + 5);
+        push_itf8(map.len() as i32, &mut out);
+        out.extend_from_slice(&map);
+        out
+    }
+
     /// Read the map from the head of a compression header's content, past its length prefix.
     /// Returns the map and how many bytes it occupied, prefix included.
     pub fn read_prefixed(content: &[u8]) -> Result<(Self, usize), PreservationMapError> {
@@ -219,18 +254,22 @@ pub fn parse_dictionary(bytes: &[u8]) -> Vec<Vec<[u8; 3]>> {
     groups
 }
 
+/// `CompressionHeader.dictionaryToByteArray`: each group's ids in order, then a zero.
+pub fn dictionary_to_bytes(groups: &[Vec<[u8; 3]>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for group in groups {
+        for id in group {
+            out.extend_from_slice(id);
+        }
+        out.push(0);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::varint::write_unsigned_itf8;
 
-    /// `write_unsigned_itf8` returns the bytes and the bit count htsjdk's writer returns; the
-    /// tests below build maps by hand and only want the bytes.
-    fn push_itf8(value: i32, out: &mut Vec<u8>) {
-        out.extend_from_slice(&write_unsigned_itf8(value).0);
-    }
-
-    /// Only 1 is true, and nothing else is an error.
     /// Only 1 is true, and nothing else is an error.
     #[test]
     fn a_boolean_is_one_rather_than_non_zero() {
@@ -294,5 +333,18 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert!(groups[0].is_empty());
         assert_eq!(groups[1], vec![*b"MDZ", *b"NMc", *b"XXf"]);
+        assert_eq!(dictionary_to_bytes(&groups), b"\x00MDZNMcXXf\x00");
+    }
+
+    /// The count is written whatever the map holds, so a round trip through `write` always says 5.
+    #[test]
+    fn the_written_count_is_a_constant() {
+        let map = PreservationMap {
+            tag_id_dictionary: vec![Vec::new()],
+            ..PreservationMap::default()
+        };
+        let bytes = map.write();
+        assert_eq!(bytes[0], WRITTEN_MAP_SIZE as u8);
+        assert_eq!(PreservationMap::read(&bytes), Ok(map));
     }
 }
