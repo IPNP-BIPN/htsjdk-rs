@@ -147,13 +147,10 @@ jobs:
             suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
           - group: oracle-backed
             index: "10/10"
-            suites: "cram-substitution-matrix cram-encoding-map"
+            suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map"
           - group: unchecked
             index: "1/1"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            suites: "cram-tag-encoding-map"
     steps:
       - uses: actions/checkout@v4
 
