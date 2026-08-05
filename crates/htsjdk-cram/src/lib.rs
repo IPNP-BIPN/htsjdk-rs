@@ -7,4 +7,5 @@
 pub mod block;
 pub mod container;
 pub mod rans;
+pub mod rans_order1;
 pub mod varint;
