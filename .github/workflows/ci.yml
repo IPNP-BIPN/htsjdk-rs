@@ -307,3 +307,92 @@ jobs:
           print(f"\nDecision 0007 outcome: pow agrees between the emulated corpus and this "
                 f"real host ({vendor}). Other vendors remain untested.")
           PY
+
+  igzip-portability:
+    name: "Decision 0028: does igzip emit the same bytes on every CPU?"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the host CPU
+        # The independent variable. `libgkl_compression.so` dispatches on CPU features at load
+        # time and ships AVX2 and AVX512 kernels; the committed reference column was produced
+        # under Rosetta, which implements no AVX at all. If the two columns agree, igzip's output
+        # does not depend on which kernel ran.
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          grep -m1 'flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|avx2|avx512f|sse4_2)$' | sort -u | tr '\n' ' '
+          echo
+
+      - name: Build the oracle image
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+
+      - name: Compress on real silicon
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/gkl-probe":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/GklProbe.java . && javac -cp "$ORACLE_CP" -d . GklProbe.java \
+             && java -cp "$ORACLE_CP":. GklProbe' > /tmp/gkl-real.txt
+          head -3 /tmp/gkl-real.txt
+
+      - name: Diff every hash against the emulated column
+        # Two questions at once. Whether GKL differs from the JDK at all is decision 0028's
+        # first half and is re-asserted here so a GKL version bump that quietly dropped igzip
+        # would be caught. Whether the hashes match the emulated run is 0028's open half, and
+        # it decides whether H.4 has a fixed target to port to.
+        run: |
+          python3 - <<'PY'
+          import sys
+          def load(path):
+              rows = {}
+              for line in open(path):
+                  parts = line.rstrip('\n').split('\t')
+                  # env and cpu describe the run rather than the result, and must differ.
+                  if parts[0] in ('deflate', 'bgzf', 'fixture', 'default-bgzf-level'):
+                      rows[tuple(parts[:-2] if parts[0] in ('deflate', 'bgzf') else parts[:-1])] = parts[-1]
+              return rows
+          emulated = load('tools/gkl-probe/emulated.txt')
+          real = load('/tmp/gkl-real.txt')
+          if not emulated or not real:
+              print("FAIL: one of the two columns is empty"); sys.exit(1)
+          missing = set(emulated) ^ set(real)
+          if missing:
+              print(f"FAIL: the two runs compared different things: {sorted(missing)[:5]}")
+              sys.exit(1)
+          differing = sorted(k for k in emulated if emulated[k] != real[k])
+          # First half: is this GKL still igzip below level 7 and zlib at or above it?
+          #
+          # Stated per level rather than per row on purpose. "GKL differs from the JDK below 7"
+          # is not true of every input: the `runs` fixture compresses identically at levels 3
+          # and 4, measured, because two match-finders can agree on data that simple. The claim
+          # is asserted on `acgt`, which is the BAM-shaped fixture decision 0028's table was
+          # measured on. The other direction admits no exceptions: at 7 and above GKL hands off
+          # to the zlib in the same shared object, so EVERY row must agree.
+          igzip_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl'
+                        and k[1] == 'acgt' and int(k[2]) < 7
+                        and real[k] == real[(k[0], k[1], k[2], 'jdk')]]
+          if igzip_gone:
+              print(f"FAIL: on the acgt fixture GKL matched the JDK at level(s) "
+                    f"{sorted(int(k[2]) for k in igzip_gone)}. Either the native library did not "
+                    f"load or this GKL no longer routes through igzip, and decision 0028's "
+                    f"measurement no longer describes it.")
+              sys.exit(1)
+          zlib_gone = [k for k in real if k[0] == 'deflate' and k[3] == 'gkl' and int(k[2]) >= 7
+                       and real[k] != real[(k[0], k[1], k[2], 'jdk')]]
+          if zlib_gone:
+              print(f"FAIL: GKL no longer matches the JDK at levels 7 to 9 "
+                    f"({len(zlib_gone)} rows). Decision 0028 rests on those levels needing no "
+                    f"port at all; they now need one.")
+              sys.exit(1)
+          print(f"{len(emulated)} rows compared, {len(differing)} differing")
+          if differing:
+              for key in differing[:10]:
+                  print(f"  {'/'.join(key)}: emulated={emulated[key][:16]} real={real[key][:16]}")
+              print(f"\nDecision 0028 outcome: igzip's output DEPENDS ON THE CPU. There is no "
+                    f"single byte sequence to port to, and H.4 belongs with Math.pow in decision "
+                    f"0007 rather than in the reproducible column.")
+              sys.exit(1)
+          print("\nDecision 0028 outcome: every hash agrees between Rosetta (no AVX) and this "
+                "real host. igzip's output is a property of the algorithm, not of the kernel that "
+                "ran it, so H.4 has a fixed target. Other microarchitectures remain untested.")
+          PY

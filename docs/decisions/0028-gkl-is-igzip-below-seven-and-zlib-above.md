@@ -49,13 +49,14 @@ The line to notice is that **htsjdk's default BGZF level is 5**, so every BAM GA
 
 **Levels 7 to 9 need nothing.** GKL is byte-identical to the JDK's zlib there, which this port
 already reproduces. A byte claim at those levels is not deflater-dependent at all, and the warning
-this milestone carries — "name the deflater it is a claim about" — does not apply to them.
+this milestone carries ("name the deflater it is a claim about") does not apply to them.
 
 **Levels 1 to 6 are igzip**, and level 5 is the one that matters because it is the default.
 
 **None of it is licence-blocked.** ISA-L is BSD-3-Clause, GKL is MIT, zlib is the zlib licence.
 This is the first place in the programme where the reference implementation of a byte-deciding
-component is *permissively* licensed — decisions 0013 and 0014 are about the opposite situation.
+component is *permissively* licensed, where decisions 0013 and 0014 are about the opposite
+situation.
 So both routes are open: linking ISA-L, or porting it. That is a materially different position
 from `Math.exp`, where the only exact implementation is GPL2 and the milestone is stuck by law
 rather than by effort.
@@ -70,11 +71,31 @@ rather than by effort.
 And the accompanying warning is narrowed: a byte claim over BGZF at levels 7 to 9 need not name a
 deflater, because there is nothing to choose between there.
 
-## What was not measured
+## The second question, and how it is answered
 
 Whether igzip's output depends on the CPU's instruction set. The library ships AVX2 kernels
-(`igzip/adler32_avx2_4.s`), and a deflate implementation that dispatches on CPU features could
-produce different bytes on different silicon — which would put igzip in the same category as
-`Math.pow` in decision 0007 rather than in the reproducible one. **That question has to be settled
-before any igzip byte claim, and it is settled the same way 0007 settled `pow`: regenerate on a
-second machine and diff.**
+(`igzip/adler32_avx2_4.s`) and dispatches on CPU features at load time, and a deflater whose
+match-finder differs per kernel would produce different bytes on different silicon, which would
+put igzip in the same category as `Math.pow` in decision 0007 rather than in the reproducible one.
+There would then be no fixed target to port to, and the same BAM written on two machines would
+differ. That is a larger result than any amount of porting, so it is settled first, and the same
+way 0007 settled `pow`: regenerate on a second machine and diff.
+
+`tools/gkl-probe/emulated.txt` is the first machine. It was produced on Apple Silicon, where
+Docker translates `linux/amd64` through Rosetta. Its `cpu` line reads `VirtualApple @ 2.50GHz`,
+and Rosetta implements no AVX, so that column is igzip's SSE path. The `igzip-portability` CI job
+is the second machine: it reruns the probe in the same pinned image on a real x86-64 GitHub
+runner, prints that host's CPU and AVX flags, and diffs every hash.
+
+The probe hashes rather than measures lengths, because two deflate streams of equal length are not
+equal streams: the `random` fixture at level 5 produces 60074 bytes through both deflaters and
+two different hashes, so a length comparison would have reported an agreement it never checked.
+It also compares whole BGZF streams and not only raw deflate output, since a BAM is a sequence of
+gzip members with CRCs and block lengths, and a differing block-size decision would not show up in
+the deflate comparison at all.
+
+The job carries decision 0028's own first half as an assertion, so a GKL version bump that quietly
+stopped routing through igzip fails rather than silently invalidating this record. Stated per level
+rather than per row: at levels 7 to 9 **every** row must match the JDK, but below 7 the claim is
+asserted on the `acgt` fixture alone, because the `runs` fixture compresses identically at levels 3
+and 4, measured rather than assumed. Two match-finders can agree on data that simple.
