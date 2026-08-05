@@ -362,11 +362,168 @@ pub fn compress(input: &[u8], requested: Order) -> Result<Vec<u8>, RansError> {
     }
 }
 
+/// One symbol's range, as the decoder holds it.
+#[derive(Debug, Clone, Copy, Default)]
+struct DecodingSymbol {
+    start: i32,
+    freq: i32,
+}
+
+impl DecodingSymbol {
+    /// `RANSDecodingSymbol.advanceSymbolStep`.
+    ///
+    /// The subtraction cannot go below zero on a well-formed stream, because the cumulative
+    /// frequency it was looked up by lies in `[start, start + freq)`. It wraps rather than panics
+    /// so a malformed stream produces a wrong answer where htsjdk produces a wrong answer, instead
+    /// of an abort where htsjdk has none.
+    fn advance_step(&self, r: u64) -> u64 {
+        let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
+        ((self.freq as u64) * (r >> TOTAL_FREQ_SHIFT) + (r & mask)).wrapping_sub(self.start as u64)
+    }
+}
+
+/// `Utils.RANSDecodeRenormalize4x8`: pull bytes until the state is back above the lower bound.
+fn renormalise(r: u64, blob: &[u8], at: &mut usize) -> Result<u64, RansError> {
+    let mut r = r;
+    while r < LOWER_BOUND {
+        let byte = *blob.get(*at).ok_or(RansError::Truncated)?;
+        *at += 1;
+        r = (r << 8) | u64::from(byte);
+    }
+    Ok(r)
+}
+
+/// The frequency table, and the reverse lookup that maps a cumulative frequency back to a symbol.
+struct Stats {
+    symbols: [DecodingSymbol; NUMBER_OF_SYMBOLS],
+    reverse_lookup: Vec<u8>,
+}
+
+/// `RANS4x8Decode.readStatsOrder0`.
+///
+/// The run marker is a peek: when the next symbol byte is the current symbol plus one, the byte
+/// after it is a run length. Nothing in the stream says so.
+fn read_stats_order0(bytes: &[u8], at: &mut usize) -> Result<Stats, RansError> {
+    let next = |at: &mut usize| -> Result<u8, RansError> {
+        let byte = *bytes.get(*at).ok_or(RansError::Truncated)?;
+        *at += 1;
+        Ok(byte)
+    };
+
+    let mut stats = Stats {
+        symbols: [DecodingSymbol::default(); NUMBER_OF_SYMBOLS],
+        reverse_lookup: vec![0u8; TOTAL_FREQ as usize],
+    };
+    let mut rle = 0i32;
+    let mut cumulative = 0i32;
+    let mut symbol = next(at)? as usize;
+    loop {
+        let first = next(at)?;
+        let frequency = if first >= 0x80 {
+            (i32::from(first & 0x7F) << 8) | i32::from(next(at)?)
+        } else {
+            i32::from(first)
+        };
+
+        stats.symbols[symbol] = DecodingSymbol {
+            start: cumulative,
+            freq: frequency,
+        };
+        let from = cumulative.max(0) as usize;
+        let to = (cumulative + frequency).max(0) as usize;
+        if to > stats.reverse_lookup.len() {
+            return Err(RansError::Truncated);
+        }
+        stats.reverse_lookup[from..to].fill(symbol as u8);
+        cumulative += frequency;
+
+        let peek = usize::from(*bytes.get(*at).ok_or(RansError::Truncated)?);
+        if rle == 0 && symbol + 1 == peek {
+            symbol = next(at)? as usize;
+            rle = i32::from(next(at)?);
+        } else if rle != 0 {
+            rle -= 1;
+            symbol += 1;
+        } else {
+            symbol = next(at)? as usize;
+        }
+        if symbol == 0 {
+            break;
+        }
+    }
+    Ok(stats)
+}
+
+/// `RANS4x8Decode.uncompress`, order 0.
+///
+/// An empty input decodes to an empty output, which is the counterpart of an empty input
+/// compressing to nothing.
+pub fn uncompress(input: &[u8]) -> Result<Vec<u8>, RansError> {
+    if input.is_empty() {
+        return Ok(Vec::new());
+    }
+    if input.len() < PREFIX_LENGTH {
+        return Err(RansError::Truncated);
+    }
+
+    let order =
+        Order::from_int(i32::from(input[0])).ok_or(RansError::UnknownOrder(i32::from(input[0])))?;
+    let compressed_size = i32::from_le_bytes(input[1..5].try_into().expect("four bytes"));
+    // htsjdk compares against `remaining() - 4` after reading the order and the compressed length,
+    // which is the whole input less the nine-byte prefix.
+    if compressed_size as i64 != (input.len() - PREFIX_LENGTH) as i64 {
+        return Err(RansError::BadLength);
+    }
+    let out_size = i32::from_le_bytes(input[5..9].try_into().expect("four bytes")).max(0) as usize;
+    if order == Order::One {
+        return Err(RansError::OrderOneNotPorted);
+    }
+
+    let mut at = PREFIX_LENGTH;
+    let stats = read_stats_order0(input, &mut at)?;
+
+    let mut rans = [0u64; 4];
+    for state in rans.iter_mut() {
+        let bytes: [u8; 4] = input
+            .get(at..at + 4)
+            .ok_or(RansError::Truncated)?
+            .try_into()
+            .expect("four bytes");
+        *state = u64::from(u32::from_le_bytes(bytes));
+        at += 4;
+    }
+
+    let mut out = vec![0u8; out_size];
+    let end = out_size & !3;
+    let mut i = 0usize;
+    while i < end {
+        for lane in 0..4 {
+            let symbol = stats.reverse_lookup[(rans[lane] & (TOTAL_FREQ as u64 - 1)) as usize];
+            out[i + lane] = symbol;
+        }
+        for lane in 0..4 {
+            let symbol = out[i + lane];
+            rans[lane] = stats.symbols[symbol as usize].advance_step(rans[lane]);
+            rans[lane] = renormalise(rans[lane], input, &mut at)?;
+        }
+        i += 4;
+    }
+
+    // The tail, decoded from states 0, 1 and 2 in that order, which is where the encoder put it.
+    for lane in 0..(out_size & 3) {
+        let symbol = stats.reverse_lookup[(rans[lane] & (TOTAL_FREQ as u64 - 1)) as usize];
+        out[end + lane] = symbol;
+        let advanced = stats.symbols[symbol as usize].advance_step(rans[lane]);
+        rans[lane] = renormalise(advanced, input, &mut at)?;
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The order a caller asks for is not the order that gets written.
     /// The order a caller asks for is not the order that gets written.
     #[test]
     fn order_one_is_refused_below_four_bytes() {
@@ -379,6 +536,12 @@ mod tests {
         }
         assert_eq!(order_used(Order::One, 4), Order::One);
         assert_eq!(order_used(Order::Zero, 4), Order::Zero);
+    }
+
+    #[test]
+    fn an_empty_input_produces_no_bytes_at_all() {
+        assert!(compress_order0(&[]).is_empty());
+        assert_eq!(uncompress(&[]), Ok(Vec::new()));
     }
 
     /// One symbol takes the whole table, so its complement frequency is zero, the state never
@@ -422,4 +585,52 @@ mod tests {
         assert_eq!(out, vec![5, 0x88, 0x00, 6, 0, 0x88, 0x00, 0]);
     }
 
+    #[test]
+    fn every_shape_round_trips() {
+        let mut inputs: Vec<Vec<u8>> = vec![
+            b"A".to_vec(),
+            b"AB".to_vec(),
+            b"ACG".to_vec(),
+            b"ACGT".to_vec(),
+            vec![b'A'; 1000],
+            (0..=255u8).collect(),
+        ];
+        for length in [1000, 1001, 1002, 1003] {
+            inputs.push(
+                b"ACGT"
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .take(length)
+                    .collect::<Vec<u8>>(),
+            );
+        }
+        let mut seed = 0x1234_5678u64;
+        let noise: Vec<u8> = (0..10_000)
+            .map(|_| {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (seed >> 33) as u8
+            })
+            .collect();
+        inputs.push(noise);
+
+        for input in inputs {
+            let compressed = compress_order0(&input);
+            assert_eq!(
+                uncompress(&compressed).map_err(|e| e.message()),
+                Ok(input.clone()),
+                "{} bytes",
+                input.len()
+            );
+        }
+    }
+
+    #[test]
+    fn a_length_that_disagrees_with_the_stream_is_refused() {
+        let mut compressed = compress_order0(b"ACGTACGT");
+        compressed[1] = compressed[1].wrapping_add(1);
+        assert_eq!(uncompress(&compressed), Err(RansError::BadLength));
+    }
 }
