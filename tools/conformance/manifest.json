@@ -741,6 +741,29 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31039805225, the golden-pending run of htsjdk-rs #114. 1782 rows over eighteen inputs: 18 input digests, 18 compressed streams by length and digest, 15 of those whole in hex, 17 prefixes, 822 normalised frequencies beside the raw counts they came from, 17 frequency tables as bytes, 822 encoding symbols field by field, 17 state quadruples, 18 round trips and 18 order decisions. The three largest streams travel as a digest alone; the digest still fails on one wrong byte. The inputs are rebuilt in the Rust test rather than carried here, and the input digests are what say the reconstruction did not drift."
         }
       ]
+    },
+    {
+      "id": "cram-rans-order1",
+      "status": "golden-pending",
+      "title": "rANS 4x8 order 1, the same codec over a different arithmetic",
+      "harness": "tools/cram-conformance",
+      "why": "cram-rans pinned order 0. Order 1 is not order 0 with more tables: five things change and three are not in the specification. THE FREQUENCY TABLE COUNTS THREE BYTES THAT ARE NOT BIGRAMS, because each of the four lanes starts with context 0 and only the first lane's first byte actually follows nothing, so calcFrequenciesOrder1 adds F[0][x] for the byte at each quarter boundary and adds 3 to T[0]. Measured on the four bytes ACGT: context 0 ends up holding A, C, G and T at 1024 apiece, so the table says that after nothing C is exactly as likely as A, which the input never shows, and a port that counts only the bigrams it can see produces a different table on every input. THE NORMALISATION IS FLOATING POINT WHERE ORDER 0'S IS FIXED POINT: p = 4096.0 / T[i] then F[i][j] *= p, a compound assignment on an int that truncates toward zero, so one class holds two arithmetics. THE FREQUENCY TABLE HAS TWO LEVELS OF RUN LENGTH, one over contexts and one over symbols within a context, each inferred by the reader rather than signalled. A FREQUENCY BYTE OF ZERO MEANS 4096 ON THE WAY IN: readStatsOrder1 has `if (D[i].frequencies[j] == 0) D[i].frequencies[j] = TOTAL_FREQ;` and readStatsOrder0 has no such line, so it is a READER-ONLY rule no input can produce, measured on a five-byte table built by hand. AND THE FOUR LANES READ FOUR CONTIGUOUS QUARTERS rather than four interleaved positions, which is why the contexts have to be seeded and why the remainder belongs to the last lane alone.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 876,
+      "expect_contains": [
+        "quarter\tfour-bytes\t1\t1\t2\t3\t67\t71\t84",
+        "norm\tfour-bytes\t0\t67\t1\t1024",
+        "zerofreq\t0\t65\t4096",
+        "prefix\tfour-bytes\t1\t"
+      ],
+      "cases": [
+        {
+          "dump": "CramRansOrder1Dump",
+          "golden": null
+        }
+      ]
     }
   ],
   "probes": [
