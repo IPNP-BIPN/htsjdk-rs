@@ -144,7 +144,7 @@ jobs:
             suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: oracle-backed
             index: "9/9"
-            suites: "cram-container"
+            suites: "cram-container cram-block"
           - group: unchecked
             index: "1/1"
             suites: "format"
