@@ -778,24 +778,18 @@
     },
     {
       "id": "cram-substitution-matrix",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The substitution matrix, and the comparator that loses to an int",
       "harness": "tools/cram-conformance",
       "why": "cram-preservation-map measured the SM key as five bytes and left them opaque; this is what they mean. Each byte packs four two-bit codes, one per possible substitute of that reference base, and the codes are RANKS by observed frequency, so the commonest substitution gets code 0 and the shortest ITF8. Five things are decisions rather than layout. THE SORT IS RUN TWICE AND THE SECOND RUN IS A SORT BY ORDINAL IN DISGUISE: substitutionCodeVector sorts by frequency, writes each rank, ZEROES EVERY FREQUENCY and sorts again with the same comparator, which now falls through to the ordinal tie-break on every pair, so a port that sorts once and packs in sorted order puts the right codes in the wrong slots. THE COMPARATOR SUBTRACTS TWO LONGS AND CASTS TO INT, so two frequencies whose difference is a non-zero multiple of 2^32 compare EQUAL: measured, with C substituted 4294967296 times and nothing else substituted at all, reference base G packs 27 in which C ranks SECOND behind a substitution that never happened, and one more occurrence packs 75 in which C ranks first. A LOWER CASE REFERENCE BASE CAN BE DECODED BUT NOT ENCODED, and N IS THE ONE BASE WITH NO LOWER CASE TWIN because the unrolled constructor's arraycopy has no counterpart for it. AND base's FAILURE MESSAGE BLAMES THE REFERENCE BASE rather than the code, which is the argument that was actually wrong. THE DEFAULT MATRIX IS NOT ZEROES: with nothing observed every frequency ties, the ordinal order wins, and each byte is 0x1b.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 122,
-      "expect_contains": [
-        "vector\tall-zero\tA\t0,0,0,0,0\t27\t",
-        "vector\tdifference-is-two-to-the-32\tG\t0,4294967296,0,0,0\t27\t",
-        "vector\tdifference-is-two-to-the-32-plus-one\tG\t0,4294967297,0,0,0\t75\t",
-        "lowercase\t1b1b1b1b1b\tN\t0,0,0,0"
-      ],
       "cases": [
         {
           "dump": "CramSubstitutionMatrixDump",
-          "golden": null
+          "golden": "crates/htsjdk-cram/tests/data/cram_substitution_matrix.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31047158077, the golden-pending run of htsjdk-rs #119. 122 rows: 35 packed code vectors with the forward lookup each one filled, over seven frequency shapes and five reference bases; 40 decoded rows over four serialized matrices, upper case and lower; 27 answers from code and 18 from base across nine reference bases including zero, minus one and two lower case ones; the three sizes; and toString. Messages are escaped rather than raw because Java formats an invalid base with %c, so they carry a NUL and a U+FFFF."
         }
       ]
     }
