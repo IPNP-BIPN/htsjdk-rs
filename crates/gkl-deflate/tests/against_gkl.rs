@@ -139,10 +139,87 @@ fn byte_identical_to_gkl_at_levels_three_to_nine() {
     );
 }
 
+/// Levels 1 and 2, which go through ISA-L rather than through a port of it.
+///
+/// This is the test that makes linking safe rather than hopeful. ISA-L falls back to its readable
+/// C when it is built without an assembler or run on a CPU without SSE4.2, and that C emits
+/// **different bytes** (decision 0034: 19749 where the assembly gives 19044). A round-trip test
+/// would pass in that state and a length check would too. Comparing sha256 against the column the
+/// real library produced in the pinned container is what fails instead.
+///
+/// Both Java levels are checked, because GKL producing identical bytes for them is a claim about
+/// the level not being passed through, not an assumption to inherit.
+#[cfg(feature = "isal")]
 #[test]
-#[should_panic(expected = "igzip")]
-fn levels_one_and_two_are_refused_rather_than_guessed() {
-    gkl_deflate::deflate_gkl(b"anything", 1);
+fn levels_one_and_two_go_through_isal_and_match_gkl() {
+    if !gkl_deflate::igzip_available() {
+        // A skip on a host that *should* be able to prove it is a failure, not a skip.
+        //
+        // Without this, the two outcomes are indistinguishable from outside: a CI run that
+        // compared eight fixtures and a CI run that quietly compared none both report a green
+        // test. Since the comparison exists precisely because ISA-L can be silently wrong, an
+        // untested green here would be the same defect one level up.
+        //
+        // x86-64 with SSE4.2 is the condition under which decision 0033 says the kernels run, so
+        // it is the condition under which the canary must pass. If it does not, the build lost
+        // its assembler.
+        #[cfg(target_arch = "x86_64")]
+        assert!(
+            !std::arch::is_x86_feature_detected!("sse4.2"),
+            "this host is x86-64 with SSE4.2, so ISA-L should reproduce GKL and does not. The \
+             likeliest cause is a build without nasm, which leaves ISA-L on its readable C."
+        );
+        // Anywhere else the refusal is the correct behaviour and is asserted by the next test.
+        println!("gkl-deflate: igzip unavailable on this host; the refusal is tested instead");
+        return;
+    }
+    let (_, outputs) = recorded();
+    let mut compared = 0usize;
+    let mut failures = Vec::new();
+    for (name, data) in fixtures() {
+        for level in 1..=2usize {
+            let ours = sha256(&gkl_deflate::deflate_gkl(&data, level));
+            let theirs = &outputs[&(name.to_string(), level)];
+            compared += 1;
+            if &ours != theirs {
+                failures.push(format!("{name} level {level}: ours {ours}, GKL {theirs}"));
+            }
+        }
+    }
+    // Asserted rather than printed, because `cargo test` captures output and a count nobody reads
+    // cannot distinguish "compared eight" from "compared none".
+    assert_eq!(
+        compared, 8,
+        "the igzip comparison ran on fewer pairs than it claims"
+    );
+    println!("gkl-deflate: {compared} (fixture, level) pairs compared against GKL's igzip");
+    assert!(
+        failures.is_empty(),
+        "{} of {compared} differ. A build without nasm, or a CPU without SSE4.2, produces exactly \
+         this failure:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// A build that cannot reproduce GKL refuses those levels rather than approximating them.
+///
+/// Three states reach this: the crate built without the `isal` feature, ISA-L built without an
+/// assembler, and any host whose CPU has no kernels to dispatch to. All three still produce valid
+/// deflate, which is what makes the refusal worth testing: the failure mode being guarded against
+/// is a right-looking wrong answer, not a crash.
+#[test]
+fn a_build_that_cannot_reproduce_gkl_refuses_rather_than_approximates() {
+    if gkl_deflate::igzip_available() {
+        println!("gkl-deflate: igzip available; the byte comparison covers it");
+        return;
+    }
+    let refused = std::panic::catch_unwind(|| gkl_deflate::deflate_gkl(b"anything", 1)).is_err();
+    assert!(
+        refused,
+        "level 1 answered on a host that cannot reproduce GKL's igzip"
+    );
+    println!("gkl-deflate: igzip unavailable, and levels 1 and 2 refuse");
 }
 
 /// The other branch of GKL's own CPU check.

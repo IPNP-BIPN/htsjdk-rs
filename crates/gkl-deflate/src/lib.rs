@@ -39,9 +39,30 @@
 //! answering with zlib's bytes, which would be a wrong answer that looks like a right one.
 
 mod deflate;
+#[cfg(feature = "isal")]
+mod igzip;
+#[cfg(feature = "isal")]
+mod igzip_canary;
 mod trees;
 
 pub use deflate::Flavour;
+
+/// Whether `deflate_gkl` can answer levels 1 and 2 on this build and this host.
+///
+/// False when the crate is built without the `isal` feature, and false when ISA-L is present but
+/// fell back to its readable C, which happens without an assembler, without SSE4.2, and on any
+/// non-x86 architecture. In that state the library still returns valid deflate; it is simply not
+/// GKL's, so those levels refuse. Callers that would rather degrade than fail can ask first.
+pub fn igzip_available() -> bool {
+    #[cfg(feature = "isal")]
+    {
+        igzip::usable()
+    }
+    #[cfg(not(feature = "isal"))]
+    {
+        false
+    }
+}
 
 /// Compress `data` as a raw deflate stream the way `java.util.zip.Deflater` does, which is the
 /// `nowrap` mode BGZF blocks use.
@@ -73,12 +94,30 @@ pub fn deflate_flavour(data: &[u8], level: usize, flavour: Flavour) -> Vec<u8> {
 
 /// Compress `data` the way GKL's `IntelDeflater` does, on a CPU reporting SSE4.2.
 ///
-/// `level` is **3 to 9**. Levels 1 and 2 are igzip inside GKL, not zlib, and are not implemented;
-/// answering them with zlib's bytes would be a wrong answer wearing a right one's shape.
+/// `level` is 1 to 9. Levels 1 and 2 go through ISA-L itself rather than through a port of it, for
+/// the reason decision 0034 gives: ISA-L's own readable C finds different matches from the
+/// assembly kernels it ships, so translating the C would answer confidently and wrongly.
+///
+/// Without the `isal` feature those two levels are refused rather than approximated.
 pub fn deflate_gkl(data: &[u8], level: usize) -> Vec<u8> {
+    if level == 1 || level == 2 {
+        #[cfg(feature = "isal")]
+        {
+            // Both Java levels land on ISA-L level 1: GKL does not pass the level through, which
+            // is why its levels 1 and 2 produce identical bytes (decision 0031). The call refuses
+            // if this build cannot reproduce GKL; see `igzip::usable`.
+            return igzip::deflate(data);
+        }
+        #[cfg(not(feature = "isal"))]
+        panic!(
+            "GKL routes levels 1 and 2 through igzip; build with the `isal` feature, or use \
+             level 3 or above. Answering with zlib's bytes would be a wrong answer wearing a \
+             right one's shape."
+        );
+    }
     assert!(
         (3..=9).contains(&level),
-        "GKL routes levels 1 and 2 through igzip, which is not implemented; got {level}"
+        "level must be 1 to 9, got {level}"
     );
     deflate::Deflater::new(data, level, Flavour::Gkl { sse42: true }).finish()
 }

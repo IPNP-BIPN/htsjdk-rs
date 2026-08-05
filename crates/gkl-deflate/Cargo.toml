@@ -6,7 +6,16 @@ license.workspace = true
 repository.workspace = true
 description = "A deflate compressor reproducing GKL's bytes, ported from zlib"
 
+[features]
+# On by default so `deflate_gkl` answers every level GKL answers. Turn it off for a build with no
+# C dependency; levels 1 and 2 then refuse rather than guess, which is what they did before.
+default = ["isal"]
+isal = ["dep:isal-sys"]
+
 [dependencies]
+# Decision 0034: igzip's readable C is a second implementation that finds different matches, so a
+# translation of it would be a confident wrong answer. This links the library GKL links.
+isal-sys = { version = "0.5.3", optional = true }
 
 [dev-dependencies]
 flate2.workspace = true
