@@ -22,7 +22,7 @@
 use std::io::Read;
 
 use htsjdk_vcf::header_lines::parse_meta_line;
-use htsjdk_vcf::header_parse::read_header_frame;
+use htsjdk_vcf::header_parse::{read_header_frame, VcfVersion};
 use htsjdk_vcf::record_parse::decode_line;
 use htsjdk_vcf::variant::{Value, VariantContext};
 use htsjdk_vcf::VcfHeader;
@@ -265,7 +265,7 @@ fn row(text: &str, prefix: &str) -> Option<String> {
 }
 
 /// Build the header the codec would have, through the two slices that came before this one.
-fn header(text: &str) -> (VcfHeader, usize) {
+fn header(text: &str) -> (VcfHeader, usize, VcfVersion) {
     let frame = read_header_frame(text).expect("the fixture header parses");
     let mut header = VcfHeader::new();
     header.samples = frame.samples.clone();
@@ -278,8 +278,9 @@ fn header(text: &str) -> (VcfHeader, usize) {
             header.lines.push(parsed);
         }
     }
-    // The codec's line counter after the header: every `##` line plus the `#CHROM` line.
-    (header, frame.meta_lines.len() + 1)
+    // The codec's line counter after the header: every `##` line plus the `#CHROM` line. The
+    // version travels with it, because it chooses the transformer every INFO value goes through.
+    (header, frame.meta_lines.len() + 1, frame.version)
 }
 
 /// The dump's rendering of a decoded record, field for field.
@@ -357,17 +358,17 @@ fn java_value(value: &Value) -> String {
 #[test]
 fn every_record_decodes_as_the_reference_decodes_it() {
     let text = corpus();
-    let (with_samples, samples_line_no) = header(HEADER);
-    let (sites_only, sites_line_no) = header(SITES_ONLY_HEADER);
+    let (with_samples, samples_line_no, samples_version) = header(HEADER);
+    let (sites_only, sites_line_no, sites_version) = header(SITES_ONLY_HEADER);
 
     for (label, line, sites) in CASES {
-        let (header, line_no) = if *sites {
-            (&sites_only, sites_line_no)
+        let (header, line_no, version) = if *sites {
+            (&sites_only, sites_line_no, sites_version)
         } else {
-            (&with_samples, samples_line_no)
+            (&with_samples, samples_line_no, samples_version)
         };
 
-        match decode_line(line, header, line_no) {
+        match decode_line(line, header, line_no, version) {
             Ok(None) => {
                 assert!(
                     text.lines().any(|l| l == format!("recnull\t{label}")),

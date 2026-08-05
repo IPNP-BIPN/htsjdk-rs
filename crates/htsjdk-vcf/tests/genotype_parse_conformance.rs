@@ -182,7 +182,7 @@ fn every_genotype_decodes_as_the_reference_decodes_it() {
         let (header, version, line_no) = header(*which);
         let line = format!("chr1\t100\t.\tA\tT\t50\tPASS\tDP=10\t{block}");
 
-        let outcome = decode_line(&line, &header, line_no).and_then(|decoded| {
+        let outcome = decode_line(&line, &header, line_no, version).and_then(|decoded| {
             let record = decoded.expect("a data line");
             let site_parts = split_condensed(&line, '\t', 9, true);
             parse_genotypes(

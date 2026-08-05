@@ -98,7 +98,12 @@ pub fn parse_genotypes(
             .get(offset)
             .cloned()
             .unwrap_or_else(|| String::from("<missing>"));
-        let values: Vec<&str> = column.split(':').collect();
+        // The whole value list is percent-decoded here, before any key is looked at, so from VCF
+        // 4.3 the **GT string itself** goes through the transformer along with everything else.
+        // Below 4.3 the transformer is a pass-through and this is a copy.
+        let decoded: Vec<String> = crate::text_transformer::TextTransformer::for_version(version)
+            .decode_all(column.split(':'));
+        let values: Vec<&str> = decoded.iter().map(String::as_str).collect();
 
         if keys.len() < values.len() {
             // The message is wrong upstream and reproduced as it is: `values` is

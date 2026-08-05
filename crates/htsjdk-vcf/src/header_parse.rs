@@ -101,6 +101,22 @@ impl VcfVersion {
     pub fn is_format_string(format: &str) -> bool {
         format == "format" || format == "fileformat"
     }
+
+    /// The enum constant's own name, which is what `String.format("%s", version)` produces.
+    ///
+    /// Not the same text as [`Self::version_string`], and the difference is observable: the
+    /// writer's refusal of a 4.3 header says `VCF4_3` where the file said `VCFv4.3`.
+    pub fn constant_name(self) -> &'static str {
+        match self {
+            VcfVersion::Vcf3_2 => "VCF3_2",
+            VcfVersion::Vcf3_3 => "VCF3_3",
+            VcfVersion::Vcf4_0 => "VCF4_0",
+            VcfVersion::Vcf4_1 => "VCF4_1",
+            VcfVersion::Vcf4_2 => "VCF4_2",
+            VcfVersion::Vcf4_3 => "VCF4_3",
+            VcfVersion::Vcf4_4 => "VCF4_4",
+        }
+    }
 }
 
 /// `TribbleException.InvalidHeader`, carrying the message because the message is the behaviour: it
