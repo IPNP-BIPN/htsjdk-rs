@@ -4,6 +4,7 @@
 //! `htsjdk.variant.variantcontext.writer`.
 
 pub mod allele;
+pub mod attributes;
 pub mod chromosome_counts;
 pub mod comparator;
 pub mod encoder;

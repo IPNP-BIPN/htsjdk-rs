@@ -394,16 +394,19 @@ fn parse_info(
                 // A bare key whose header type is not Flag becomes the *string* ".", not a flag
                 // and not an absence.
                 match info_type(header, &key) {
-                    Some(line_type) if line_type != LineType::Flag => {
-                        (key, Value::Str(MISSING_VALUE.to_string()))
-                    }
+                    // `VCFConstants.MISSING_VALUE_v4` itself, not a substring that reads the same.
+                    // The two are indistinguishable in every rendering and are *not*
+                    // indistinguishable to `getAttributeAsInt`, which tests the reference; see
+                    // [`crate::attributes`].
+                    Some(line_type) if line_type != LineType::Flag => (key, Value::Missing),
                     _ => (key, Value::Bool(true)),
                 }
             }
         };
-        // `key=` with nothing after it is the missing value rather than an empty string.
+        // `key=` with nothing after it is assigned the missing-value **constant**, which is a
+        // different object from a `.` written in the file even though both render as ".".
         let value = match &value {
-            Value::Str(text) if text.is_empty() => Value::Str(MISSING_VALUE.to_string()),
+            Value::Str(text) if text.is_empty() => Value::Missing,
             _ => value,
         };
         put(&mut attributes, key, value);

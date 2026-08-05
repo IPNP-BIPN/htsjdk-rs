@@ -461,6 +461,36 @@
       ]
     },
     {
+      "id": "vcf-attribute-type",
+      "status": "golden-pending",
+      "title": "What a declared Type actually does",
+      "harness": "tools/vcf-conformance",
+      "why": "H.2's last open item, full field-type coverage, and the measurement is that the declared Type converts NOTHING. Every Type in the format stores a String, or a list of Strings when Number is not 1, with the single exception of Flag, which stores a boolean: Integer, Float, Character and String are indistinguishable in a decoded record. The header's Type only tells a caller which accessor to reach for, and the conversion happens there, once per call, with a default the caller supplies. THE MISSING TEST IS A REFERENCE COMPARISON: getAttributeAsInt reads x == VCFConstants.MISSING_VALUE_v4, with ==, on a String, true only when the stored object IS that constant. The codec assigns the constant for a bare key and for KEY=, so those return the default; a value written KEY=. arrives as a substring of the line and reaches Integer.parseInt(\".\") instead. Three spellings of missing, identical in every rendering, two outcomes, and the two are a number and an exception. getAttributeAsDouble DOES NOT HAVE THE TEST AT ALL, so all three spellings throw there, while getAttributeAsDoubleList DOES have it: two accessors over the same conversion that disagree about what missing means. A scalar accessor reaching a list or a flag fails the CAST and not the parse, and the message names the stored class, so a list and a flag produce two different exceptions. And parseVcfDouble is not Double.parseDouble: on failure it retries against an infinity-or-NaN pattern, while Double.parseDouble itself already accepts surrounding whitespace, a trailing f or d, and hex float literals, so 1f, 1d, 0x1p3 and \" 1\" are all numbers to a VCF reader.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 253,
+      "expect_contains": [
+        "attr\tinteger\tI1\tString\t42",
+        "attr\tflag\tB1\tBoolean\ttrue",
+        "as\tmissing-dot\tI1\tasInt\tE:java.lang.NumberFormatException",
+        "as\tmissing-empty\tI1\tasInt\t-1",
+        "as\tmissing-bare\tI1\tasInt\t-1",
+        "as\tmissing-empty\tI1\tasDouble\tE:java.lang.NumberFormatException",
+        "as\tmissing-empty\tI1\tasDoubleList\t[-1.0]",
+        "E:java.lang.ClassCastException",
+        "dbl\t0x1p3\t8.0",
+        "dbl\t-nan\tNaN"
+      ],
+      "cases": [
+        {
+          "dump": "VcfAttributeTypeDump",
+          "golden": null,
+          "why": "Awaiting the artefact from a real x86-64 CI run: decision 0008 forbids a golden written on a developer machine."
+        }
+      ]
+    },
+    {
       "id": "rg-checksum",
       "title": "Read-group checksum",
       "status": "oracle-backed",
