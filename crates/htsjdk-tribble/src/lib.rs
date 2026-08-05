@@ -8,5 +8,6 @@
 //! disagree on which files are valid, and `-L` goes through the codec.
 
 pub mod bed;
+pub mod index;
 pub mod interval_list;
 pub mod vcf;
