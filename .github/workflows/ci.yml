@@ -120,36 +120,47 @@ jobs:
         include:
           - group: oracle-backed
             index: "1/10"
+            slug: "tribble-bed-tribble-interval-list-tribble-vcf-candecode-bgzf-bgzf-termination"
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
             index: "2/10"
+            slug: "bam-codec-bam-file-bam-reheader-bam-gather-histogram"
             suites: "bam-codec bam-file bam-reheader bam-gather histogram"
           - group: oracle-backed
             index: "3/10"
+            slug: "sam-text-sam-file-bai-build-index-interval-list"
             suites: "sam-text sam-file bai build-index interval-list"
           - group: oracle-backed
             index: "4/10"
+            slug: "vcf-header-vcf-header-parse-vcf-header-lines-vcf-record-vcf-file"
             suites: "vcf-header vcf-header-parse vcf-header-lines vcf-record vcf-file"
           - group: oracle-backed
             index: "5/10"
+            slug: "vcf-record-parse-vcf-genotype-parse-vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods"
             suites: "vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods"
           - group: oracle-backed
             index: "6/10"
+            slug: "vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type-rg-checksum-cigar-clip"
             suites: "vcf-chromosome-counts vcf-genotype-type vcf-attribute-type rg-checksum cigar-clip"
           - group: oracle-backed
             index: "7/10"
+            slug: "mateinfo-percentile-fastmath-exp-gamma-erf-normal-saddle-point"
             suites: "mateinfo percentile fastmath-exp gamma-erf-normal saddle-point"
           - group: oracle-backed
             index: "8/10"
+            slug: "variant-comparator-smart-merge-headers-tribble-index-tribble-index-write-cram-varint"
             suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: oracle-backed
             index: "9/10"
+            slug: "cram-container-cram-block-cram-rans-cram-rans-order1-cram-preservation-map"
             suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
           - group: oracle-backed
             index: "10/10"
+            slug: "cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header"
             suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header"
           - group: unchecked
             index: "1/1"
+            slug: "format"
             suites: "format"
     steps:
       - uses: actions/checkout@v4
@@ -177,7 +188,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: candidate-goldens-${{ matrix.group }}-${{ strategy.job-index }}
+          name: candidate-goldens-${{ matrix.slug }}
           path: tools/conformance/pending/
           if-no-files-found: ignore
 
