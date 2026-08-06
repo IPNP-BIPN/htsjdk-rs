@@ -376,105 +376,13 @@ impl BamRecord {
     }
 }
 
-/// `BinaryTagCodec.readTags`.
-pub fn read_tags(mut buf: &[u8]) -> Result<Tags, DecodeError> {
-    let mut tags = Tags::new();
-    let short = |b: &[u8]| i16::from_le_bytes([b[0], b[1]]);
-    let int = |b: &[u8]| i32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    let malformed = |m: &str| DecodeError::MalformedTags(m.to_string());
-
-    while !buf.is_empty() {
-        if buf.len() < 3 {
-            return Err(malformed("truncated tag header"));
-        }
-        let tag = Tag(short(buf));
-        let ty = buf[2];
-        buf = &buf[3..];
-
-        let take = |buf: &mut &[u8], n: usize| -> Result<Vec<u8>, DecodeError> {
-            if buf.len() < n {
-                return Err(DecodeError::MalformedTags(format!(
-                    "tag value wants {n} bytes, {} left",
-                    buf.len()
-                )));
-            }
-            let (a, b) = buf.split_at(n);
-            *buf = b;
-            Ok(a.to_vec())
-        };
-        let nul_string = |buf: &mut &[u8]| -> Result<String, DecodeError> {
-            let end = buf
-                .iter()
-                .position(|&b| b == 0)
-                .ok_or_else(|| DecodeError::MalformedTags("unterminated string".into()))?;
-            let s: String = buf[..end].iter().map(|&b| b as char).collect();
-            *buf = &buf[end + 1..];
-            Ok(s)
-        };
-
-        let value = match ty {
-            b'Z' => TagValue::Str(nul_string(&mut buf)?),
-            b'A' => TagValue::Char(take(&mut buf, 1)?[0]),
-            // htsjdk widens 'I' into a long when it does not fit a signed int, so the
-            // in-memory value is always the mathematical one.
-            b'I' => TagValue::Int(int(&take(&mut buf, 4)?) as u32 as i64),
-            b'i' => TagValue::Int(int(&take(&mut buf, 4)?) as i64),
-            b's' => TagValue::Int(short(&take(&mut buf, 2)?) as i64),
-            b'S' => TagValue::Int(short(&take(&mut buf, 2)?) as u16 as i64),
-            b'c' => TagValue::Int(take(&mut buf, 1)?[0] as i8 as i64),
-            b'C' => TagValue::Int(take(&mut buf, 1)?[0] as i64),
-            b'f' => TagValue::Float(f32::from_le_bytes(take(&mut buf, 4)?.try_into().unwrap())),
-            b'H' => {
-                let hex = nul_string(&mut buf)?;
-                let values = (0..hex.len() / 2)
-                    .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map(|b| b as i8))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|_| malformed("bad hex tag"))?;
-                // The same `byte[]` a signed `B` array gives back, which is why rewriting an `H`
-                // tag produces a `B` one.
-                TagValue::ByteArray {
-                    values,
-                    unsigned: false,
-                }
-            }
-            b'B' => {
-                if buf.len() < 5 {
-                    return Err(malformed("truncated array header"));
-                }
-                let element_type = buf[0];
-                let n = int(&buf[1..5]) as usize;
-                buf = &buf[5..];
-                let unsigned = element_type.is_ascii_uppercase();
-                match element_type.to_ascii_lowercase() {
-                    b'c' => TagValue::ByteArray {
-                        values: take(&mut buf, n)?.into_iter().map(|b| b as i8).collect(),
-                        unsigned,
-                    },
-                    b's' => TagValue::ShortArray {
-                        values: take(&mut buf, n * 2)?
-                            .chunks(2)
-                            .map(|c| i16::from_le_bytes([c[0], c[1]]))
-                            .collect(),
-                        unsigned,
-                    },
-                    b'i' => TagValue::IntArray {
-                        values: take(&mut buf, n * 4)?.chunks(4).map(int).collect(),
-                        unsigned,
-                    },
-                    b'f' => TagValue::FloatArray(
-                        take(&mut buf, n * 4)?
-                            .chunks(4)
-                            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                            .collect(),
-                    ),
-                    _ => return Err(malformed("unrecognized tag array type")),
-                }
-            }
-            _ => return Err(malformed("unrecognized tag type")),
-        };
-        tags.insert(tag, value);
-    }
-    Ok(tags)
+/// `BinaryTagCodec.readTags`, whose whole body lives in [`Tags::read`].
+///
+/// This was a second copy of the same decoder until the read side was measured against the
+/// reference: the copy raised messages of its own invention, so a malformed tag block reported
+/// something htsjdk never says. It now carries the reference's own exception identities.
+pub fn read_tags(buf: &[u8]) -> Result<Tags, DecodeError> {
+    Tags::read(buf).map_err(|error| DecodeError::MalformedTags(error.to_string()))
 }
 
 #[cfg(test)]
