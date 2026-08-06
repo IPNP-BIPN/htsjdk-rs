@@ -101,6 +101,14 @@ impl TagEncodingMapError {
             }
         }
     }
+
+    /// The exception the reference throws for each.
+    pub fn java_exception(&self) -> &'static str {
+        match self {
+            TagEncodingMapError::EncodingIdOutOfBounds(_) => "ArrayIndexOutOfBoundsException",
+            TagEncodingMapError::Truncated => "RuntimeEOFException",
+        }
+    }
 }
 
 impl From<RuntimeEof> for TagEncodingMapError {

@@ -6,6 +6,7 @@
 //! checked until those are.
 pub mod bit_stream;
 pub mod block;
+pub mod compression_header;
 pub mod container;
 pub mod core_codecs;
 pub mod encoding_factory;

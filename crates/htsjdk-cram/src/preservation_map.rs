@@ -92,6 +92,15 @@ impl PreservationMapError {
             }
         }
     }
+
+    /// The exception the reference throws, which is not the same one for all three.
+    pub fn java_exception(&self) -> &'static str {
+        match self {
+            PreservationMapError::UnknownKey(_) => "RuntimeException",
+            PreservationMapError::MissingMatrixOrDictionary => "CRAMException",
+            PreservationMapError::Truncated => "RuntimeEOFException",
+        }
+    }
 }
 
 impl From<RuntimeEof> for PreservationMapError {
