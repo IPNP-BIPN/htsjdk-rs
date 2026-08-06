@@ -231,6 +231,7 @@ fn mask(index: i32) -> u8 {
 }
 
 /// `DefaultBitInputStream`.
+#[derive(Debug)]
 pub struct BitInputStream<'a> {
     bytes: &'a [u8],
     at: usize,
