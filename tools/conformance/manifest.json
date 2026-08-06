@@ -178,31 +178,18 @@
     },
     {
       "id": "bam-tag-read",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Reading a tag block, and the two types that do not survive a round trip",
       "harness": "tools/bam-conformance",
       "why": "The write side of BinaryTagCodec is pinned; this is the read side, which is what the CRAM slice header's tag section and every BAM record's tags come back through. EVERY NARROW INTEGER WIDENS TO ONE TYPE: c, C, s, S and i all return a Java Integer, so the width the file chose stops existing on the way in and the type a rewrite picks comes from the value alone. THE ROUND TRIP IS NOT THE IDENTITY, AND EXACTLY TWO TYPES BREAK IT: an 'I' holding a small value is rewritten as 'c', and an 'H' is rewritten as a 'B' array one byte longer. THERE IS NO IN-MEMORY H AT ALL: it decodes into the same byte[] a signed B array does, so both codecs carry a dead branch for writing one back, and XX:H:48656C re-encodes as XX:B:c,72,101,108. 'A' IS A SIGNED BYTE CAST TO A CHAR, so the byte 0xE9 becomes U+FFE9 and the character in memory is not the one in the file, though the bytes survive because the write truncates it back. THE 'I' RANGE CHECK CANNOT FIRE, because the value is masked to 32 bits before it is checked against the 32-bit range. THE LIST COMES BACK SORTED BY THE PACKED SHORT, so by the SECOND character first, and a repeated tag replaces rather than duplicates, with the LAST occurrence winning. AND THE UNSIGNED FLAG OF AN ARRAY IS ONLY THE CASE OF ITS TYPE LETTER: the elements stay signed, so a C array holding 0xFF comes back as -1.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 62,
-      "expect_contains": [
-        "value\tI-small\t49414905000000\tIA\tInteger\tfalse\t5\t49416305\tchanged",
-        "value\tH\t48684834383635364300\tHh\tbyte[]\tfalse\t[72,101,108]\t486842630300000048656c\tchanged",
-        "value\tchar-high\t434241e9\tCB\tCharacter\tfalse\tU+FFE9\t434241e9\tsame",
-        "value\tB-C\t4243424303000000ff007f\tBC\tbyte[]\ttrue\t[-1,0,127]",
-        "order\tsecond-character-first\t5a416301415a63024e4d63034d446304\tZA=1,MD=4,NM=3,AZ=2",
-        "dup\tduplicate-tag-three\t4e4d63014e4d63024e4d6303\t1\t3",
-        "readerr\tunknown-type\t58587101\tSAMFormatException\tUnrecognized tag type: q",
-        "readerr\tnegative-array-length\t58584263ffffffff\tNegativeArraySizeException\t-1",
-        "textrt\tXX:H:48656C\tbyte[]\tXX:B:c,72,101,108\tchanged",
-        "strtag\tA\\u0080\t-32703\tArrayIndexOutOfBoundsException"
-      ],
       "cases": [
         {
           "dump": "BinaryTagCodecReadDump",
-          "golden": null,
-          "why": "62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting types are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Only a foreign file can carry them, and only reading one and writing it back shows that the bytes change."
+          "golden": "crates/htsjdk-bam/tests/data/bam_tag_read.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-bam-tag-read artefact of run 31093032906, the golden-pending run of htsjdk-rs #123. 62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting inputs are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Every row carries the bytes it came from, so the golden is readable without the dump beside it. The runner's dump and this laptop's are byte-identical, which is recorded and changes nothing: decision 0008 says where a golden may come from, not how likely the two are to agree."
         }
       ]
     },
