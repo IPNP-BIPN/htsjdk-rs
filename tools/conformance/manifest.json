@@ -966,6 +966,34 @@
       ]
     },
     {
+      "id": "cram-slice-blocks",
+      "status": "golden-pending",
+      "title": "A slice's blocks, and the order they are written in",
+      "harness": "tools/cram-conformance",
+      "why": "One core block of bits and any number of external blocks of bytes, each named by a content id: the join between the codecs that fill them and the file that carries them. THE WRITTEN ORDER IS BY CONTENT ID AND NOT BY INSERTION, because the externals live in a TreeMap: added 3, 2, 1 the reference wrote 1, 2, 3, and added 300, 2, 128 it wrote 2, 128, 300. The order a caller has is not part of the file. THE READER TAKES A BLOCK COUNT RATHER THAN AN ORDER, so a stream whose core block comes last reads exactly as one whose core block comes first, and THE CHECK THAT THERE WAS A CORE BLOCK AT ALL HAPPENS AFTER EVERY BLOCK HAS BEEN READ. A DUPLICATE CONTENT ID IS REFUSED rather than overwritten, and its message mentions the compression header encoding map, which is not what it is talking about. A block that is neither core nor external is refused with a message naming the type it found.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 13,
+      "expect_contains": [
+        "write\t3.0\t3,2,1\t1,2,3",
+        "write\t3.0\t300,2,128\t2,128,300",
+        "write\t3.0\t7\t7",
+        "read\t3.0\tcore-last\t4\t1,2",
+        "read\t2.1\tcore-first\t4\t1,2",
+        "err\tduplicate\tid=4\tCRAMException\tAttempt to add a duplicate block (id 4 of type EXTERNAL) to compression header encoding map. Existing block is of type EXTERNAL.",
+        "err\tno-core\t2 external blocks\tCRAMException\tA core block is required in a CRAM stream but none was found.",
+        "err\twrong-type\tCOMPRESSION_HEADER\tRuntimeException\tNot a slice block, content type id COMPRESSION_HEADER"
+      ],
+      "cases": [
+        {
+          "dump": "CramSliceBlocksDump",
+          "golden": null,
+          "why": "13 rows: seven streams written across two CRAM versions and five arrangements of content ids, with both the order they were added in and the order they came out in on every row; three read back including one whose core block comes last; and three refusals. Each external block's content is its own id, so a swap between two would show in the bytes."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
