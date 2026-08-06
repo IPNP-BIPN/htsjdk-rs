@@ -48,7 +48,7 @@
 //! array takes the other branch and indexes it: measured, `ArrayIndexOutOfBoundsException: Index 3
 //! out of bounds for length 0`. [`Qualities`] carries that distinction rather than hiding it.
 
-use htsjdk_bam::cigar::{Cigar, Op};
+use htsjdk_bam::cigar::{Cigar, CigarElement, Op};
 
 /// `CRAMCompressionRecord.MISSING_QUALITY_SCORE`.
 pub const MISSING_QUALITY_SCORE: i8 = -1;
@@ -347,6 +347,110 @@ fn add_mismatch_read_features(
     Ok(())
 }
 
+/// `getCigarForReadFeatures`: the cigar rebuilt from the features and the read length alone.
+///
+/// The cigar is not stored anywhere. Going forward, everything that matched became nothing;
+/// coming back, **the matches are the gaps**. `gap = position - (last_op_pos + last_op_len)` is
+/// the only source of `M` in the output, and nothing in the features says a base matched.
+///
+/// Four consequences, all measured:
+///
+/// - **a substitution and a `ReadBase` are both `M`**, so the rebuilt cigar never emits `X` or
+///   `=`. A record written with `8X` comes back as `8M`, and that is the only shape in the corpus
+///   whose round trip changes;
+/// - **a feature that consumes no read bases winds the read cursor back**, `last_op_pos -=
+///   length` after a `D`, `N` or `P`, because the bookkeeping is in read space;
+/// - **the switch silently ignores what it does not name.** `BaseQualityScore`, `Scores` and
+///   `Bases` fall through, and `Bases` carries read bases: a list holding one produces a cigar
+///   that does not account for it;
+/// - **the read length is what says where the read ends**, and it wins. A feature positioned past
+///   it is absorbed, and a read length of 0 takes the accumulated length instead.
+///
+/// htsjdk guards `readFeatures == null` and `lastOperator != null`; neither can happen here, and
+/// the first is unnecessary there too, since an empty list reaches the same single `M` through the
+/// empty-list check at the end.
+pub fn cigar_for_read_features(features: &[ReadFeature], read_length: i32) -> Cigar {
+    let mut elements: Vec<CigarElement> = Vec::new();
+    let mut last_operator = Op::M;
+    let mut last_op_len: i32 = 0;
+    let mut last_op_pos: i32 = 1;
+
+    for feature in features {
+        // Everything between the last operator and this feature matched, and is therefore an M.
+        let gap = feature.position() - (last_op_pos + last_op_len);
+        if gap > 0 {
+            if last_operator != Op::M {
+                elements.push(element(last_op_len, last_operator));
+                last_op_pos += last_op_len;
+                last_op_len = gap;
+            } else {
+                last_op_len += gap;
+            }
+            last_operator = Op::M;
+        }
+
+        let (operator, feature_length) = match feature {
+            ReadFeature::Insertion { sequence, .. } => (Op::I, sequence.len() as i32),
+            ReadFeature::SoftClip { sequence, .. } => (Op::S, sequence.len() as i32),
+            ReadFeature::HardClip { length, .. } => (Op::H, *length),
+            ReadFeature::InsertBase { .. } => (Op::I, 1),
+            ReadFeature::Deletion { length, .. } => (Op::D, *length),
+            ReadFeature::RefSkip { length, .. } => (Op::N, *length),
+            ReadFeature::Padding { length, .. } => (Op::P, *length),
+            // Both of the mismatch features are an ordinary M here.
+            ReadFeature::Substitution { .. } | ReadFeature::ReadBase { .. } => (Op::M, 1),
+            // `default: continue`, which drops the three features the switch does not name.
+            ReadFeature::BaseQualityScore { .. }
+            | ReadFeature::Scores { .. }
+            | ReadFeature::Bases { .. } => continue,
+        };
+
+        if last_operator != operator {
+            if last_op_len > 0 {
+                elements.push(element(last_op_len, last_operator));
+            }
+            last_operator = operator;
+            last_op_len = feature_length;
+            last_op_pos = feature.position();
+        } else {
+            last_op_len += feature_length;
+        }
+
+        if !operator.consumes_read_bases() {
+            last_op_pos -= feature_length;
+        }
+    }
+
+    if last_operator != Op::M {
+        elements.push(element(last_op_len, last_operator));
+        if read_length >= last_op_pos + last_op_len {
+            elements.push(element(
+                read_length - (last_op_len + last_op_pos) + 1,
+                Op::M,
+            ));
+        }
+    } else if read_length == 0 || read_length > last_op_pos - 1 {
+        let length = if read_length == 0 {
+            last_op_len
+        } else {
+            read_length - last_op_pos + 1
+        };
+        elements.push(element(length, Op::M));
+    }
+
+    if elements.is_empty() {
+        return Cigar::new(vec![element(read_length, Op::M)]);
+    }
+    Cigar::new(elements)
+}
+
+fn element(length: i32, op: Op) -> CigarElement {
+    CigarElement {
+        length: length.max(0) as u32,
+        op,
+    }
+}
+
 /// `getAlignmentEnd`: the span recomputed from the features rather than from the cigar.
 pub fn alignment_end(features: &[ReadFeature], alignment_start: i32, read_length: i32) -> i32 {
     let mut span = read_length;
@@ -366,7 +470,6 @@ pub fn alignment_end(features: &[ReadFeature], alignment_start: i32, read_length
 #[cfg(test)]
 mod tests {
     use super::*;
-    use htsjdk_bam::cigar::CigarElement;
 
     const REFERENCE: &[u8] = b"ACGTACGTACGTMRWSACGTACGT";
 
@@ -664,6 +767,166 @@ mod tests {
             error.message(),
             format!("Index -1 out of bounds for length {}", REFERENCE.len())
         );
+    }
+
+    fn rebuilt(features: &[ReadFeature], read_length: i32) -> String {
+        cigar_for_read_features(features, read_length).to_text()
+    }
+
+    fn substitution(position: i32) -> ReadFeature {
+        ReadFeature::Substitution {
+            position,
+            base: b'T',
+            reference_base: b'A',
+            code: NO_CODE,
+        }
+    }
+
+    /// The matches are the gaps, and nothing else in the features says a base matched.
+    #[test]
+    fn a_list_of_substitutions_rebuilds_as_one_match() {
+        assert_eq!(rebuilt(&[], 8), "8M");
+        assert_eq!(rebuilt(&[substitution(4)], 8), "8M");
+        assert_eq!(rebuilt(&[substitution(1)], 8), "8M");
+        assert_eq!(rebuilt(&[substitution(8)], 8), "8M");
+        assert_eq!(rebuilt(&[substitution(2), substitution(7)], 8), "8M");
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::ReadBase {
+                    position: 4,
+                    base: b'M',
+                    quality: 40,
+                }],
+                8
+            ),
+            "8M",
+            "a ReadBase is an M like a substitution"
+        );
+    }
+
+    /// A feature that consumes no read bases winds the read cursor back, which is what keeps the
+    /// trailing match at the right length.
+    #[test]
+    fn a_reference_only_operator_winds_the_read_cursor_back() {
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::Deletion {
+                    position: 5,
+                    length: 2
+                }],
+                8
+            ),
+            "4M2D4M"
+        );
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::Deletion {
+                    position: 1,
+                    length: 2
+                }],
+                8
+            ),
+            "2D8M",
+            "and a deletion at the first position leaves the whole read after it"
+        );
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::Padding {
+                    position: 5,
+                    length: 2
+                }],
+                8
+            ),
+            "4M2P4M"
+        );
+    }
+
+    /// The three features the switch does not name contribute nothing, including the one that
+    /// carries read bases.
+    #[test]
+    fn the_features_the_switch_ignores_contribute_nothing() {
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::Bases {
+                    position: 1,
+                    bases: b"ACGT".to_vec()
+                }],
+                8
+            ),
+            "8M",
+            "a Bases feature carries read bases and is dropped anyway"
+        );
+        assert_eq!(
+            rebuilt(
+                &[
+                    ReadFeature::Scores {
+                        position: 1,
+                        scores: b"IIII".to_vec()
+                    },
+                    substitution(6)
+                ],
+                8
+            ),
+            "8M"
+        );
+    }
+
+    /// The read length says where the read ends, and it wins over the features.
+    #[test]
+    fn the_read_length_decides_where_the_read_ends() {
+        assert_eq!(
+            rebuilt(&[substitution(4)], 0),
+            "4M",
+            "a read length of 0 takes the accumulated length"
+        );
+        assert_eq!(
+            rebuilt(&[substitution(6)], 3),
+            "3M",
+            "a feature past the end is absorbed"
+        );
+        assert_eq!(rebuilt(&[substitution(1)], 1), "1M");
+    }
+
+    #[test]
+    fn a_clip_keeps_its_side() {
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::SoftClip {
+                    position: 6,
+                    sequence: b"TTT".to_vec()
+                }],
+                8
+            ),
+            "5M3S"
+        );
+        assert_eq!(
+            rebuilt(
+                &[ReadFeature::HardClip {
+                    position: 1,
+                    length: 2
+                }],
+                8
+            ),
+            "2H8M"
+        );
+    }
+
+    /// The round trip is the identity except where the cigar claimed something the features
+    /// cannot carry: X and = both come back as M.
+    #[test]
+    fn the_round_trip_loses_only_the_x_and_the_equals() {
+        for (text, bases, start) in [
+            ("2M3I3M", &b"ACTTTTAC"[..], 1),
+            ("3S5M", &b"TTTACGTA"[..], 4),
+            ("4M2D4M", &b"ACGTCGTA"[..], 1),
+            ("2M2I2M2D2M", &b"ACTTACGT"[..], 1),
+        ] {
+            let built = features(text, bases, start);
+            let length = cigar(text).read_length() as i32;
+            assert_eq!(rebuilt(&built, length), text, "{text}");
+        }
+        assert_eq!(rebuilt(&features("8X", b"ACGTACGT", 1), 8), "8M");
+        assert_eq!(rebuilt(&features("8=", b"TTTTTTTT", 1), 8), "8M");
     }
 
     /// The span comes back from the features, not from the cigar.
