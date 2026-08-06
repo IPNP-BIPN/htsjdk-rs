@@ -50,6 +50,8 @@
 
 use htsjdk_bam::cigar::{Cigar, CigarElement, Op};
 
+use crate::substitution_matrix::{MatrixError, SubstitutionMatrix};
+
 /// `CRAMCompressionRecord.MISSING_QUALITY_SCORE`.
 pub const MISSING_QUALITY_SCORE: i8 = -1;
 /// `Substitution.NO_CODE`, before the substitution matrix assigns one.
@@ -165,6 +167,8 @@ pub enum ReadFeatureError {
     ///
     /// Unreachable: the switch handles all nine operators htsjdk has.
     UnsupportedCigarOperator(char),
+    /// The substitution matrix refused the code, which reaches the caller as its own exception.
+    Matrix(MatrixError),
 }
 
 impl ReadFeatureError {
@@ -176,6 +180,7 @@ impl ReadFeatureError {
             ReadFeatureError::UnsupportedCigarOperator(op) => {
                 format!("Unsupported cigar operator: {op}")
             }
+            ReadFeatureError::Matrix(error) => error.message(),
         }
     }
 }
@@ -448,6 +453,227 @@ fn element(length: i32, op: Op) -> CigarElement {
     CigarElement {
         length: length.max(0) as u32,
         op,
+    }
+}
+
+/// `Utils.normalizeBase`: upper-case `acgt`, and everything else becomes `N`.
+///
+/// The substitution matrix is indexed by ACGTN only, so the reference base a substitution is
+/// resolved against goes through this first. An IUPAC code on the reference therefore resolves as
+/// though the reference were `N`.
+pub fn normalize_base(base: u8) -> u8 {
+    match base {
+        b'a' | b'A' => b'A',
+        b'c' | b'C' => b'C',
+        b'g' | b'G' => b'G',
+        b't' | b'T' => b'T',
+        _ => b'N',
+    }
+}
+
+/// `SequenceUtil.BASES_ARRAY_LENGTH`, the length of the lookup every restored base goes through.
+pub const BAM_READ_BASE_LOOKUP_LENGTH: usize = 127;
+
+/// `SequenceUtil.BAM_READ_BASE_SET`: the IUPAC codes upper-cased, with `=` and without `.`.
+pub const BAM_READ_BASE_SET: &[u8] = b"=ABCDGHKMNRSTVWY";
+
+/// `SequenceUtil.toBamReadBasesInPlace`.
+///
+/// A 127-byte table filled with `N`, where each BAM read base maps to itself and its lower-case
+/// form maps up. Two consequences, both measured:
+///
+/// - **a NUL becomes `N`**, which is what makes the array's own zeros come back as `N` when the
+///   trailing reference fill stops early;
+/// - **the table is indexed with a signed byte**, so a base of 127 or above is an index out of it.
+///   `0xE9` is index -23, and only a feature carrying its own bases can put one there.
+pub fn to_bam_read_bases(bases: &mut [u8]) -> Result<(), ReadFeatureError> {
+    for base in bases.iter_mut() {
+        let index = *base as i8 as i64;
+        if !(0..BAM_READ_BASE_LOOKUP_LENGTH as i64).contains(&index) {
+            return Err(ReadFeatureError::IndexOutOfBounds {
+                index,
+                length: BAM_READ_BASE_LOOKUP_LENGTH,
+            });
+        }
+        *base = bam_read_base_lookup(*base);
+    }
+    Ok(())
+}
+
+/// The table as its static initializer builds it: `lookup[base] = base` and
+/// `lookup[base + 32] = base` for every BAM read base.
+///
+/// Built literally rather than as "upper-case it and check the set", because the two are not the
+/// same: `'=' + 32` is `']'`, so `]` maps to `=` and is not an `N`.
+fn bam_read_base_lookup(base: u8) -> u8 {
+    for entry in BAM_READ_BASE_SET {
+        if base == *entry || base == entry + 32 {
+            return *entry;
+        }
+    }
+    b'N'
+}
+
+/// `restoreReadBases`: the bases rebuilt from the features, the reference and the matrix.
+///
+/// Three sources at once. The features say what differs, the reference supplies everything else,
+/// and the substitution matrix turns a substitution's code back into a base. Nothing in the record
+/// carries the matching bases themselves.
+///
+/// # It is two passes, and the second one overwrites
+///
+/// [`ReadFeature::ReadBase`] and [`ReadFeature::Bases`] are skipped in the main loop, under a
+/// comment saying "defer until after the reference bases are retrieved", and then applied straight
+/// into the array at the end. So they win over whatever the reference fill wrote, and over what
+/// the features before them produced: measured, an insertion of `GGG` at position 1 followed by a
+/// `Bases` of `TTT` at position 1 restores `TTT`.
+///
+/// # The trailing fill stops at the end of the reference
+///
+/// It leaves the array's own zeros behind, and a zero becomes `N` in [`to_bam_read_bases`]. That
+/// is why a read running past the end of the reference comes back padded with `N` without anything
+/// ever writing one.
+///
+/// # The comment above the loop is wrong
+///
+/// It says "ReadFeatures use a 0-based feature position". Every position in it is used one-based,
+/// which is what the forward direction measured from the other side.
+///
+/// `region_start` is the region's zero-based start, which the reference bases are offset by.
+pub fn restore_read_bases(
+    features: &[ReadFeature],
+    unknown_bases: bool,
+    alignment_start: i32,
+    read_length: i32,
+    reference_bases: &[u8],
+    region_start: i32,
+    matrix: &SubstitutionMatrix,
+) -> Result<Vec<u8>, ReadFeatureError> {
+    // `SAMRecord.NULL_SEQUENCE`, a shared empty array rather than a run of Ns.
+    if unknown_bases || read_length == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut bases = vec![0u8; read_length.max(0) as usize];
+    let mut position_in_read: i32 = 1;
+    let mut position_in_sequence: i32 = 0;
+    let start = alignment_start - 1;
+
+    let put = |bases: &mut Vec<u8>, at: i32, value: u8| -> Result<(), ReadFeatureError> {
+        let index = i64::from(at) - 1;
+        let length = bases.len();
+        if index < 0 || index >= length as i64 {
+            return Err(ReadFeatureError::IndexOutOfBounds { index, length });
+        }
+        bases[index as usize] = value;
+        Ok(())
+    };
+
+    for feature in features {
+        // Everything up to this feature comes from the reference.
+        while position_in_read < feature.position() {
+            let at = start + position_in_sequence - region_start;
+            position_in_sequence += 1;
+            put(
+                &mut bases,
+                position_in_read,
+                byte_or_default(reference_bases, at, b'N'),
+            )?;
+            position_in_read += 1;
+        }
+
+        match feature {
+            ReadFeature::Substitution { code, .. } => {
+                let reference_base = normalize_base(byte_or_default(
+                    reference_bases,
+                    start + position_in_sequence - region_start,
+                    b'N',
+                ));
+                // A negative code is an array index in the reference, and the array it indexes
+                // is the 128-entry row rather than the four substitutes.
+                if *code < 0 {
+                    return Err(ReadFeatureError::IndexOutOfBounds {
+                        index: i64::from(*code),
+                        length: 128,
+                    });
+                }
+                let base = matrix
+                    .base(reference_base, *code as u8)
+                    .map_err(ReadFeatureError::Matrix)?;
+                put(&mut bases, position_in_read, base)?;
+                position_in_read += 1;
+                position_in_sequence += 1;
+            }
+            ReadFeature::Insertion { sequence, .. } | ReadFeature::SoftClip { sequence, .. } => {
+                for base in sequence {
+                    put(&mut bases, position_in_read, *base)?;
+                    position_in_read += 1;
+                }
+            }
+            ReadFeature::InsertBase { base, .. } => {
+                put(&mut bases, position_in_read, *base)?;
+                position_in_read += 1;
+            }
+            // Reference only: the read cursor stays where it is.
+            ReadFeature::Deletion { length, .. } | ReadFeature::RefSkip { length, .. } => {
+                position_in_sequence += length;
+            }
+            // Deferred to the second pass.
+            ReadFeature::Bases { .. } | ReadFeature::ReadBase { .. } => {}
+            // Handled by the quality scores and by the cigar rebuild, not here.
+            ReadFeature::Scores { .. }
+            | ReadFeature::BaseQualityScore { .. }
+            | ReadFeature::Padding { .. }
+            | ReadFeature::HardClip { .. } => {}
+        }
+    }
+
+    // The rest of the read comes from the reference, and stops when the reference does. What is
+    // left behind is the array's own zeros.
+    while position_in_read <= read_length
+        && start + position_in_sequence - region_start < reference_bases.len() as i32
+    {
+        let at = start + position_in_sequence - region_start;
+        put(
+            &mut bases,
+            position_in_read,
+            byte_or_default(reference_bases, at, b'N'),
+        )?;
+        position_in_read += 1;
+        position_in_sequence += 1;
+    }
+
+    // The second pass, which overwrites.
+    for feature in features {
+        match feature {
+            ReadFeature::ReadBase { position, base, .. } => {
+                put(&mut bases, *position, *base)?;
+            }
+            ReadFeature::Bases {
+                position,
+                bases: source,
+            } => {
+                for (offset, base) in source.iter().enumerate() {
+                    put(&mut bases, *position + offset as i32, *base)?;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    to_bam_read_bases(&mut bases)?;
+    Ok(bases)
+}
+
+/// `getByteOrDefault`, which guards the upper bound and not the lower.
+///
+/// The same asymmetry [`create_read_features`] has: a negative index is an array access in the
+/// reference and would throw there.
+fn byte_or_default(array: &[u8], at: i32, out_of_bounds: u8) -> u8 {
+    if at >= array.len() as i32 {
+        out_of_bounds
+    } else {
+        array[at.max(0) as usize]
     }
 }
 
@@ -927,6 +1153,138 @@ mod tests {
         }
         assert_eq!(rebuilt(&features("8X", b"ACGTACGT", 1), 8), "8M");
         assert_eq!(rebuilt(&features("8=", b"TTTTTTTT", 1), 8), "8M");
+    }
+
+    const APERIODIC: &[u8] = b"ACGTTGCAAGCTMRWSTTACGGCA";
+
+    fn identity_matrix() -> SubstitutionMatrix {
+        // Each row packs the four substitutes two bits at a time, in ACGTN order minus the
+        // reference base itself.
+        SubstitutionMatrix::from_encoded([0x1B; 5])
+    }
+
+    fn restored(features: &[ReadFeature], start: i32, length: i32) -> String {
+        let bases = restore_read_bases(
+            features,
+            false,
+            start,
+            length,
+            APERIODIC,
+            0,
+            &identity_matrix(),
+        )
+        .expect("restored");
+        String::from_utf8(bases).expect("ascii")
+    }
+
+    /// Everything that matched comes from the reference, and nothing else does.
+    #[test]
+    fn a_record_with_no_features_is_the_reference() {
+        assert_eq!(restored(&[], 1, 8), "ACGTTGCA");
+        assert_eq!(restored(&[], 5, 8), "TGCAAGCT");
+    }
+
+    /// The second pass overwrites the first, including the bases a feature already wrote.
+    #[test]
+    fn read_base_and_bases_are_applied_last_and_win() {
+        assert_eq!(
+            restored(
+                &[
+                    ReadFeature::Insertion {
+                        position: 1,
+                        sequence: b"GGG".to_vec()
+                    },
+                    ReadFeature::Bases {
+                        position: 1,
+                        bases: b"TTT".to_vec()
+                    }
+                ],
+                1,
+                8
+            ),
+            "TTTACGTT"
+        );
+        assert_eq!(
+            restored(
+                &[
+                    ReadFeature::Substitution {
+                        position: 4,
+                        base: b'N',
+                        reference_base: b'N',
+                        code: 0
+                    },
+                    ReadFeature::ReadBase {
+                        position: 4,
+                        base: b'M',
+                        quality: 40
+                    }
+                ],
+                1,
+                8
+            ),
+            "ACGMTGCA"
+        );
+    }
+
+    /// The trailing fill stops at the end of the reference, and nothing writes the Ns that
+    /// follow: they are the array's own zeros, turned into N by the lookup.
+    #[test]
+    fn past_the_end_of_the_reference_the_zeros_become_ns() {
+        assert_eq!(restored(&[], 20, 8), "CGGCANNN");
+        assert_eq!(restored(&[], 30, 4), "NNNN");
+        let mut zeros = vec![0u8; 3];
+        to_bam_read_bases(&mut zeros).expect("in range");
+        assert_eq!(zeros, b"NNN");
+    }
+
+    /// The lookup is built by adding 32 to every BAM read base, so `]` is an `=`, and it is
+    /// indexed by a signed byte, so anything above 126 is out of it.
+    #[test]
+    fn the_lookup_table_has_two_edges_worth_naming() {
+        let through = |byte: u8| -> Result<u8, ReadFeatureError> {
+            let mut one = [byte];
+            to_bam_read_bases(&mut one)?;
+            Ok(one[0])
+        };
+        assert_eq!(through(b']').expect("in range"), b'=');
+        assert_eq!(through(b'a').expect("in range"), b'A');
+        assert_eq!(through(b'.').expect("in range"), b'N');
+        assert_eq!(
+            through(0xE9),
+            Err(ReadFeatureError::IndexOutOfBounds {
+                index: -23,
+                length: 127
+            })
+        );
+        assert_eq!(
+            through(127).unwrap_err().message(),
+            "Index 127 out of bounds for length 127"
+        );
+    }
+
+    /// Unknown bases or a read length of zero return the empty sequence, and the features are not
+    /// looked at at all.
+    #[test]
+    fn unknown_bases_and_a_zero_read_length_return_nothing() {
+        let impossible = [ReadFeature::Substitution {
+            position: 99,
+            base: b'N',
+            reference_base: b'N',
+            code: NO_CODE,
+        }];
+        for (unknown, length) in [(true, 8), (false, 0)] {
+            let bases = restore_read_bases(
+                &impossible,
+                unknown,
+                1,
+                length,
+                APERIODIC,
+                0,
+                &identity_matrix(),
+            )
+            .expect("no work at all");
+            assert!(bases.is_empty());
+        }
     }
 
     /// The span comes back from the features, not from the cigar.
