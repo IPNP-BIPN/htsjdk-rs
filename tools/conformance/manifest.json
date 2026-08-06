@@ -709,6 +709,38 @@
       ]
     },
     {
+      "id": "cram-bit-stream",
+      "status": "golden-pending",
+      "title": "The bit stream the core codecs are written on",
+      "harness": "tools/cram-conformance",
+      "why": "The floor under the encodings, the way ITF8 is the floor under the frames: three of the codecs the encoding map names are written on a BIT stream rather than a byte one. BITS GO IN MOST SIGNIFICANT FIRST, left-aligned into a one-byte buffer held back until it fills, so a one-bit 1 is 0x80 rather than 0x01. FLUSH PADS THE PARTIAL BYTE WITH ZEROS ON THE RIGHT and nothing records how many bits were real, so a stream of one true bit and a stream of 0x80 in eight bits are the same byte and only the count of values a reader expects says where the stream ends. A MULTI-BYTE WRITE SPLITS AT THE TOP, writing whole bytes from the most significant end while eight bits remain and the remainder last, so the leftover bits of a twelve-bit write are the LOW four. A VALUE WIDER THAN ITS DECLARED WIDTH IS MASKED, not refused. THE BOUNDS ARE CHECKED WITH THREE DIFFERENT WORDINGS, one per overload, AND ONE CASE IS NOT CHECKED AT ALL: write(byte, 0) against a non-empty buffer indexes a mask table of eight entries with 8, so writing nothing is a no-op or an exception depending on what came before it. AND END OF STREAM IS AN EXCEPTION RATHER THAN A ZERO, with no way to ask the stream how many bits are left.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 54,
+      "expect_contains": [
+        "write\tone-value-1-bits\tbyte 0x01 in 1 bits\t80\t1",
+        "write\tone-value-8-bits\tbyte 0x01 in 8 bits\t01\t0",
+        "write\ta-byte-too-wide-for-its-width\tbyte 0xFF in 3 bits\te0\t3",
+        "write\tstraddle-1-and-8\tbyte 0x01 in 1 then 0xFF in 8\tff80\t1",
+        "write\tlong-12-bits\tlong 0xABC in 12 bits\tabc0\t4",
+        "write\tnothing\tnothing\t-\t0",
+        "read\tread-the-padding\t80\treadBits 1,7\ttrue,0",
+        "read\tread-long-across\tabcd\treadLongBits 5,11\t21,973",
+        "err\tread-past-the-end\tRuntimeEOFException\tEnd of stream.",
+        "err\tlong-65-bits\tRuntimeIOException\tExpecting 1 to 64 bits, got: value=1, nofBits=65",
+        "err\tread-long-65-bits\tRuntimeException\tMore then 64 bits are requested in one read from bit stream.",
+        "err\tzero-bits-into-a-partial-buffer\tArrayIndexOutOfBoundsException\tIndex 8 out of bounds for length 8"
+      ],
+      "cases": [
+        {
+          "dump": "CramBitStreamDump",
+          "golden": null,
+          "why": "54 rows: thirty-two writes covering every width of every overload, the straddles and the multi-byte splits, eleven reads including the flush padding read back as data, and ten refusals with the wording each overload uses. Every row carries what was written or read, so the golden is readable without the dump beside it."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
