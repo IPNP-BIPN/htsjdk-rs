@@ -7,6 +7,7 @@
 pub mod bit_stream;
 pub mod block;
 pub mod container;
+pub mod core_codecs;
 pub mod encoding_map;
 pub mod preservation_map;
 pub mod rans;
