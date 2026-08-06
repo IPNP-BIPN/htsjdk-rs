@@ -934,6 +934,38 @@
       ]
     },
     {
+      "id": "cram-record-flags",
+      "status": "golden-pending",
+      "title": "The record's three flag words, and the mate chain that fills two of them",
+      "harness": "tools/cram-conformance",
+      "why": "A BAM record has one flag word. A CRAM record has three: the BAM flags it will become, a CRAM flags byte the format adds, and a mate flags byte that duplicates two bits of the first at DIFFERENT POSITIONS. Mate unmapped is 0x2 here and 0x8 there; mate reverse strand is 0x1 here and 0x20 there. Setting either through the record sets both, and htsjdk's own comment calls the duplication redundant and the specification ambiguous about it. THE TWO NARROW WORDS ARE MASKED TO A BYTE ON THE WAY OUT rather than refused on the way in: 511 reads back as 255, 256 as 0 and -1 as 255. RESTORING MATE INFO WALKS A RING, each record taking its mate from the next and the last from the first, and A CHAIN OF ONE IS LEFT UNTOUCHED because the walk returns before it starts. THE TEMPLATE LENGTH IS COMPUTED ONCE AND NEGATED ONCE, on the first and the last, so the middle record of a triple keeps the zero it was constructed with: measured 250, 0, -250. It is zero if either end is unmapped or the two are on different references, and otherwise NEVER ZERO, because a sign is added to the distance between the two 5' ends: two reads at the same position are one apart. AND A MATE ON NO REFERENCE LOSES ITS POSITION, the start being taken from the mate and then forced to zero.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 64,
+      "expect_contains": [
+        "mask\tcram\t511\t255",
+        "mask\tcram\t256\t0",
+        "mask\tmate\t-1\t255",
+        "chain\ttriple\t0\t1\t0\t0\t200\t250",
+        "chain\ttriple\t1\t33\t1\t0\t300\t0",
+        "chain\ttriple\t2\t17\t0\t0\t100\t-250",
+        "chain\tpair-same-start\t0\t1\t0\t0\t100\t1",
+        "chain\tpair-mate-no-reference\t0\t1\t0\t-1\t0\t0",
+        "chain\tpair-unmapped-mate\t0\t9\t2\t0\t200\t0",
+        "chain\tsingle\t0\t1\t0\t-1\t0\t0",
+        "insert\tpair-second-before\t-101\t101",
+        "detach\t6\t5\t2\t-1"
+      ],
+      "cases": [
+        {
+          "dump": "CramRecordFlagsDump",
+          "golden": null,
+          "why": "64 rows: twenty-eight flag words against nine predicates each, six masked values, nine chains of one to three records restored into rings with every record's five mate fields recorded, and three detachments. Every chain row carries the label of the arrangement it came from and the index within it."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
