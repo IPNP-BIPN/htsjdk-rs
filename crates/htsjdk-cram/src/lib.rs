@@ -4,6 +4,7 @@
 //! encodings, codec negotiation and reference-based compression. It is built from the bottom, and
 //! [`varint`] is the bottom: every structure above it is a run of ITF8s, so nothing above can be
 //! checked until those are.
+pub mod bit_stream;
 pub mod block;
 pub mod container;
 pub mod encoding_map;
