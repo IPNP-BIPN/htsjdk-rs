@@ -897,33 +897,18 @@
     },
     {
       "id": "cram-restore-bases",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The bases restored, in two passes and through a signed lookup",
       "harness": "tools/cram-conformance",
       "why": "The last piece of the record model's reverse direction. The bases come from three sources at once: the features say what differs, the reference supplies everything else, and the substitution matrix turns a code back into a base. IT IS TWO PASSES AND THE SECOND ONE OVERWRITES: ReadBase and Bases are skipped in the main loop under a comment saying to defer them, then applied straight into the array, so they win over the reference fill and over what the features before them wrote, and an insertion of GGG at position 1 followed by a Bases of TTT at position 1 restores TTT. THE TRAILING FILL STOPS AT THE END OF THE REFERENCE and leaves the array's own zeros: nothing ever writes an N past the end, a zero becomes one on the way through the lookup. toBamReadBasesInPlace INDEXES A 127-BYTE TABLE WITH A SIGNED BYTE, so a base of 0xE9 is index -23 and a base of 127 is one past the end, and because the table is built by adding 32 to every BAM read base, ']' is an '=' rather than an N. A SUBSTITUTION RESOLVES AGAINST A NORMALIZED REFERENCE BASE, so an IUPAC code on the reference resolves as though it were N. AND UNKNOWN BASES OR A READ LENGTH OF ZERO RETURN THE EMPTY SEQUENCE, with the features not looked at at all. The reference used here is aperiodic on purpose: against ACGTACGT... a reference cursor off by four reads the same bases as a correct one.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 55,
-      "expect_contains": [
-        "case\tno-features\t1\t8\tfalse\t-\tACGTTGCA",
-        "case\tno-features-mid-reference\t5\t8\tfalse\t-\tTGCAAGCT",
-        "case\tbases-over-an-insertion\t1\t8\tfalse\tI@1 bases=GGG,b@1 bases=TTT\tTTTACGTT",
-        "case\tread-base-over-a-substitution\t1\t8\tfalse\tX@4 code=0,B@4 base=M quality=40\tACGMTGCA",
-        "case\tpast-the-end\t20\t8\tfalse\t-\tCGGCANNN",
-        "case\tsubstitution-against-iupac\t13\t4\tfalse\tX@1 code=0\tARWS",
-        "case\tunknown-bases\t1\t8\ttrue\t-\t-",
-        "lookup\t0\tN",
-        "lookup\t93\t=",
-        "lookup\t127\tArrayIndexOutOfBoundsException",
-        "err\thigh-inserted-base\t1\t8\tfalse\ti@3 base=233\tArrayIndexOutOfBoundsException\tIndex -23 out of bounds for length 127",
-        "err\tsubstitution-code-out-of-range\t1\t8\tfalse\tX@4 code=9\tIllegalArgumentException\tCRAM: Attempt to retrieve a substitution base for invalid base 'T'"
-      ],
       "cases": [
         {
           "dump": "CramRestoreBasesDump",
-          "golden": null,
-          "why": "55 rows: twenty-four cases, six failures with the reference's own exception and message, eighteen entries of the lookup table every restored base goes through, and the five rows of the substitution matrix the cases are resolved against. Every row carries the inputs it came from."
+          "golden": "crates/htsjdk-cram/tests/data/cram_restore_bases.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-cram-restore-bases artefact of run 31112240771, the golden-pending run of htsjdk-rs #128. 55 rows: twenty-four cases, six failures with the reference's own exception and message, eighteen entries of the lookup table every restored base goes through, and the five rows of the substitution matrix the cases are resolved against. The reference is aperiodic on purpose: against ACGTACGT... a cursor off by four reads the same bases as a correct one, and every case would pass anyway."
         }
       ]
     }
