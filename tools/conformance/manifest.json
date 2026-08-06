@@ -994,6 +994,37 @@
       ]
     },
     {
+      "id": "cram-record-read",
+      "status": "golden-pending",
+      "title": "Reading a CRAM record, in the order the specification prescribes",
+      "harness": "tools/cram-conformance",
+      "why": "The first suite where the port reads bytes THE REFERENCE WROTE FROM RECORDS rather than bytes a dump built by hand: the measurement writes records through htsjdk's own writer, hands back the compression header and every block of the slice, and records what its own reader made of them. EVERY FIELD COMES FROM ITS OWN DATA SERIES AND THE SERIES SHARE STREAMS, so the order the reads happen in is not a detail of the implementation: read two series in the wrong order and both come back wrong with nothing to say so. THE ALIGNMENT START IS A DELTA when the header says so AND THE DELTA MAY BE NEGATIVE, which the corpus carries. THE READ NAME MOVES: preserved names are read before the mate block, generated ones inside it after the mate flags, and the specification says so explicitly. THE MATE FLAGS ARE PROPAGATED INTO THE BAM FLAGS because a writer need not have put them there. AN UNMAPPED RECORD DOES NOT READ ZERO READ FEATURES, it does not consult the series at all. AND A MULTI-REFERENCE SLICE READS A REFERENCE INDEX PER RECORD where a single-reference slice takes the slice's own. The blocks are carried uncompressed: what compressor each one got is cram-block's business, and carrying the compressed stream would make this suite depend on it.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 184,
+      "expect_contains": [
+        "start\tdelta-negative\t100\tSINGLE_REFERENCE: 0",
+        "record\tdelta-negative\t0\t0\t2\t0\tr0\t10\t0\t200\t-1\t0\t0\t40\t-1\t-\t-",
+        "record\tdelta-negative\t1\t0\t2\t0\tr1\t10\t0\t100\t-1\t0\t0\t40\t-1\t-\t-",
+        "record\tdelta\t1\t0\t2\t0\tr1\t10\t0\t140\t-1\t0\t0\t40\t-1\t-\t-",
+        "record\tfeatures\t0\t0\t2\t0\tr0\t10\t0\t100\t-1\t0\t0\t40\t-1\ti@4;I@5;D@7;S@8\t-",
+        "start\tunmapped\t0\tUNMAPPED_UNPLACED",
+        "record\tunmapped\t0\t4\t2\t0\tr0\t10\t-1\t0\t-1\t0\t0\t0\t-1\t-\t-",
+        "start\tmixed\t0\tMULTIPLE_REFERENCE",
+        "record\tmixed\t1\t4\t2\t0\tr1\t10\t-1\t0\t-1\t0\t0\t0\t-1\t-\t-",
+        "record\tmixed\t2\t0\t2\t0\tr2\t12\t0\t150\t-1\t0\t0\t40\t-1\ti@3\t-",
+        "block\tplain\tcore\tRAW\t-"
+      ],
+      "cases": [
+        {
+          "dump": "CramRecordReadDump",
+          "golden": null,
+          "why": "184 rows over six slices: a plain record, two whose alignment starts are a delta in each direction, one carrying four read features, one unmapped, and a multi-reference slice holding all three kinds. Every slice carries its compression header block, every one of its blocks uncompressed with the compressor it was given, its own alignment start and reference context, and one row per record with fourteen fields on it."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
