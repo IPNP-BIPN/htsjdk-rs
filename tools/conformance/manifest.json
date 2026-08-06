@@ -839,6 +839,40 @@
       ]
     },
     {
+      "id": "cram-golomb",
+      "status": "golden-pending",
+      "title": "Golomb, Golomb-Rice and Golomb-Long, the three the specification is removing",
+      "harness": "tools/cram-conformance",
+      "why": "Experimental in the reference, and reachable all the same: the encoding factory dispatches to them by identifier, so a file that names one has to be read and a port that skips them cannot claim to read every legal file. htsjdk logs a warning when one is built and guards them no further. GOLOMB DOES NOT ROUND-TRIP A VALUE WHOSE OFFSET SUM IS NEGATIVE and does not say so: with offset 0 and m 4, -1 is written as 60 and read back as 3, because the quotient is written by counting up to it and a negative one writes nothing at all. GOLOMB-RICE'S PARAMETER IS NOT m: the encoding calls it m and hands it to the codec as log2m, so an encoding built with 8 divides by 256 and 255 costs a byte and a half where 256 costs two. GOLOMB REFUSES m BELOW 2 AND GOLOMB-RICE TAKES IT WITHOUT A WORD, so the same mistake is an exception in one and a different encoding in the other. THE TWO REFUSALS OF read(length) ARE WORDED DIFFERENTLY, 'Multi-value read method not defined.' against 'Not implemented.' And every value in the corpus is small next to its m, because the quotient is unary: one long of 2^32 with m of 10 writes four hundred million ones, a row measured once at a hundred megabytes and removed.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 112,
+      "expect_contains": [
+        "golomb\t0\t2\t0\t00\t0",
+        "golomb\t0\t3\t2\t60\t2",
+        "golomb\t0\t4\t-1\t60\t3",
+        "golomb\t0\t4\t-4\t00\t0",
+        "golomb\t5\t4\t-5\t00\t-5",
+        "rice\t0\t8\t255\t7f80\t255",
+        "rice\t0\t8\t256\t8000\t256",
+        "rice\t0\t0\t8\tff00\t8",
+        "long\t0\t10\t100\tffc0\t100",
+        "seq\tgolomb\toffset=0 m=4\t0,1,2,3\t0530\t0,1,2,3",
+        "seq\trice\toffset=0 log2m=2\t0,1,2,3\t0530\t0,1,2,3",
+        "err\tgolomb\toffset=0 m=1\t0\tIllegalArgumentException\tM parameter must be at least 2.",
+        "err\trice\tread-length\t4\tRuntimeException\tNot implemented.",
+        "err\tgolomb\tread-length\t4\tRuntimeException\tMulti-value read method not defined."
+      ],
+      "cases": [
+        {
+          "dump": "CramGolombDump",
+          "golden": null,
+          "why": "112 rows: forty-eight Golomb values over six divisors including four whose offset sum is negative, thirty-six Golomb-Rice values over five powers, fourteen Golomb-Long values, three sequences where the three codecs agree byte for byte at a power-of-two divisor, four parameter sets and seven refusals. Every row carries the offset and the divisor it came from."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
