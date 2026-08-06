@@ -6,6 +6,7 @@
 //! checked until those are.
 pub mod bit_stream;
 pub mod block;
+pub mod codecs;
 pub mod compression_header;
 pub mod container;
 pub mod core_codecs;
@@ -19,6 +20,7 @@ pub mod rans;
 pub mod rans_order1;
 pub mod read_features;
 pub mod record_flags;
+pub mod record_read;
 pub mod slice_blocks;
 pub mod slice_header;
 pub mod substitution_matrix;
