@@ -863,32 +863,18 @@
     },
     {
       "id": "cram-read-features",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "How a record becomes read features, and what a match costs",
       "harness": "tools/cram-conformance",
       "why": "The first half of the CRAM record model. A slice's records are not stored as bases and a cigar: they are an alignment start, a read length, and a list of read features, and EVERYTHING THAT MATCHES THE REFERENCE IS STORED AS NOTHING AT ALL. THE POSITIONS ARE ONE-BASED AND THE INTERFACE SAYS THEY ARE NOT: every construction site passes zeroBasedPositionInRead + 1 while ReadFeature.getPosition's javadoc says zero-based, so a port that believes the doc is off by one on every feature. AN INSERTION OF n BASES BECOMES n FEATURES AND A SOFT CLIP OF n BECOMES ONE, decided five lines apart in the same loop, and htsjdk's own comment says the insertion should use a Bases feature and does not, so Bases and Insertion are read and never written. A MISMATCH SPLITS ON THE ALPHABET, NOT ON THE CIGAR: an ACGTN-to-ACGTN mismatch is a Substitution and anything else is a ReadBase carrying the quality score a second time. THE CIGAR'S OWN CLAIM IS NOT CONSULTED: an X over bases that match emits nothing and an = over bases that differ emits substitutions. PAST THE END OF THE REFERENCE EVERY BASE IS COMPARED AGAINST N, so an N out there matches and four Ns at the end of the reference produce three features. SEQ=* MANUFACTURES Ns that then mismatch, one substitution per position. AND THE MISSING-QUALITY TEST IS AN IDENTITY TEST: baseQualities.equals(NULL_QUALS) is Object.equals on a byte[], so an equal but distinct empty array is indexed like any other and throws.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 124,
-      "expect_contains": [
-        "case\tx-over-matching-bases\t8X\tACGTACGT\tIIIIIIII\t1\t0",
-        "case\teq-over-mismatching-bases\t8=\tTTTTTTTT\tIIIIIIII\t1\t6",
-        "case\tn-past-the-end\t4M\tNNNN\tIIII\t22\t3",
-        "feature\tfirst-base-substitution\t0\tX\t1\tbase=C ref=A code=-1",
-        "feature\tinsertion-of-three\t2\ti\t5\tbase=T",
-        "feature\tsoft-clip-of-three\t0\tS\t1\tbases=TTT",
-        "feature\tread-base-not-acgtn\t0\tB\t4\tbase=M quality=40",
-        "feature\tnull-quals-non-acgtn\t0\tB\t4\tbase=M quality=-1",
-        "feature\tno-sequence\t0\tX\t1\tbase=N ref=A code=-1",
-        "err\tempty-quals-non-acgtn\t4M\tACGM\t<empty array>\t1\tArrayIndexOutOfBoundsException\tIndex 3 out of bounds for length 0",
-        "err\talignment-start-zero\t4M\tACGT\tIIII\t0\tArrayIndexOutOfBoundsException\tIndex -1 out of bounds for length 24"
-      ],
       "cases": [
         {
           "dump": "CramReadFeatureDump",
-          "golden": null,
-          "why": "124 rows over twenty cases and one reference that is deliberately not all ACGT, so a base outside ACGTN can be met on the reference side as well as the read side. The twelve operator letters come from the classes rather than from the specification. Two cases end in an exception and carry their inputs like every other row."
+          "golden": "crates/htsjdk-cram/tests/data/cram_read_features.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-cram-read-features artefact of run 31096812285, the golden-pending run of htsjdk-rs #124. 124 rows over twenty cases and one reference that is deliberately not all ACGT, so a base outside ACGTN can be met on the reference side as well as the read side. The twelve operator letters come from the classes rather than from the specification. Two cases end in an exception and carry their inputs like every other row."
         }
       ]
     }
