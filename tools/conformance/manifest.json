@@ -741,6 +741,38 @@
       ]
     },
     {
+      "id": "cram-core-codecs",
+      "status": "golden-pending",
+      "title": "Beta, Gamma and Subexponential, the three codecs on the bit stream",
+      "harness": "tools/cram-conformance",
+      "why": "The three codecs the encoding map can name that write on the bit stream rather than on an external byte block. The dump drives each through the slice-blocks streams the reader and writer really use and takes the RAW CORE BLOCK back out, so what it records is what would land in a file. EVERY CODEC CARRIES AN OFFSET, added before storage and subtracted after, which is how a range starting below zero is stored in bits that cannot hold a sign. BETA IS THE ONLY ONE OF THE THREE WITH AN UPPER BOUND, refusing what does not fit with two messages naming the value, the offset and the limit. GAMMA AND SUBEXPONENTIAL COMPUTE A BIT LENGTH WITH A FLOATING-POINT LOG, 1 + (int)(Math.log(v) / Math.log(2)), so the bytes written depend on a double division landing on the right side of an integer at every power of two; the corpus walks every one of them up to 2^31 - 1. GAMMA REFUSES ZERO AND BELOW because its length prefix cannot encode a value with no bits. SUBEXPONENTIAL HAS TWO REGIMES SPLIT AT 2^k, and above the split the top bit is implied by the unary prefix rather than written. AND TWO OF THE FOUR MESSAGES CARRY A QUIRK: a double space in Gamma's, and 'less then' in Subexponential's.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 105,
+      "expect_contains": [
+        "beta\t0\t4\t15\tf0\t15",
+        "beta\t10\t4\t-10\t00\t-10",
+        "beta\t0\t32\t2147483647\t7fffffff\t2147483647",
+        "gamma\t0\t1\t80\t1",
+        "gamma\t0\t4\t20\t4",
+        "gamma\t0\t2147483647\t00000003fffffff8\t2147483647",
+        "subexp\t0\t2\t3\t60\t3",
+        "subexp\t0\t2\t4\t80\t4",
+        "seq\tbeta\toffset=0 bits=3\t1,2,3,4\t29c0\t1,2,3,4",
+        "err\tbeta\toffset=0 bits=4\t16\tIllegalArgumentException\tValue 16 plus offset 0 is greater than or equal to limit 16",
+        "err\tgamma\toffset=0\t0\tIllegalArgumentException\tGamma codec handles only positive values.  Value 0 + Offset 0 <= 0",
+        "err\tsubexp\toffset=0 k=2\t-1\tIllegalArgumentException\tValue is less then offset: -1"
+      ],
+      "cases": [
+        {
+          "dump": "CramCoreCodecDump",
+          "golden": null,
+          "why": "105 rows: thirteen Beta values across four widths and three offsets, thirty-four Gamma values walking every power of two up to 2^31 - 1 because that is where a floating-point log could land on the wrong side of an integer, forty-eight Subexponential values over four values of k and both regimes, three sequences where values pack against each other with no alignment, and seven refusals. Every row carries the parameters it came from and the value read back."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
