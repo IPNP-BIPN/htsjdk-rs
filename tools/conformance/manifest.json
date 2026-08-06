@@ -880,31 +880,18 @@
     },
     {
       "id": "cram-record-cigar",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The cigar rebuilt from read features, where the matches are the gaps",
       "harness": "tools/cram-conformance",
       "why": "The way back from the read features. THE CIGAR IS NOT STORED ANYWHERE: it is rebuilt from the feature positions and the read length, and `gap = position - (lastOpPos + lastOpLen)` is the ONLY source of M in the output, so the matches thrown away on the way in come back as the gaps between what was kept. A SUBSTITUTION AND A READBASE ARE BOTH M, so the rebuilt cigar never emits X or =, and a record written with 8X comes back as 8M: the only shape in the corpus whose round trip changes. A FEATURE THAT CONSUMES NO READ BASES WINDS THE READ CURSOR BACK, because the bookkeeping is in read space, and a deletion at the first position therefore leaves the whole read after it: D@1 len=2 over a read of 8 rebuilds as 2D8M. THE SWITCH SILENTLY IGNORES WHAT IT DOES NOT NAME, dropping BaseQualityScore, Scores and Bases, and Bases carries read bases, so a list holding one rebuilds as though it were not there. AND THE READ LENGTH SAYS WHERE THE READ ENDS AND IT WINS: a feature positioned past it is absorbed, and a read length of 0 takes the accumulated length instead.",
       "compare": {
         "mode": "lines"
       },
-      "expect_rows": 40,
-      "expect_contains": [
-        "case\tempty\t8\t-\t8M",
-        "case\tadjacent-substitutions\t8\tX@4 base=T ref=A,X@5 base=T ref=A\t8M",
-        "case\tdeletion-at-one\t8\tD@1 len=2\t2D8M",
-        "case\tbases-only\t8\tb@1 bases=ACGT\t8M",
-        "case\tzero-read-length\t0\tX@4 base=T ref=A\t4M",
-        "case\tread-length-shorter-than-features\t3\tX@6 base=T ref=A\t3M",
-        "case\tsoft-clip-right\t8\tS@6 bases=TTT\t5M3S",
-        "roundtrip\tx-operator\t8X\tACGTACGT\t1\t8M\tchanged",
-        "roundtrip\teq-operator\t8=\tTTTTTTTT\t1\t8M\tchanged",
-        "roundtrip\tinsertion-and-deletion\t2M2I2M2D2M\tACTTACGT\t1\t2M2I2M2D2M\tsame"
-      ],
       "cases": [
         {
           "dump": "CramRecordCigarDump",
-          "golden": null,
-          "why": "40 rows: twenty-six hand-built feature lists, so the rebuild is exercised on shapes the writer never emits as well as on shapes it does, and thirteen round trips of a record's own cigar through its features and back. Every row carries the list it came from, so the golden is readable without the dump beside it."
+          "golden": "crates/htsjdk-cram/tests/data/cram_record_cigar.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-cram-record-cigar artefact of run 31110570337, the golden-pending run of htsjdk-rs #126. 40 rows: twenty-six hand-built feature lists, so the rebuild is exercised on shapes the writer never emits as well as on shapes it does, and thirteen round trips of a record's own cigar through its features and back. Every row carries the list it came from."
         }
       ]
     }
