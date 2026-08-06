@@ -773,6 +773,39 @@
       ]
     },
     {
+      "id": "cram-huffman",
+      "status": "golden-pending",
+      "title": "Canonical Huffman, the fourth codec on the bit stream",
+      "harness": "tools/cram-conformance",
+      "why": "A CRAM file carries no Huffman tree. It carries an alphabet and one code word length per symbol, and both writer and reader rebuild the same code words from that pair alone, so what the suite pins is THE REBUILDING and not the tree that chose the lengths (htsjdk has a class for that and nothing in the library calls it). Symbols are grouped by length, sorted inside each group, and handed consecutive integers shifted left whenever the length grows, so THE ALPHABET'S ORDER IN THE FILE DOES NOT MATTER. BYTE SYMBOLS SORT SIGNED, the grouping being a TreeSet, so 0x80 takes the first code word and not the last. A ONE-SYMBOL ALPHABET HAS LENGTH ZERO and therefore writes no bits at all, leaving an empty core block from which the number of symbols written cannot be recovered. THE OVERFLOW CHECK COUNTS SET BITS RATHER THAN WIDTH, so three symbols at one bit are accepted and the third given code word 2, while four are refused. AND AN UNMATCHED CODE WORD RUNS OFF THE END OF A TABLE SIZED TO THE LARGEST CODE WORD, so a truncated or foreign stream is an ArrayIndexOutOfBoundsException and the codec's own 'unable to map' message is reachable only with an empty alphabet.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 57,
+      "expect_contains": [
+        "canon\t1,2,3,4\t2,2,2,2\t1:0/2,2:1/2,3:2/2,4:3/2",
+        "canon\t4,3,2,1\t2,2,2,2\t1:0/2,2:1/2,3:2/2,4:3/2",
+        "canon\t1,2,3\t1,1,1\t1:0/1,2:1/1,3:2/1",
+        "canon\t42\t0\t42:0/0",
+        "canon\tbytes:65,-128,127,0\t2,2,2,2\t-128:0/2,0:1/2,65:2/2,127:3/2",
+        "canonerr\t1,2,3,4\t1,1,1,1\tIllegalArgumentException\tBit length (2) for symbol (4) out of range",
+        "ser\tint\t42\t0\t012a0100\t012a0100",
+        "ser\tbyte\t-128,127\t1,1\t02807f020101\t02807f020101",
+        "round\tint\t42\t0\t42,42,42\t-\t42,42,42",
+        "round\tbyte\t65,-128,127,0\t2,2,2,2\t-128,0,127,65\t1e\t-128,0,127,65",
+        "cross\t1,2,3,4\t2,2,2,2\t4\t1,2,3\t2,2,2\tArrayIndexOutOfBoundsException: Index 3 out of bounds for length 3",
+        "cross\t1,2\t1,1\t1\t-\t-\tRuntimeException: Unable to map huffman code from input stream to a valid symbol",
+        "err\tread-empty\t1,2,3,4\t2,2,2,2\t-\tRuntimeEOFException\tEnd of stream."
+      ],
+      "cases": [
+        {
+          "dump": "CramHuffmanDump",
+          "golden": null,
+          "why": "57 rows: the canonical code words for twenty-one length tables including four byte alphabets, two length tables refused, the serialized encoding parameters both ways for seven parameter sets, fourteen round trips through the real slice-block streams with the raw core block taken back out, seven streams written with one alphabet and read with another, and six refusals. Every row carries the alphabet and the lengths it came from."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
