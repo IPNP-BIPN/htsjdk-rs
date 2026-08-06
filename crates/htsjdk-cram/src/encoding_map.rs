@@ -236,6 +236,15 @@ impl EncodingMapError {
             }
         }
     }
+
+    /// The exception the reference throws for each.
+    pub fn java_exception(&self) -> &'static str {
+        match self {
+            EncodingMapError::UnknownDataSeries(_) => "CRAMException",
+            EncodingMapError::EncodingIdOutOfBounds(_) => "ArrayIndexOutOfBoundsException",
+            EncodingMapError::Truncated => "RuntimeEOFException",
+        }
+    }
 }
 
 impl From<RuntimeEof> for EncodingMapError {
