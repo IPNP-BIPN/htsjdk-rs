@@ -8,6 +8,7 @@ pub mod bit_stream;
 pub mod block;
 pub mod container;
 pub mod core_codecs;
+pub mod encoding_factory;
 pub mod encoding_map;
 pub mod external_codecs;
 pub mod golomb;
