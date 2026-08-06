@@ -9,6 +9,7 @@ pub mod block;
 pub mod container;
 pub mod core_codecs;
 pub mod encoding_map;
+pub mod huffman;
 pub mod preservation_map;
 pub mod rans;
 pub mod rans_order1;
