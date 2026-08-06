@@ -873,6 +873,38 @@
       ]
     },
     {
+      "id": "cram-encoding-factory",
+      "status": "golden-pending",
+      "title": "EncodingFactory: which encoding a type and an identifier resolve to",
+      "harness": "tools/cram-conformance",
+      "why": "The last thing between a file's bytes and the codecs: a compression header names an encoding per data series, by identifier and parameters, and this turns that pair into something that can read. Forty lines of Java, and one missing keyword in them. THE SWITCH FALLS THROUGH: only the BYTE arm ends in a break, so an INT that matches nothing falls into the LONG arm and then into the BYTE_ARRAY arm, and a LONG that matches nothing falls into BYTE_ARRAY. An INT data series named with BYTE_ARRAY_LEN therefore gets a ByteArrayLenEncoding rather than the refusal the method's last line promises, and BYTE never falls through at all. THE PARAMETERS ARE NOT CHECKED AGAINST THE TYPE, so the same bytes mean a content id in one arm and the head of a Huffman alphabet in another. NULL IS AN IDENTIFIER LIKE ANY OTHER and matches nothing anywhere, so all four types refuse it, with a message naming both halves of what was asked for. The suite is exhaustive by construction: four types by ten identifiers, every cell recorded as the class it produced or the refusal it raised.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 49,
+      "expect_contains": [
+        "make\tINT\tBYTE_ARRAY_LEN\t010101010102\tByteArrayLenEncoding\tLenEncoding: Content ID: 1 ByteEncoding: Content ID: 2",
+        "make\tINT\tBYTE_ARRAY_STOP\t0001\tByteArrayStopEncoding\tContent ID: 1 StopByte: 0",
+        "make\tLONG\tBYTE_ARRAY_LEN\t010101010102\tByteArrayLenEncoding\tLenEncoding: Content ID: 1 ByteEncoding: Content ID: 2",
+        "err\tBYTE\tBYTE_ARRAY_LEN\t010101010102\tIllegalArgumentException\tEncoding not found: value type=BYTE, encoding id=BYTE_ARRAY_LEN",
+        "err\tBYTE\tBYTE_ARRAY_STOP\t0001\tIllegalArgumentException\tEncoding not found: value type=BYTE, encoding id=BYTE_ARRAY_STOP",
+        "make\tINT\tGOLOMB\t0004\tGolombIntegerEncoding\tOffset: 0 m: 4",
+        "make\tLONG\tGOLOMB\t0004\tGolombLongEncoding\tOffset: 0 m: 4",
+        "err\tLONG\tHUFFMAN\t012a0100\tIllegalArgumentException\tEncoding not found: value type=LONG, encoding id=HUFFMAN",
+        "err\tBYTE\tNULL\t-\tIllegalArgumentException\tEncoding not found: value type=BYTE, encoding id=NULL",
+        "make\tINT\tHUFFMAN\t0301020303010202\tCanonicalHuffmanIntegerEncoding\tSymbols: 1;2;3 BitLengths 1;2;2",
+        "make\tBYTE\tHUFFMAN\t024143020101\tCanonicalHuffmanByteEncoding\tSymbols: 65;67 BitLengths 1;1",
+        "make\tBYTE_ARRAY\tBYTE_ARRAY_LEN\t0304012a010005020002\tByteArrayLenEncoding\tLenEncoding: Symbols: 42 BitLengths 0 ByteEncoding: Content ID: 2 StopByte: 0"
+      ],
+      "cases": [
+        {
+          "dump": "CramEncodingFactoryDump",
+          "golden": null,
+          "why": "49 rows: the full four-by-ten grid of data series type against encoding identifier, twenty-seven of which resolve and twenty-two of which refuse, plus one external encoding through all four types, a multi-symbol alphabet and a nested pair to pin how each encoding prints itself, and two rows built from a descriptor rather than a loose pair. Every row carries the parameters it was given, in hex."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
