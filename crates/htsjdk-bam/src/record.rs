@@ -426,11 +426,16 @@ pub fn read_tags(mut buf: &[u8]) -> Result<Tags, DecodeError> {
             b'f' => TagValue::Float(f32::from_le_bytes(take(&mut buf, 4)?.try_into().unwrap())),
             b'H' => {
                 let hex = nul_string(&mut buf)?;
-                let bytes = (0..hex.len() / 2)
-                    .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16))
+                let values = (0..hex.len() / 2)
+                    .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).map(|b| b as i8))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| malformed("bad hex tag"))?;
-                TagValue::Hex(bytes)
+                // The same `byte[]` a signed `B` array gives back, which is why rewriting an `H`
+                // tag produces a `B` one.
+                TagValue::ByteArray {
+                    values,
+                    unsigned: false,
+                }
             }
             b'B' => {
                 if buf.len() < 5 {
