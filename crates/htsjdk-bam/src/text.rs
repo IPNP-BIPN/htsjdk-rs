@@ -119,7 +119,10 @@ pub fn encode_tag(tag: Tag, value: &TagValue) -> Option<String> {
 ///
 /// Java always shows a decimal point (`1.0`, not `1`) and switches to scientific notation
 /// outside `[1e-3, 1e7)`, with the exponent written as `E7` rather than `e7`.
-fn java_float_to_string(f: f32) -> String {
+///
+/// Public because a conformance golden that records a float records `Float.toString`'s rendering
+/// of it, and a test comparing against `{}` would differ on `-0.0` alone.
+pub fn java_float_to_string(f: f32) -> String {
     if f.is_nan() {
         return "NaN".to_string();
     }

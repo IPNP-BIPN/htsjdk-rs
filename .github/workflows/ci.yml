@@ -124,48 +124,44 @@ jobs:
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
             index: "2/10"
-            slug: "bam-codec-bam-file-bam-reheader-bam-gather-histogram"
-            suites: "bam-codec bam-file bam-reheader bam-gather histogram"
+            slug: "bam-codec-bam-file-bam-reheader-bam-gather-bam-tag-read"
+            suites: "bam-codec bam-file bam-reheader bam-gather bam-tag-read"
           - group: oracle-backed
             index: "3/10"
-            slug: "sam-text-sam-file-bai-build-index-interval-list"
-            suites: "sam-text sam-file bai build-index interval-list"
+            slug: "histogram-sam-text-sam-file-bai-build-index"
+            suites: "histogram sam-text sam-file bai build-index"
           - group: oracle-backed
             index: "4/10"
-            slug: "vcf-header-vcf-header-parse-vcf-header-lines-vcf-record-vcf-file"
-            suites: "vcf-header vcf-header-parse vcf-header-lines vcf-record vcf-file"
+            slug: "interval-list-vcf-header-vcf-header-parse-vcf-header-lines-vcf-record"
+            suites: "interval-list vcf-header vcf-header-parse vcf-header-lines vcf-record"
           - group: oracle-backed
             index: "5/10"
-            slug: "vcf-record-parse-vcf-genotype-parse-vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods"
-            suites: "vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods"
+            slug: "vcf-file-vcf-record-parse-vcf-genotype-parse-vcf-read-vcf-index-on-the-fly"
+            suites: "vcf-file vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly"
           - group: oracle-backed
             index: "6/10"
-            slug: "vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type-rg-checksum-cigar-clip"
-            suites: "vcf-chromosome-counts vcf-genotype-type vcf-attribute-type rg-checksum cigar-clip"
+            slug: "vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type-rg-checksum"
+            suites: "vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type vcf-attribute-type rg-checksum"
           - group: oracle-backed
             index: "7/10"
-            slug: "mateinfo-percentile-fastmath-exp-gamma-erf-normal-saddle-point"
-            suites: "mateinfo percentile fastmath-exp gamma-erf-normal saddle-point"
+            slug: "cigar-clip-mateinfo-percentile-fastmath-exp-gamma-erf-normal"
+            suites: "cigar-clip mateinfo percentile fastmath-exp gamma-erf-normal"
           - group: oracle-backed
             index: "8/10"
-            slug: "variant-comparator-smart-merge-headers-tribble-index-tribble-index-write-cram-varint"
-            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
+            slug: "saddle-point-variant-comparator-smart-merge-headers-tribble-index-tribble-index-write"
+            suites: "saddle-point variant-comparator smart-merge-headers tribble-index tribble-index-write"
           - group: oracle-backed
             index: "9/10"
-            slug: "cram-container-cram-block-cram-rans-cram-rans-order1-cram-preservation-map"
-            suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
+            slug: "cram-varint-cram-container-cram-block-cram-rans-cram-rans-order1"
+            suites: "cram-varint cram-container cram-block cram-rans cram-rans-order1"
           - group: oracle-backed
             index: "10/10"
-            slug: "cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header"
-            suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header"
+            slug: "cram-preservation-map-cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header"
+            suites: "cram-preservation-map cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header"
           - group: unchecked
             index: "1/1"
             slug: "format"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            slug: "bam-tag-read"
-            suites: "bam-tag-read"
     steps:
       - uses: actions/checkout@v4
 
