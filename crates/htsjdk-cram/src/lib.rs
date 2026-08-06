@@ -19,6 +19,7 @@ pub mod rans;
 pub mod rans_order1;
 pub mod read_features;
 pub mod record_flags;
+pub mod slice_blocks;
 pub mod slice_header;
 pub mod substitution_matrix;
 pub mod tag_encoding_map;
