@@ -168,10 +168,20 @@ fn content_type_name(content_type: Option<ContentType>, id: i32) -> String {
 ///
 /// The content id is zero and both sizes are the content's length, because nothing is compressed.
 pub fn raw_block(content_type: ContentType, content: &[u8], major: u8) -> Vec<u8> {
+    raw_block_with_id(content_type, NO_CONTENT_ID, content, major)
+}
+
+/// The same, for a block that carries a content id: an external block of a slice.
+pub fn raw_block_with_id(
+    content_type: ContentType,
+    content_id: i32,
+    content: &[u8],
+    major: u8,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(content.len() + 16);
     out.push(CompressionMethod::Raw as u8);
     out.push(content_type as u8);
-    out.extend_from_slice(&write_unsigned_itf8(NO_CONTENT_ID).0);
+    out.extend_from_slice(&write_unsigned_itf8(content_id).0);
     out.extend_from_slice(&write_unsigned_itf8(content.len() as i32).0);
     out.extend_from_slice(&write_unsigned_itf8(content.len() as i32).0);
     out.extend_from_slice(content);
