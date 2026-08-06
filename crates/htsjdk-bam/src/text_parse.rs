@@ -203,11 +203,16 @@ pub fn parse_tag(field: &str) -> Result<(Tag, TagValue), ParseError> {
                     "Tag of type H should have valid hex string with even number of digits".into(),
                 ));
             }
-            let bytes = (0..value.len() / 2)
-                .map(|i| u8::from_str_radix(&value[i * 2..i * 2 + 2], 16))
+            let values = (0..value.len() / 2)
+                .map(|i| u8::from_str_radix(&value[i * 2..i * 2 + 2], 16).map(|b| b as i8))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| ParseError::BadTag("bad hex".into()))?;
-            TagValue::Hex(bytes)
+            // A plain `byte[]`, which is all htsjdk holds: an `H` that comes back out is written
+            // as the `B` array it is indistinguishable from.
+            TagValue::ByteArray {
+                values,
+                unsigned: false,
+            }
         }
         "B" => return parse_array_tag(tag, value).map(|v| (tag, v)),
         _ => return Err(ParseError::BadTag(format!("Unrecognized tag type: {ty}"))),

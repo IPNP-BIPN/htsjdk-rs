@@ -58,10 +58,9 @@ pub fn encode_tag(tag: Tag, value: &TagValue) -> Option<String> {
         // value; the shared helper keeps the two together.
         TagValue::Float(f) => format!("{name}:f:{}", java_float_to_string(*f)),
         TagValue::Str(s) => format!("{name}:Z:{s}"),
-        TagValue::Hex(bytes) => {
-            let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
-            format!("{name}:H:{hex}")
-        }
+        // No `H` arm: `getTagValueType` answers `'B'` for the `byte[]` an `H` decoded into, so
+        // the branch that would write one is unreachable and htsjdk's own comment says it should
+        // never happen. Measured: `XX:H:48656C` re-encodes as `XX:B:c,72,101,108`.
         TagValue::ByteArray { values, unsigned } => {
             let letter = if *unsigned { 'C' } else { 'c' };
             let body: String = values

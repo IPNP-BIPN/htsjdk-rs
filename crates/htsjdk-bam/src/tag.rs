@@ -12,6 +12,9 @@
 //! 2. **Tag order is by the packed short, not by the tag string.** `makeBinaryTag` packs the
 //!    *second* character into the high byte, so tags sort on their second letter first.
 //! 3. **Strings are one byte per UTF-16 unit**, truncated, not encoded.
+//! 4. **There is no in-memory `H`.** It decodes into the same `byte[]` a `B` array does, so
+//!    every branch that would write one back is dead, and an `H` tag read and rewritten comes
+//!    out as a `B` array in both the binary and the text codec.
 
 use std::fmt;
 
@@ -71,9 +74,12 @@ pub enum TagValue {
     Float(f32),
     /// `'Z'`, stored as UTF-16 units because that is what htsjdk measures and truncates.
     Str(String),
-    /// `'H'`. htsjdk **reads** this and never writes it, preferring `B` as more compact.
-    Hex(Vec<u8>),
-    /// `'B'` with element type `c`/`C`.
+    /// `'B'` with element type `c`/`C`, and also what an `'H'` becomes.
+    ///
+    /// There is no in-memory `H`: htsjdk decodes one into a plain `byte[]`, which is the same
+    /// thing a `B` array of signed bytes decodes into, and `getTagValueType` answers `'B'` for it.
+    /// Both codecs carry a dead branch for writing `H` back, and `TextTagCodec`'s says so in a
+    /// comment. Measured: `XX:H:48656C` re-encodes as `XX:B:c,72,101,108`.
     ByteArray { values: Vec<i8>, unsigned: bool },
     /// `'B'` with element type `s`/`S`.
     ShortArray { values: Vec<i16>, unsigned: bool },
@@ -90,8 +96,6 @@ pub enum TagError {
     IntegerTooLarge(i64),
     /// `getIntegerType`: "Integer attribute value too negative to be encoded in BAM".
     IntegerTooNegative(i64),
-    /// `'H'` is read but never written by htsjdk, so writing one is out of contract.
-    HexIsNeverWritten,
 }
 
 /// `BinaryTagCodec.getIntegerType`.
@@ -152,7 +156,6 @@ pub fn tag_value_type(value: &TagValue) -> Result<u8, TagError> {
         TagValue::Char(_) => b'A',
         TagValue::Float(_) => b'f',
         TagValue::Int(v) => integer_type(*v)?,
-        TagValue::Hex(_) => return Err(TagError::HexIsNeverWritten),
         TagValue::ByteArray { .. }
         | TagValue::ShortArray { .. }
         | TagValue::IntArray { .. }
@@ -182,7 +185,6 @@ pub fn binary_value_size(value: &TagValue) -> Result<usize, TagError> {
             b'c' | b'C' => 1,
             t => unreachable!("integer_type returned {}", t as char),
         },
-        TagValue::Hex(b) => b.len() * 2 + 1,
         TagValue::ByteArray { values, .. } => values.len() + FIXED_BINARY_ARRAY_TAG_SIZE,
         TagValue::ShortArray { values, .. } => values.len() * 2 + FIXED_BINARY_ARRAY_TAG_SIZE,
         TagValue::IntArray { values, .. } => values.len() * 4 + FIXED_BINARY_ARRAY_TAG_SIZE,
@@ -216,7 +218,6 @@ pub fn write_tag(out: &mut Vec<u8>, tag: Tag, value: &TagValue) -> Result<(), Ta
             b'c' | b'C' => out.push(*v as u8),
             _ => unreachable!(),
         },
-        TagValue::Hex(_) => return Err(TagError::HexIsNeverWritten),
         TagValue::ByteArray { values, unsigned } => {
             out.push(if *unsigned { b'C' } else { b'c' });
             out.extend_from_slice(&(values.len() as i32).to_le_bytes());
@@ -506,13 +507,17 @@ mod tests {
         assert_eq!(&out[3..], b"caf\xE9\x00");
     }
 
+    /// An `H` value has no type of its own, so it is written as the `B` array it decoded into.
     #[test]
-    fn hex_is_refused_because_htsjdk_never_writes_it() {
+    fn what_an_h_decoded_into_is_written_back_as_an_array() {
+        let value = TagValue::ByteArray {
+            values: vec![1, 2],
+            unsigned: false,
+        };
+        assert_eq!(tag_value_type(&value).unwrap(), b'B');
         let mut out = Vec::new();
-        assert_eq!(
-            write_tag(&mut out, t("XX"), &TagValue::Hex(vec![1, 2])),
-            Err(TagError::HexIsNeverWritten)
-        );
+        write_tag(&mut out, t("XX"), &value).unwrap();
+        assert_eq!(out, b"XXBc\x02\x00\x00\x00\x01\x02");
     }
 
     #[test]
