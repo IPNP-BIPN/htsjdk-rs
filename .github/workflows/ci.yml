@@ -160,20 +160,24 @@ jobs:
             suites: "cram-golomb cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks"
           - group: oracle-backed
             index: "11/13"
-            slug: "cram-record-read-cram-container-cram-block-cram-rans-cram-rans-order1"
-            suites: "cram-record-read cram-container cram-block cram-rans cram-rans-order1"
+            slug: "cram-container-cram-block-cram-rans-cram-rans-order1-cram-preservation-map"
+            suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
           - group: oracle-backed
             index: "12/13"
-            slug: "cram-preservation-map-cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header"
-            suites: "cram-preservation-map cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header"
+            slug: "cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features"
+            suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features"
           - group: oracle-backed
             index: "13/13"
-            slug: "cram-read-features-cram-record-cigar-cram-restore-bases"
-            suites: "cram-read-features cram-record-cigar cram-restore-bases"
+            slug: "cram-record-cigar-cram-restore-bases"
+            suites: "cram-record-cigar cram-restore-bases"
           - group: unchecked
             index: "1/1"
             slug: "format"
             suites: "format"
+          - group: golden-pending
+            index: "1/1"
+            slug: "cram-record-read"
+            suites: "cram-record-read"
     steps:
       - uses: actions/checkout@v4
 

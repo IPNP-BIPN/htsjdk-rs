@@ -106,6 +106,11 @@ pub struct CramRecord {
     pub records_to_next_fragment: i32,
     pub mapping_quality: i32,
     pub read_features: Vec<ReadFeature>,
+    /// Only an unmapped record carries these; a mapped one's bases come from its read features and
+    /// the reference.
+    pub read_bases: Vec<u8>,
+    /// Only present where the CRAM flags say the scores were kept as an array.
+    pub quality_scores: Vec<u8>,
     /// The tag ids the dictionary gave, three bytes each, in its order.
     pub tags: Vec<[u8; 3]>,
 }
@@ -133,6 +138,13 @@ impl SliceContext {
 /// state across reads would behave differently if it were rebuilt.
 pub struct RecordReaders {
     map: Vec<(&'static str, Encoding)>,
+    /// The quality score series again, resolved as a byte array rather than as a byte.
+    ///
+    /// The reference builds this one by hand, with a comment wondering why: it takes the QS
+    /// series' own encoding descriptor and hands it a data series type of BYTE_ARRAY instead of
+    /// BYTE. Since QS is external, that is the same block read a different way, so a record's
+    /// scores come out of the same bytes its per-base scores would.
+    quality_score_array: Option<Encoding>,
 }
 
 impl RecordReaders {
@@ -154,7 +166,22 @@ impl RecordReaders {
                 map.push((name, encoding));
             }
         }
-        Ok(Self { map })
+
+        let quality_score_array = DataSeries::by_canonical_name(b"QS")
+            .and_then(|series| encodings.get(series))
+            .map(|descriptor| {
+                create_encoding(
+                    DataSeriesType::ByteArray,
+                    descriptor.id,
+                    &descriptor.parameters,
+                )
+            })
+            .transpose()?;
+
+        Ok(Self {
+            map,
+            quality_score_array,
+        })
     }
 
     fn get(&self, name: &'static str) -> Result<&Encoding, RecordReadError> {
@@ -275,9 +302,42 @@ pub fn read_record(
     if !record.flags.is_segment_unmapped() {
         record.read_features = read_read_features(readers, streams)?;
         record.mapping_quality = read_int(readers.get("MQ")?, streams)?;
+        if record.flags.is_force_preserve_quality_scores() {
+            record.quality_scores = read_quality_score_array(readers, streams, record.read_length)?;
+        }
+    } else if !record.flags.is_unknown_bases() {
+        // One byte at a time, out of the same series a read feature's base comes from. A reader
+        // that skips this desynchronises every record after it in the slice and nothing says so.
+        let mut bases = Vec::new();
+        for _ in 0..record.read_length.max(0) {
+            bases.push(read_byte(readers.get("BA")?, streams)? as u8);
+        }
+        record.read_bases = bases;
+        // The scores are read INSIDE the unknown-bases branch here and outside the equivalent one
+        // above, so an unmapped record with unknown bases reads neither, however its flags read.
+        if record.flags.is_force_preserve_quality_scores() {
+            record.quality_scores = read_quality_score_array(readers, streams, record.read_length)?;
+        }
     }
 
     Ok(record)
+}
+
+/// The quality scores as one array, through the QS series read as a byte array.
+fn read_quality_score_array(
+    readers: &RecordReaders,
+    streams: &mut SliceReadStreams<'_>,
+    read_length: i32,
+) -> Result<Vec<u8>, RecordReadError> {
+    let encoding = readers
+        .quality_score_array
+        .as_ref()
+        .ok_or(RecordReadError::MissingDataSeries { name: "QS" })?;
+    Ok(read_byte_array(
+        encoding,
+        streams,
+        Some(read_length.max(0) as usize),
+    )?)
 }
 
 /// `ReadTag.name3BytesToInt`: the three bytes of a tag id, packed low byte first.
