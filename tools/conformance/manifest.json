@@ -995,7 +995,7 @@
     },
     {
       "id": "cram-record-read",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Reading a CRAM record, in the order the specification prescribes",
       "harness": "tools/cram-conformance",
       "why": "The first suite where the port reads bytes THE REFERENCE WROTE FROM RECORDS rather than bytes a dump built by hand: the measurement writes records through htsjdk's own writer, hands back the compression header and every block of the slice, and records what its own reader made of them. EVERY FIELD COMES FROM ITS OWN DATA SERIES AND THE SERIES SHARE STREAMS, so the order the reads happen in is not a detail of the implementation: read two series in the wrong order and both come back wrong with nothing to say so. THE ALIGNMENT START IS A DELTA when the header says so AND THE DELTA MAY BE NEGATIVE, which the corpus carries. THE READ NAME MOVES: preserved names are read before the mate block, generated ones inside it after the mate flags, and the specification says so explicitly. THE MATE FLAGS ARE PROPAGATED INTO THE BAM FLAGS because a writer need not have put them there. AN UNMAPPED RECORD DOES NOT READ ZERO READ FEATURES, it does not consult the series at all. AND A MULTI-REFERENCE SLICE READS A REFERENCE INDEX PER RECORD where a single-reference slice takes the slice's own. The blocks are carried uncompressed: what compressor each one got is cram-block's business, and carrying the compressed stream would make this suite depend on it.",
@@ -1019,8 +1019,8 @@
       "cases": [
         {
           "dump": "CramRecordReadDump",
-          "golden": null,
-          "why": "184 rows over six slices: a plain record, two whose alignment starts are a delta in each direction, one carrying four read features, one unmapped, and a multi-reference slice holding all three kinds. Every slice carries its compression header block, every one of its blocks uncompressed with the compressor it was given, its own alignment start and reference context, and one row per record with fourteen fields on it."
+          "golden": "crates/htsjdk-cram/tests/data/cram_record_read.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31160152816. 184 rows, byte for byte what an Apple Silicon laptop produced, which matters more here than in the suites below it: these bytes came out of htsjdk's own writer over its own compressors, and they are the same on both machines."
         }
       ]
     },
