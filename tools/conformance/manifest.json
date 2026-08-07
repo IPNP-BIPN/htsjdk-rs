@@ -906,7 +906,7 @@
     },
     {
       "id": "cram-compression-header",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The compression header as a whole, and the checksum version 3 carries",
       "harness": "tools/cram-conformance",
       "why": "Three length-prefixed maps inside one raw block, each already covered by a suite of its own. This is the join, and the last structure between a container's bytes and the codecs that read its slices. A HEADER READ AND WRITTEN AGAIN IS BYTE-IDENTICAL in all six measured cases, which is the property a byte-identical port needs and the one place a dropped field shows without being looked for. THE VERSION CHANGES THE BLOCK AND NOTHING INSIDE IT: a 3.0 block carries a four-byte CRC-32 that a 2.1 block does not, so the same header is 178 bytes in one and 174 in the other, identical up to those four. The checksum covers the block header and the content together, is written little-endian, and sits OUTSIDE the compressed size. THE BLOCK IS ALWAYS RAW whatever the version, and its content type is checked before anything is parsed, with the refusal naming what was found. TWO OF THE FIVE PRESERVATION KEYS ARE REQUIRED and one message covers a missing SM and a missing TD alike, fired only after the whole map has been read; an unknown key is fatal and carries the two characters that were not recognised.",
@@ -928,8 +928,8 @@
       "cases": [
         {
           "dump": "CramCompressionHeaderDump",
-          "golden": null,
-          "why": "19 rows: six headers written, read back and written again across two CRAM versions and four combinations of the three flags, the block's content and its type and compression method on their own, and four refusals. Every refusal row carries the content it was given, in hex, so no test can rebuild an input from a label."
+          "golden": "crates/htsjdk-cram/tests/data/cram_compression_header.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 19 rows, byte for byte what an Apple Silicon laptop produced, checksums included: CRC-32 is integer arithmetic and carries no platform in it."
         }
       ]
     },
