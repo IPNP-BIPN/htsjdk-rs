@@ -174,6 +174,10 @@ jobs:
             index: "1/1"
             slug: "format"
             suites: "format"
+          - group: golden-pending
+            index: "1/1"
+            slug: "cram-record-write"
+            suites: "cram-record-write"
     steps:
       - uses: actions/checkout@v4
 

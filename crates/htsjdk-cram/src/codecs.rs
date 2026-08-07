@@ -14,7 +14,7 @@ use crate::core_codecs::{
 use crate::encoding_factory::Encoding;
 use crate::external_codecs::{
     ByteArrayStopCodec, ExternalByteArrayCodec, ExternalByteCodec, ExternalError,
-    ExternalIntegerCodec, ExternalLongCodec, SliceReadStreams,
+    ExternalIntegerCodec, ExternalLongCodec, SliceReadStreams, SliceWriteStreams,
 };
 use crate::golomb::{GolombError, GolombIntegerCodec, GolombLongCodec, GolombRiceIntegerCodec};
 use crate::huffman::{CanonicalHuffman, HuffmanError};
@@ -179,4 +179,96 @@ pub fn read_byte_array(
             })
         }
     })
+}
+
+/// One integer out, through whichever of the seven integer codecs the encoding names.
+pub fn write_int(
+    encoding: &Encoding,
+    streams: &mut SliceWriteStreams,
+    value: i32,
+) -> Result<(), ReadError> {
+    match encoding {
+        Encoding::ExternalInteger(content_id) => {
+            ExternalIntegerCodec::new(*content_id).write(streams, value)
+        }
+        Encoding::HuffmanInteger(params) => {
+            CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?
+                .write(streams.core(), value)?;
+        }
+        Encoding::Beta {
+            offset,
+            bits_per_value,
+        } => BetaIntegerCodec::new(*offset, *bits_per_value).write(streams.core(), value)?,
+        Encoding::Gamma { offset } => {
+            GammaIntegerCodec::new(*offset).write(streams.core(), value)?
+        }
+        Encoding::Subexponential { offset, k } => {
+            SubexponentialIntegerCodec::new(*offset, *k).write(streams.core(), value)?
+        }
+        Encoding::Golomb { offset, m } => {
+            GolombIntegerCodec::new(*offset, *m)?.write(streams.core(), value)?
+        }
+        Encoding::GolombRice { offset, m } => {
+            GolombRiceIntegerCodec::new(*offset, *m).write(streams.core(), value)?
+        }
+        Encoding::GolombLong { offset, m } => {
+            GolombLongCodec::new(i64::from(*offset), *m)?.write(streams.core(), i64::from(value))?
+        }
+        other => {
+            return Err(ReadError::WrongKind {
+                encoding: other.java_class(),
+            })
+        }
+    }
+    Ok(())
+}
+
+/// One byte out.
+pub fn write_byte(
+    encoding: &Encoding,
+    streams: &mut SliceWriteStreams,
+    value: i8,
+) -> Result<(), ReadError> {
+    match encoding {
+        Encoding::ExternalByte(content_id) => {
+            ExternalByteCodec::new(*content_id).write(streams, value)
+        }
+        Encoding::HuffmanByte(params) => {
+            CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?
+                .write(streams.core(), value)?;
+        }
+        other => {
+            return Err(ReadError::WrongKind {
+                encoding: other.java_class(),
+            })
+        }
+    }
+    Ok(())
+}
+
+/// A byte array out. `ByteArrayLen` writes its length through one codec and its bytes through
+/// another, which is the one place a single value reaches two blocks.
+pub fn write_byte_array(
+    encoding: &Encoding,
+    streams: &mut SliceWriteStreams,
+    value: &[u8],
+) -> Result<(), ReadError> {
+    match encoding {
+        Encoding::ByteArrayStop { stop, content_id } => {
+            ByteArrayStopCodec::new(*stop, *content_id).write(streams, value)
+        }
+        Encoding::ExternalByteArray(content_id) => {
+            ExternalByteArrayCodec::new(*content_id).write(streams, value)
+        }
+        Encoding::ByteArrayLen(length_encoding, bytes_encoding) => {
+            write_int(length_encoding, streams, value.len() as i32)?;
+            write_byte_array(bytes_encoding, streams, value)?;
+        }
+        other => {
+            return Err(ReadError::WrongKind {
+                encoding: other.java_class(),
+            })
+        }
+    }
+    Ok(())
 }
