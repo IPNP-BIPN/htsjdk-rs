@@ -1024,7 +1024,7 @@
     },
     {
       "id": "cram-record-write",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Writing a CRAM record, the other half of the round trip",
       "harness": "tools/cram-conformance",
       "why": "The half that produces the bytes. cram-record-read pins the consumer; this pins the producer, and between them they are a round trip. EVERY ROW CARRIES THE RECORD IT WAS GIVEN IN FULL, field by field and feature by feature with its payload, so the port rebuilds the input rather than taking it from a label, and the blocks have to come out BYTE FOR BYTE what the reference produced: a difference in the order, in a delta or in a single branch shows as bytes that do not match rather than as an error. THREE FEATURES CAN BE READ AND NOT WRITTEN: Bases and Scores fall to the writer's default arm, which throws, while the reader has branches for both, and htsjdk's own comment says it does not generate them. A SUBSTITUTION WHOSE CODE IS NEGATIVE is resolved against the compression header's substitution matrix on the way out, so a record carrying a base and a reference base rather than a code cannot be written without it. AND AN UNMAPPED RECORD WRITES ITS BASES ONE AT A TIME into the same series a mapped record's read feature writes into, with its quality scores nested inside that branch exactly as they are on the read side.",
@@ -1043,8 +1043,8 @@
       "cases": [
         {
           "dump": "CramRecordWriteDump",
-          "golden": null,
-          "why": "245 rows over the same eight slices cram-record-read uses, so the two suites are the two directions of one corpus. Each record row carries seventeen fields including its features with their payloads, its bases, its quality scores and its index into the tag dictionary, which is everything the writer reads off a record."
+          "golden": "crates/htsjdk-cram/tests/data/cram_record_write.txt.gz",
+          "why": "245 rows over the same eight slices cram-record-read uses, so the two suites are the two directions of one corpus. Each record row carries seventeen fields including its features with their payloads, its bases, its quality scores and its index into the tag dictionary, which is everything the writer reads off a record. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31198211155, and byte for byte what an Apple Silicon laptop produced."
         }
       ]
     },
