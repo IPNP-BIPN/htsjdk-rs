@@ -14,7 +14,9 @@ use htsjdk_cram::crai::CraiEntry;
 use htsjdk_cram::varint::{read_unsigned_itf8, read_unsigned_ltf8};
 
 fn main() {
-    let parser = std::env::args().nth(1).unwrap_or_else(|| "itf8".to_string());
+    let parser = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "itf8".to_string());
     let stdin = std::io::stdin();
     let mut out = std::io::BufWriter::new(std::io::stdout());
 
