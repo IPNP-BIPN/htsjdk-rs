@@ -807,7 +807,7 @@
     },
     {
       "id": "cram-external-codecs",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The codecs written on external blocks, and the two built out of them",
       "harness": "tools/cram-conformance",
       "why": "Six of the encoding map's identifiers put their data in a block of its own, named by a content id, and two more are built out of the first six. A block is bytes rather than bits, so what these codecs carry instead of alignment is a set of decisions about where one value ends and the next begins. EACH CODEC NAMES A BLOCK AND TWO CODECS CAN NAME THE SAME ONE, which is what lets a ByteArrayLen put its lengths and its bytes in one block, interleaved; the corpus has that arrangement and the separate-block one side by side. EXTERNAL BYTE CANNOT SEE THE END OF ITS BLOCK: it returns (byte) stream.read(), which past the end is -1, and a byte of 0xFF that is really there reads back as -1 too. BYTE ARRAY STOP TRUSTS THE DATA, so an array holding the stop byte is written whole and read back SPLIT with nothing reporting it, and a block that ends before a stop byte does is not an error either. AND BYTE ARRAY LEN CANNOT WRAP BYTE ARRAY STOP FOR READING though the format lets it: the length is read, then the stop codec's read(length) throws 'Not implemented.' Every refusal row carries the block it was read from, so no test can rebuild an input from a label.",
@@ -833,8 +833,8 @@
       "cases": [
         {
           "dump": "CramExternalCodecDump",
-          "golden": null,
-          "why": "48 rows: seventeen through the four external codecs at every width they have, seven through the stop codec including two arrays that contain the stop byte, five compositions of a length codec with a byte codec, eight serialized parameter sets, ten refusals, and one row recording which compressor the default compression header picks for each external block. That last row is context rather than a port: nothing in this suite chooses a compressor."
+          "golden": "crates/htsjdk-cram/tests/data/cram_external_codecs.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 48 rows, byte for byte what an Apple Silicon laptop produced, including the row recording which compressor the default compression header picks for each external block."
         }
       ]
     },
