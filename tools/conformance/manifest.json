@@ -774,7 +774,7 @@
     },
     {
       "id": "cram-huffman",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Canonical Huffman, the fourth codec on the bit stream",
       "harness": "tools/cram-conformance",
       "why": "A CRAM file carries no Huffman tree. It carries an alphabet and one code word length per symbol, and both writer and reader rebuild the same code words from that pair alone, so what the suite pins is THE REBUILDING and not the tree that chose the lengths (htsjdk has a class for that and nothing in the library calls it). Symbols are grouped by length, sorted inside each group, and handed consecutive integers shifted left whenever the length grows, so THE ALPHABET'S ORDER IN THE FILE DOES NOT MATTER. BYTE SYMBOLS SORT SIGNED, the grouping being a TreeSet, so 0x80 takes the first code word and not the last. A ONE-SYMBOL ALPHABET HAS LENGTH ZERO and therefore writes no bits at all, leaving an empty core block from which the number of symbols written cannot be recovered. THE OVERFLOW CHECK COUNTS SET BITS RATHER THAN WIDTH, so three symbols at one bit are accepted and the third given code word 2, while four are refused. AND AN UNMATCHED CODE WORD RUNS OFF THE END OF A TABLE SIZED TO THE LARGEST CODE WORD, so a truncated or foreign stream is an ArrayIndexOutOfBoundsException and the codec's own 'unable to map' message is reachable only with an empty alphabet.",
@@ -800,8 +800,8 @@
       "cases": [
         {
           "dump": "CramHuffmanDump",
-          "golden": null,
-          "why": "57 rows: the canonical code words for twenty-one length tables including four byte alphabets, two length tables refused, the serialized encoding parameters both ways for seven parameter sets, fourteen round trips through the real slice-block streams with the raw core block taken back out, seven streams written with one alphabet and read with another, and six refusals. Every row carries the alphabet and the lengths it came from."
+          "golden": "crates/htsjdk-cram/tests/data/cram_huffman.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 57 rows, byte for byte what an Apple Silicon laptop produced. The port matched every row on its first run, having been built from the measurement rather than from the source."
         }
       ]
     },

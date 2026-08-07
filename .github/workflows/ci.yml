@@ -119,57 +119,57 @@ jobs:
       matrix:
         include:
           - group: oracle-backed
-            index: "1/11"
+            index: "1/12"
             slug: "tribble-bed-tribble-interval-list-tribble-vcf-candecode-bgzf-bgzf-termination"
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
-            index: "2/11"
+            index: "2/12"
             slug: "bam-codec-bam-file-bam-reheader-bam-gather-bam-tag-read"
             suites: "bam-codec bam-file bam-reheader bam-gather bam-tag-read"
           - group: oracle-backed
-            index: "3/11"
+            index: "3/12"
             slug: "histogram-sam-text-sam-file-bai-build-index"
             suites: "histogram sam-text sam-file bai build-index"
           - group: oracle-backed
-            index: "4/11"
+            index: "4/12"
             slug: "interval-list-vcf-header-vcf-header-parse-vcf-header-lines-vcf-record"
             suites: "interval-list vcf-header vcf-header-parse vcf-header-lines vcf-record"
           - group: oracle-backed
-            index: "5/11"
+            index: "5/12"
             slug: "vcf-file-vcf-record-parse-vcf-genotype-parse-vcf-read-vcf-index-on-the-fly"
             suites: "vcf-file vcf-record-parse vcf-genotype-parse vcf-read vcf-index-on-the-fly"
           - group: oracle-backed
-            index: "6/11"
+            index: "6/12"
             slug: "vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type-rg-checksum"
             suites: "vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type vcf-attribute-type rg-checksum"
           - group: oracle-backed
-            index: "7/11"
+            index: "7/12"
             slug: "cigar-clip-mateinfo-percentile-fastmath-exp-gamma-erf-normal"
             suites: "cigar-clip mateinfo percentile fastmath-exp gamma-erf-normal"
           - group: oracle-backed
-            index: "8/11"
+            index: "8/12"
             slug: "saddle-point-variant-comparator-smart-merge-headers-tribble-index-tribble-index-write"
             suites: "saddle-point variant-comparator smart-merge-headers tribble-index tribble-index-write"
           - group: oracle-backed
-            index: "9/11"
-            slug: "cram-varint-cram-bit-stream-cram-core-codecs-cram-container-cram-block"
-            suites: "cram-varint cram-bit-stream cram-core-codecs cram-container cram-block"
+            index: "9/12"
+            slug: "cram-varint-cram-bit-stream-cram-core-codecs-cram-huffman-cram-container"
+            suites: "cram-varint cram-bit-stream cram-core-codecs cram-huffman cram-container"
           - group: oracle-backed
-            index: "10/11"
-            slug: "cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix-cram-encoding-map"
-            suites: "cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix cram-encoding-map"
+            index: "10/12"
+            slug: "cram-block-cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix"
+            suites: "cram-block cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix"
           - group: oracle-backed
-            index: "11/11"
-            slug: "cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar-cram-restore-bases"
-            suites: "cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar cram-restore-bases"
+            index: "11/12"
+            slug: "cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar"
+            suites: "cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar"
+          - group: oracle-backed
+            index: "12/12"
+            slug: "cram-restore-bases"
+            suites: "cram-restore-bases"
           - group: unchecked
             index: "1/1"
             slug: "format"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            slug: "cram-huffman"
-            suites: "cram-huffman"
     steps:
       - uses: actions/checkout@v4
 
