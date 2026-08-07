@@ -1080,6 +1080,37 @@
       ]
     },
     {
+      "id": "cram-negotiation",
+      "status": "golden-pending",
+      "title": "Codec negotiation: what a writer picks, and why",
+      "harness": "tools/cram-conformance",
+      "why": "The reader takes what a file names. The writer CHOOSES, and the choice is what makes one CRAM of a set of records rather than another. THE DATA SERIES TABLE IS FIXED, not derived from the data: twenty-six of the thirty-two series get an encoding, twenty-three external and three stop-byte arrays, and SIX ARE NOT IN THE MAP AT ALL, so a reader that expects every series to be named finds nothing for them rather than a default. THE COMPRESSOR IS CHOSEN BY TRYING ALL THREE, GZIP and rANS at both orders, and THE TIE-BREAK IS THE ORDER OF THE COMPARISONS rather than of the compressions: a thousand identical bytes compress to 29 under GZIP and 29 under rANS 0, and rANS wins. A TAG'S ENCODING COMES FROM ITS TYPE and, for the two variable-width types, from the RANGE of its values: one size and it is a length-prefixed array whose length is a ZERO-BIT Huffman code writing no bits at all, several sizes and a Z becomes a stop-byte array whose STOP BYTE IS A TAB, chosen rather than searched for, so a Z whose text contains a tab is split by its own encoding. A B over a hundred bytes SEARCHES for a byte its data never uses, and otherwise falls back to a length-prefixed array whose two halves are BOTH EXTERNAL ON THE SAME CONTENT ID, which the reference's own comment marks with three question marks. AND TWO RECORDS WHOSE TAGS DIFFER ONLY IN ORDER SHARE ONE DICTIONARY ENTRY, group zero being the empty list every container carries. Every compressor row carries all three candidate lengths, so the rule is checked without a gzip: htsjdk compresses with the JDK's Deflater, whose output length is its zlib's business and not this crate's.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 54,
+      "expect_contains": [
+        "compressor\tall-the-same\t1000 bytes\t29\t29\t36\tRANS",
+        "compressor\ttwo-symbols\t1000 bytes\t30\t156\t41\tGZIP",
+        "compressor\tempty\t-\t20\t0\t0\tRANS",
+        "tag\tXAc\t01,02\tBYTE_ARRAY_LEN\t0304010101000104e0584163",
+        "tag\tXBZ\t61626300,646566676800\tBYTE_ARRAY_STOP\t09e058425a",
+        "tag\tXBB\t630100000001,63020000000102\tBYTE_ARRAY_LEN\t0104e05842420104e0584242",
+        "dictionary\tsame-tags-opposite-order\tXAc,XBc;XBc,XAc\t.;XAcXBc\tindexes=1,1",
+        "dictionary\ttwo-records-different-tags\tXAc;XBc\t.;XAc;XBc\tindexes=1,2",
+        "series\tRN\tBYTE_ARRAY\tBYTE_ARRAY_STOP\t0907",
+        "series\tBB\tBYTE_ARRAY\t-\t-",
+        "series\tBF\tINT\tEXTERNAL\t01"
+      ],
+      "cases": [
+        {
+          "dump": "CramNegotiationDump",
+          "golden": null,
+          "why": "54 rows: thirty-two data series with the encoding the default strategy gives each, seven compressor choices with all three candidate lengths on every row including one tie, eleven tag encodings covering every type and both branches of the two variable-width ones, and four tag dictionaries with the index each record was given."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",

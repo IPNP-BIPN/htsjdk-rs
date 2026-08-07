@@ -340,9 +340,11 @@ fn read_quality_score_array(
     )?)
 }
 
-/// `ReadTag.name3BytesToInt`: the three bytes of a tag id, packed low byte first.
+/// `ReadTag.name3BytesToInt`: the three bytes of a tag id, packed **high byte first**. The type
+/// letter is the last of the three and therefore the low byte, which is how the factory reads it
+/// back off the id.
 fn tag_id(id: &[u8; 3]) -> i32 {
-    i32::from(id[0]) | (i32::from(id[1]) << 8) | (i32::from(id[2]) << 16)
+    (i32::from(id[0]) << 16) | (i32::from(id[1]) << 8) | i32::from(id[2])
 }
 
 fn read_name(

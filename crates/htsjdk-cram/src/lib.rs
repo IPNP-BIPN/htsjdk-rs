@@ -16,6 +16,7 @@ pub mod encoding_map;
 pub mod external_codecs;
 pub mod golomb;
 pub mod huffman;
+pub mod negotiation;
 pub mod preservation_map;
 pub mod rans;
 pub mod rans_order1;
