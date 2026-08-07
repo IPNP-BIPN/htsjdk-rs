@@ -1049,6 +1049,37 @@
       ]
     },
     {
+      "id": "cram-crai",
+      "status": "golden-pending",
+      "title": "The CRAM index: six numbers a line, and the arithmetic that queries them",
+      "harness": "tools/cram-conformance",
+      "why": "A .crai is not a structure, it is a sorted text file: one line per slice, six tab-separated integers, gzipped. So what is worth pinning is not a layout but four decisions. UNMAPPED-UNPLACED SORTS LAST whatever its alignment start says, AND ITS START IS NOT CONSULTED AT ALL: two unmapped entries at starts 900 and 100 sort by their container offsets and come out in that order. AN UNMAPPED ENTRY NEVER INTERSECTS, not even with itself, which is a special case in the code rather than something the arithmetic produces. THE OVERLAP TEST IS A MIDPOINT COMPARISON, |a0 + b0 - a1 - b1| < span0 + span1, which is not the same expression as a0 < b1 && a1 < b0 and DOES NOT AGREE WITH IT ON A ZERO SPAN: two identical entries of span zero do not intersect, and neither does a zero-span entry with one that contains it. AND A QUERY WITH A START OR A SPAN BELOW ONE MATCHES THE WHOLE SEQUENCE, so 0 and -1 are not out-of-range values here but a wildcard, and the overlap test is never reached for such a query, which is why an unmapped query finds unmapped entries that would refuse to intersect. One more asymmetry: the line constructor does not make the multi-reference check the other constructor makes, so a line naming -2 parses where a call naming it throws.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 40,
+      "expect_contains": [
+        "sort\tunmapped-last\t1:100:10:0:0:1;-1:1:1:0:0:1;0:100:10:0:0:1\t0:100:10:0:0:1;1:100:10:0:0:1;-1:1:1:0:0:1",
+        "sort\tunmapped-ignores-its-start\t-1:900:10:20:0:1;-1:100:10:10:0:1\t-1:100:10:10:0:1;-1:900:10:20:0:1",
+        "intersect\t0:100:10:0:0:1\t0:110:10:0:0:1\tfalse",
+        "intersect\t0:100:10:0:0:1\t0:109:1:0:0:1\ttrue",
+        "intersect\t0:100:0:0:0:1\t0:100:0:0:0:1\tfalse",
+        "intersect\t0:100:10:0:0:1\t0:100:0:0:0:1\tfalse",
+        "intersect\t-1:100:10:0:0:1\t-1:100:10:0:0:1\tfalse",
+        "find\twhole-sequence-by-span\t0\t100\t0\t0:100:10:0:0:1;0:200:10:0:1:1;0:300:10:0:2:1",
+        "find\tunmapped\t-1\t0\t0\t-1:1:1:0:4:1",
+        "err\tmulti-ref\tsequence=-2\tCRAMException\tCannot directly index a multiref slice.  Index by its constituent references instead.",
+        "err\tnot a number\tx 100 50 1000 20 300\tCRAMException\tjava.lang.NumberFormatException: For input string: \"x\""
+      ],
+      "cases": [
+        {
+          "dump": "CramCraiDump",
+          "golden": null,
+          "why": "40 rows: five entries serialized including one of every field negative and one at the top of every range, three lines parsed, five orderings with the index bytes each produces, nine overlap tests covering both touching boundaries and both zero-span cases, six queries including both wildcards, two leftmost calls and five refusals. A serialized line is shown with its tabs as spaces, because a row of this dump is itself tab separated."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",
