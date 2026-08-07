@@ -840,7 +840,7 @@
     },
     {
       "id": "cram-golomb",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Golomb, Golomb-Rice and Golomb-Long, the three the specification is removing",
       "harness": "tools/cram-conformance",
       "why": "Experimental in the reference, and reachable all the same: the encoding factory dispatches to them by identifier, so a file that names one has to be read and a port that skips them cannot claim to read every legal file. htsjdk logs a warning when one is built and guards them no further. GOLOMB DOES NOT ROUND-TRIP A VALUE WHOSE OFFSET SUM IS NEGATIVE and does not say so: with offset 0 and m 4, -1 is written as 60 and read back as 3, because the quotient is written by counting up to it and a negative one writes nothing at all. GOLOMB-RICE'S PARAMETER IS NOT m: the encoding calls it m and hands it to the codec as log2m, so an encoding built with 8 divides by 256 and 255 costs a byte and a half where 256 costs two. GOLOMB REFUSES m BELOW 2 AND GOLOMB-RICE TAKES IT WITHOUT A WORD, so the same mistake is an exception in one and a different encoding in the other. THE TWO REFUSALS OF read(length) ARE WORDED DIFFERENTLY, 'Multi-value read method not defined.' against 'Not implemented.' And every value in the corpus is small next to its m, because the quotient is unary: one long of 2^32 with m of 10 writes four hundred million ones, a row measured once at a hundred megabytes and removed.",
@@ -867,8 +867,8 @@
       "cases": [
         {
           "dump": "CramGolombDump",
-          "golden": null,
-          "why": "112 rows: forty-eight Golomb values over six divisors including four whose offset sum is negative, thirty-six Golomb-Rice values over five powers, fourteen Golomb-Long values, three sequences where the three codecs agree byte for byte at a power-of-two divisor, four parameter sets and seven refusals. Every row carries the offset and the divisor it came from."
+          "golden": "crates/htsjdk-cram/tests/data/cram_golomb.txt.gz",
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 112 rows, byte for byte what an Apple Silicon laptop produced. The remainder widths come from a floating-point log and the comparisons from Math.pow, so this suite could have differed between the two machines; it did not."
         }
       ]
     },
