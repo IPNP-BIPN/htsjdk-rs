@@ -1111,6 +1111,33 @@
       ]
     },
     {
+      "id": "cram-file-read",
+      "status": "golden-pending",
+      "title": "A whole CRAM file, from its first byte to its blocks",
+      "harness": "tools/cram-conformance",
+      "why": "Every piece below this has a suite of its own. What this one adds is THAT THEY FIT, over a real file from htsjdk's own test resources: the file definition, the SAM header container, the container header, the compression header, the slice header and the slice's blocks, in that order and at those offsets, with each block's compression undone. THE FIRST CONTAINER IS NOT LIKE THE OTHERS: it holds the SAM header in a FILE_HEADER block rather than a compression header, and a reader that treats it as an ordinary container is refused with the compression header's own message, which is the first thing composing the pieces showed. A CONTAINER'S BLOCKS ARE COMPRESSED AND THE COMPRESSION HEADER'S IS NOT. THE EOF CONTAINER IS A CONTAINER, parsing as one whose record count is zero rather than as a byte pattern. AND THE SORT ORDER htsjdk REPORTS IS NOT IN THE FILE: it says unsorted for a header carrying no SO tag at all. The record rows are htsjdk's and are not compared: reading a record from a slice's blocks is cram-record-read's subject, and turning one into a SAM record needs the reference FASTA the reads were compressed against. They are kept because a walk that produced the wrong blocks would still look right without them.",
+      "compare": {
+        "mode": "lines"
+      },
+      "expect_rows": 16,
+      "expect_contains": [
+        "file\tce5\t11221\t2.1\t-",
+        "samheader\tce5\t5\t0\tunsorted",
+        "container\tce5\t0\t10562\t612\t0\t2\t100100\t6\t7",
+        "slice\tce5\t0\t0\t2\t100100\t6\t5",
+        "block\tce5\t0\tcore\tCORE\tGZIP\t0\t3dcdb547b9b6a8f736d51ee6daa3dcdb55b1f93f3c",
+        "block\tce5\t0\t9\tEXTERNAL\tGZIP\t9\t5555000955550009555500095555000955550009",
+        "container\tce5\t1\t11191\t11\t-1\t4542278\t0\t0\t1"
+      ],
+      "cases": [
+        {
+          "dump": "CramFileReadDump",
+          "golden": null,
+          "why": "16 rows over ce#5.2.1.cram, a version 2.1 file of six records in one container whose blocks are all GZIP: the definition, the SAM header container, two containers with the second being the EOF one, one slice, five blocks with their compression undone, and six records as htsjdk's own reader produced them."
+        }
+      ]
+    },
+    {
       "id": "cram-container",
       "status": "oracle-backed",
       "title": "The CRAM file definition and container header",

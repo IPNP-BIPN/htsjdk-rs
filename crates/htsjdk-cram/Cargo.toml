@@ -6,6 +6,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Inflate only. Deflate output depends on the zlib behind it, which is why nothing here
+# compresses; a CRAM block's GZIP content has one correct expansion and this produces it.
+flate2.workspace = true
 # CRAM is defined in terms of SAM records: the record model walks a cigar and compares read bases
 # against a reference, and both of those are already ported here.
 htsjdk-bam = { path = "../htsjdk-bam" }

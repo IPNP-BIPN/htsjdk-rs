@@ -46,6 +46,18 @@ pub enum CompressionMethod {
 }
 
 impl CompressionMethod {
+    /// The reference's own name for it, which is what a block dump records.
+    pub fn name(&self) -> &'static str {
+        match self {
+            CompressionMethod::Raw => "RAW",
+            CompressionMethod::Gzip => "GZIP",
+            CompressionMethod::Bzip2 => "BZIP2",
+            CompressionMethod::Lzma => "LZMA",
+            CompressionMethod::Rans => "RANS",
+            CompressionMethod::Range => "RANGE",
+        }
+    }
+
     /// `BlockCompressionMethod.byId`.
     pub fn from_id(id: i32) -> Option<Self> {
         Some(match id {
