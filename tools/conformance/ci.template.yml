@@ -64,6 +64,46 @@ jobs:
             && echo "reproducible" \
             || { echo "BUILD IS NOT REPRODUCIBLE"; exit 1; }
 
+  determinism:
+    name: "Determinism: same input, different environment"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: The same paths, under three environments, are the same bytes
+        # A byte-identity claim that only holds in one environment is not a byte-identity claim.
+        # LC_ALL is the interesting one: decision 0011 established that metrics number formatting
+        # is locale-dependent IN THE REFERENCE, which is why the oracle pins en_US. The port must
+        # not have acquired the same dependency, so it is run under fr_FR, where a locale-sensitive
+        # formatter would write "0,333333".
+        #
+        # This repository ships no tool, so the thing under test is an example that exercises the
+        # paths a byte claim is made about and hashes them. TMPDIR is moved on one run and the
+        # example writes into it, so a temporary directory it cannot use fails rather than skips.
+        run: |
+          set -eux
+          mkdir -p /tmp/other-tmp
+          P="cargo run --quiet --release -p htsjdk-metrics --example determinism_probe"
+          $P > /tmp/run1.txt
+          $P > /tmp/run2.txt
+          TMPDIR=/tmp/other-tmp LC_ALL=fr_FR.UTF-8 $P > /tmp/run3.txt
+          LC_ALL=C LANG=C $P > /tmp/run4.txt
+          for f in /tmp/run2.txt /tmp/run3.txt /tmp/run4.txt; do
+            diff /tmp/run1.txt "$f" \
+              || { echo "the port is not deterministic across environments: $f"; exit 1; }
+          done
+          # And the copy the example left in TMPDIR is the same file, which is what says the run
+          # under a moved TMPDIR really used it.
+          diff /tmp/run1.txt /tmp/other-tmp/htsjdk-rs-determinism.txt \
+            || { echo "the run under a moved TMPDIR wrote something else"; exit 1; }
+          echo "four runs, three environments, identical"
+
   guard:
     name: Repository invariants
     runs-on: ubuntu-latest
@@ -304,10 +344,9 @@ jobs:
           PY
 
       - name: Publish the column this real host derived
-        # `tools/gkl-probe/emulated.txt` was written on a developer machine, which decision 0008
-        # forbids for a golden. It was not one when it was created; `crates/gkl-deflate` later
-        # started comparing against it. Publishing what a real x86-64 runner derived is what lets
-        # the laptop column be replaced by a CI one.
+        # The committed column, `tools/gkl-probe/real-x86-64.txt`, came from this artefact: it was
+        # written on a developer machine first, which decision 0008 forbids for a golden, and was
+        # replaced by a run of this job. Publishing it every time is what keeps that true.
         if: always()
         uses: actions/upload-artifact@v4
         with:
