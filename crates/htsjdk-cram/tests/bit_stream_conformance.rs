@@ -177,7 +177,7 @@ fn the_failures_are_the_reference_failures() {
             for width in widths.split(',') {
                 let width: i32 = width.parse().expect("a width");
                 let result = match kind {
-                    "Bits" if width == 1 => stream.read_bit().map(|bit| i64::from(bit)),
+                    "Bits" if width == 1 => stream.read_bit().map(i64::from),
                     "Bits" => stream.read_bits(width).map(i64::from),
                     "LongBits" => stream.read_long_bits(width),
                     other => panic!("{other}"),
