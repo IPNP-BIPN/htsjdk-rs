@@ -995,7 +995,7 @@
     },
     {
       "id": "cram-record-read",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Reading a CRAM record, in the order the specification prescribes",
       "harness": "tools/cram-conformance",
       "why": "The first suite where the port reads bytes THE REFERENCE WROTE FROM RECORDS rather than bytes a dump built by hand: the measurement writes records through htsjdk's own writer, hands back the compression header and every block of the slice, and records what its own reader made of them. EVERY FIELD COMES FROM ITS OWN DATA SERIES AND THE SERIES SHARE STREAMS, so the order the reads happen in is not a detail of the implementation: read two series in the wrong order and both come back wrong with nothing to say so. THE ALIGNMENT START IS A DELTA when the header says so AND THE DELTA MAY BE NEGATIVE, which the corpus carries. THE READ NAME MOVES: preserved names are read before the mate block, generated ones inside it after the mate flags, and the specification says so explicitly. THE MATE FLAGS ARE PROPAGATED INTO THE BAM FLAGS because a writer need not have put them there. AN UNMAPPED RECORD DOES NOT READ ZERO READ FEATURES, it does not consult the series at all. AND A MULTI-REFERENCE SLICE READS A REFERENCE INDEX PER RECORD where a single-reference slice takes the slice's own. AN UNMAPPED RECORD'S BASES COME ONE AT A TIME OUT OF THE SAME SERIES a mapped record's read feature reads from, so a reader that skips them reads the wrong byte in the record that follows and nothing says so; the corpus has that pair. AND THE SCORES A RECORD KEEPS AS AN ARRAY are read through the QS series resolved as a BYTE ARRAY rather than as a byte, which is the same block read a different way. The reference builds that second reader by hand with a comment wondering why. The blocks are carried uncompressed: what compressor each one got is cram-block's business, and carrying the compressed stream would make this suite depend on it.",
@@ -1017,8 +1017,8 @@
       "cases": [
         {
           "dump": "CramRecordReadDump",
-          "golden": null,
-          "why": "245 rows over eight slices, two of them added by a correction: an unmapped record followed by a mapped one, which is the only arrangement where a reader that skips the unmapped bases desynchronises, and a record whose quality scores are kept as an array. Every record row carries sixteen fields, its bases and its scores among them."
+          "golden": "crates/htsjdk-cram/tests/data/cram_record_read.txt.gz",
+          "why": "245 rows over eight slices, two of them added by a correction: an unmapped record followed by a mapped one, which is the only arrangement where a reader that skips the unmapped bases desynchronises, and a record whose quality scores are kept as an array. Every record row carries sixteen fields, its bases and its scores among them. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31197289078, and byte for byte what an Apple Silicon laptop produced."
         }
       ]
     },
