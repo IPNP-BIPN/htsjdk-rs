@@ -104,6 +104,47 @@ jobs:
             || { echo "the run under a moved TMPDIR wrote something else"; exit 1; }
           echo "four runs, three environments, identical"
 
+  fuzz:
+    name: "Differential fuzzing of the byte-level parsers"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.97.1"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the pinned oracle image
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+
+      - name: Fuzz the parsers a hostile file reaches first
+        # picard-rs fuzzes tools through their arguments. This repository ships no tool, so what
+        # there is to fuzz is the parsers: pure functions of their bytes, with no state and no
+        # environment, which is what makes a divergence a bug rather than a difference of setup.
+        #
+        # A short session on every run and a fixed seed per parser. The value is the regression
+        # signal, a divergence that appears where there was none, not the depth of any one run; and
+        # the seed is an argument rather than the clock so that a finding can be reproduced by
+        # rerunning the command that found it.
+        run: |
+          set -eux
+          python3 tools/fuzz/run_fuzz.py --parser itf8 --iterations 300 --seed 1
+          python3 tools/fuzz/run_fuzz.py --parser ltf8 --iterations 300 --seed 1
+          python3 tools/fuzz/run_fuzz.py --parser crai --iterations 300 --seed 1
+
+      - name: Publish the findings
+        # Findings are evidence, not goldens: they say what the reference did and where the port
+        # differs. They are published rather than committed, because a finding produced anywhere
+        # other than real x86-64 CI cannot be quoted (decision 0008).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-findings
+          path: tools/fuzz/findings/
+          if-no-files-found: ignore
+
   guard:
     name: Repository invariants
     runs-on: ubuntu-latest
