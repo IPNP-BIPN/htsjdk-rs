@@ -28,7 +28,7 @@
  *
  *     write\t<label>\t<what was written>\t<bytes after flush, hex>\t<bits buffered before flush>
  *     read\t<label>\t<input hex>\t<what was read>\t<values>
- *     err\t<label>\t<class>\t<message>
+ *     err\t<label>\t<what it was given>\t<class>\t<message>
  *
  * Usage: CramBitStreamDump
  */
@@ -126,7 +126,7 @@ public class CramBitStreamDump {
         try (final DefaultBitOutputStream out = new DefaultBitOutputStream(sink)) {
             out.write(value, bits);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("byte 0x%02X in %d bits", value & 0xFF, bits), t);
             return;
         }
         System.out.printf("write\t%s\tbyte 0x%02X in %d bits\t%s\t%d%n", label, value & 0xFF, bits,
@@ -141,7 +141,8 @@ public class CramBitStreamDump {
             out.write(first, firstBits);
             out.write(second, secondBits);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("byte 0x%02X in %d then 0x%02X in %d", first & 0xFF,
+                    firstBits, second & 0xFF, secondBits), t);
             return;
         }
         System.out.printf("write\t%s\tbyte 0x%02X in %d then 0x%02X in %d\t%s\t%d%n", label,
@@ -154,7 +155,7 @@ public class CramBitStreamDump {
         try (final DefaultBitOutputStream out = new DefaultBitOutputStream(sink)) {
             out.write(value, bits);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("long 0x%X in %d bits", value, bits), t);
             return;
         }
         System.out.printf("write\t%s\tlong 0x%X in %d bits\t%s\t%d%n", label, value, bits,
@@ -166,7 +167,7 @@ public class CramBitStreamDump {
         try (final DefaultBitOutputStream out = new DefaultBitOutputStream(sink)) {
             out.write(value, bits);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("int 0x%X in %d bits", value, bits), t);
             return;
         }
         System.out.printf("write\t%s\tint 0x%X in %d bits\t%s\t%d%n", label, value, bits,
@@ -178,7 +179,7 @@ public class CramBitStreamDump {
         try (final DefaultBitOutputStream out = new DefaultBitOutputStream(sink)) {
             out.write(bit, repeat);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("%b repeated %d", bit, repeat), t);
             return;
         }
         System.out.printf("write\t%s\t%b repeated %d\t%s\t%d%n", label, bit, repeat,
@@ -208,8 +209,7 @@ public class CramBitStreamDump {
                         : Integer.toString(in.readBits(width)));
             }
         } catch (final Throwable t) {
-            System.out.printf("err\t%s\t%s\t%s%n", label, t.getClass().getSimpleName(),
-                    String.valueOf(t.getMessage()));
+            err(label, String.format("%s readBits %s", hex(input), asked.toString()), t);
             return;
         }
         System.out.printf("read\t%s\t%s\treadBits %s\t%s%n", label, hex(input), asked.toString(),
@@ -228,8 +228,7 @@ public class CramBitStreamDump {
                 joiner.add(Long.toString(in.readLongBits(width)));
             }
         } catch (final Throwable t) {
-            System.out.printf("err\t%s\t%s\t%s%n", label, t.getClass().getSimpleName(),
-                    String.valueOf(t.getMessage()));
+            err(label, String.format("%s readLongBits %s", hex(input), asked.toString()), t);
             return;
         }
         System.out.printf("read\t%s\t%s\treadLongBits %s\t%s%n", label, hex(input),
@@ -243,7 +242,7 @@ public class CramBitStreamDump {
             System.out.printf("write\t%s\tlong 0x%X in %d bits\t%s\t%d%n", label, value, bits,
                     hex(sink.toByteArray()), 0);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("long 0x%X in %d bits", value, bits), t);
         }
     }
 
@@ -254,7 +253,7 @@ public class CramBitStreamDump {
             System.out.printf("write\t%s\tint 0x%X in %d bits\t%s\t%d%n", label, value, bits,
                     hex(sink.toByteArray()), 0);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("int 0x%X in %d bits", value, bits), t);
         }
     }
 
@@ -265,7 +264,7 @@ public class CramBitStreamDump {
             System.out.printf("write\t%s\tbyte 0x%02X in %d bits\t%s\t%d%n", label, value & 0xFF,
                     bits, hex(sink.toByteArray()), 0);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("byte 0x%02X in %d bits", value & 0xFF, bits), t);
         }
     }
 
@@ -276,7 +275,7 @@ public class CramBitStreamDump {
             System.out.printf("read\t%s\t%s\treadLongBits %d\t%d%n", label, hex(input), bits,
                     value);
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, String.format("%s readLongBits %d", hex(input), bits), t);
         }
     }
 
@@ -289,12 +288,13 @@ public class CramBitStreamDump {
             System.out.printf("write\t%s\t4 bits then 0 bits\t%s\t4%n", label,
                     hex(sink.toByteArray()));
         } catch (final Throwable t) {
-            err(label, t);
+            err(label, "byte 0x0A in 4 bits then byte 0x01 in 0 bits", t);
         }
     }
 
-    static void err(final String label, final Throwable t) {
-        System.out.printf("err\t%s\t%s\t%s%n", label, t.getClass().getSimpleName(),
+    /** Every refusal carries what it was given, so no test has to rebuild an input from a label. */
+    static void err(final String label, final String input, final Throwable t) {
+        System.out.printf("err\t%s\t%s\t%s\t%s%n", label, input, t.getClass().getSimpleName(),
                 String.valueOf(t.getMessage()));
     }
 
