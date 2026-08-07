@@ -727,10 +727,10 @@
         "write\tnothing\tnothing\t-\t0",
         "read\tread-the-padding\t80\treadBits 1,7\ttrue,0",
         "read\tread-long-across\tabcd\treadLongBits 5,11\t21,973",
-        "err\tread-past-the-end\tRuntimeEOFException\tEnd of stream.",
-        "err\tlong-65-bits\tRuntimeIOException\tExpecting 1 to 64 bits, got: value=1, nofBits=65",
-        "err\tread-long-65-bits\tRuntimeException\tMore then 64 bits are requested in one read from bit stream.",
-        "err\tzero-bits-into-a-partial-buffer\tArrayIndexOutOfBoundsException\tIndex 8 out of bounds for length 8"
+        "err\tread-past-the-end\tab readBits 8,1\tRuntimeEOFException\tEnd of stream.",
+        "err\tlong-65-bits\tlong 0x1 in 65 bits\tRuntimeIOException\tExpecting 1 to 64 bits, got: value=1, nofBits=65",
+        "err\tread-long-65-bits\tab readLongBits 65\tRuntimeException\tMore then 64 bits are requested in one read from bit stream.",
+        "err\tzero-bits-into-a-partial-buffer\tbyte 0x0A in 4 bits then byte 0x01 in 0 bits\tArrayIndexOutOfBoundsException\tIndex 8 out of bounds for length 8"
       ],
       "cases": [
         {
