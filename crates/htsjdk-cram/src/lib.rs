@@ -10,6 +10,7 @@ pub mod codecs;
 pub mod compression_header;
 pub mod container;
 pub mod core_codecs;
+pub mod crai;
 pub mod encoding_factory;
 pub mod encoding_map;
 pub mod external_codecs;
