@@ -14,6 +14,7 @@ pub mod crai;
 pub mod encoding_factory;
 pub mod encoding_map;
 pub mod external_codecs;
+pub mod file;
 pub mod golomb;
 pub mod huffman;
 pub mod negotiation;
