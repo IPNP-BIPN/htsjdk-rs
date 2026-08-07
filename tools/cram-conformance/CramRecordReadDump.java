@@ -27,7 +27,7 @@
  *     header\t<hex of the compression header block>
  *     block\t<label>\t<core|content id>\t<compression method>\t<uncompressed hex>
  *     start\t<label>\t<the slice's alignment start>\t<its reference context>
- *     record\t<label>\t<index>\t<bam>\t<cram>\t<mate>\t<name>\t<length>\t<ref>\t<start>\t<mateRef>\t<mateStart>\t<template>\t<mq>\t<rg>\t<features>\t<tags>
+ *     record\t<label>\t<index>\t<bam>\t<cram>\t<mate>\t<name>\t<length>\t<ref>\t<start>\t<mateRef>\t<mateStart>\t<template>\t<mq>\t<rg>\t<features>\t<tags>\t<bases>\t<scores>
  *     err\t<what>\t<class>\t<message>
  *
  * Usage: CramRecordReadDump
@@ -84,6 +84,15 @@ public class CramRecordReadDump {
         // An unmapped record, which reads no read features whatever it carries.
         roundTrip("unmapped", Arrays.asList(unmapped("r0", 10)));
 
+        // Quality scores kept as an array, which is a data series the other cases never touch.
+        roundTrip("scores-preserved", Arrays.asList(withQualityArray(0, 100, "r0", 10)));
+
+        // An unmapped record reads its bases one at a time from the same series a following
+        // record's InsertBase reads from, so a reader that skips them desynchronises here and
+        // nowhere else.
+        roundTrip("unmapped-then-mapped", Arrays.asList(unmapped("r0", 10),
+                mapped(0, 150, "r1", 12, Arrays.asList(new InsertBase(3, (byte) 'G')))));
+
         // A mixture, which is what a real slice holds.
         roundTrip("mixed", Arrays.asList(mapped(0, 100, "r0", 10, null), unmapped("r1", 10),
                 mapped(0, 150, "r2", 12, Arrays.asList(new InsertBase(3, (byte) 'G')))));
@@ -99,6 +108,21 @@ public class CramRecordReadDump {
         return new CRAMCompressionRecord(0, 0, CRAMCompressionRecord.CF_DETACHED, name, readLength,
                 referenceIndex, alignmentStart, 0, 40, scores, bases, null, features, -1, 0,
                 SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX, 0, -1);
+    }
+
+    /** Mapped, with CF_QS_PRESERVED_AS_ARRAY set so the scores go out as one array. */
+    static CRAMCompressionRecord withQualityArray(final int referenceIndex,
+            final int alignmentStart, final String name, final int readLength) {
+        final byte[] bases = new byte[readLength];
+        Arrays.fill(bases, (byte) 'A');
+        final byte[] scores = new byte[readLength];
+        for (int i = 0; i < readLength; i++) {
+            scores[i] = (byte) (10 + i);
+        }
+        return new CRAMCompressionRecord(0, 0,
+                CRAMCompressionRecord.CF_DETACHED | CRAMCompressionRecord.CF_QS_PRESERVED_AS_ARRAY,
+                name, readLength, referenceIndex, alignmentStart, 0, 40, scores, bases, null, null,
+                -1, 0, SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX, 0, -1);
     }
 
     static CRAMCompressionRecord unmapped(final String name, final int readLength) {
@@ -148,13 +172,14 @@ public class CramRecordReadDump {
                 final CRAMCompressionRecord back = reader.readCRAMRecord(i, previousStart);
                 previousStart = back.getAlignmentStart();
                 System.out.printf(
-                        "record\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s%n",
+                        "record\t%s\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s%n",
                         label, i, back.getBAMFlags(), back.getCRAMFlags(), back.getMateFlags(),
                         String.valueOf(back.getReadName()), back.getReadLength(),
                         back.getReferenceIndex(), back.getAlignmentStart(),
                         back.getMateReferenceIndex(), back.getMateAlignmentStart(),
                         back.getTemplateSize(), back.getMappingQuality(), back.getReadGroupID(),
-                        features(back.getReadFeatures()), tags(back));
+                        features(back.getReadFeatures()), tags(back), hex(back.getReadBases()),
+                        hex(back.getQualityScores()));
             }
         } catch (final Throwable t) {
             System.out.printf("err\t%s\t%s\t%s%n", label, t.getClass().getSimpleName(),
