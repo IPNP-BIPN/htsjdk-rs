@@ -235,6 +235,45 @@ pub fn log_gamma1p(x: f64) -> Result<f64, GammaError> {
     Ok(-fast_math::log1p(inv_gamma1pm1(x)?))
 }
 
+/// `Gamma.gamma(x)` for `abs(x) <= 20`, which is the whole of what a beta function reaches.
+///
+/// The reference has a third arm for `abs(x) > 20`, built on `FastMath.pow` and `FastMath.exp`
+/// around the Lanczos series. Nothing measured here reaches it — `Beta.logBeta` calls this only
+/// with `a < 1` and `b < 10`, so the largest argument is `a + b < 11` — and it refuses rather than
+/// guessing, on the same rule as the treeified bucket in the hash-order port.
+pub fn gamma(x: f64) -> Result<f64, GammaError> {
+    // A non-positive integer is a pole.
+    if x == x.round() && x <= 0.0 {
+        return Ok(f64::NAN);
+    }
+    let absolute = x.abs();
+    if absolute > 20.0 {
+        return Err(GammaError::TooLarge {
+            value: x,
+            bound: 20.0,
+        });
+    }
+    if x >= 1.0 {
+        // Gamma(x) = (x - 1) * ... * (x - n) * Gamma(x - n), reduced until the argument is in the
+        // range `invGamma1pm1` accepts.
+        let mut prod = 1.0;
+        let mut t = x;
+        while t > 2.5 {
+            t -= 1.0;
+            prod *= t;
+        }
+        return Ok(prod / (1.0 + inv_gamma1pm1(t - 1.0)?));
+    }
+    // Gamma(x) = Gamma(x + n + 1) / [x * (x + 1) * ... * (x + n)], reduced upwards instead.
+    let mut prod = x;
+    let mut t = x;
+    while t < -0.5 {
+        t += 1.0;
+        prod *= t;
+    }
+    Ok(1.0 / (prod * (1.0 + inv_gamma1pm1(t)?)))
+}
+
 /// `Gamma.logGamma`, all four branches.
 pub fn log_gamma(x: f64) -> f64 {
     if x.is_nan() || x <= 0.0 {
