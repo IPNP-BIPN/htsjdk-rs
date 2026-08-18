@@ -21,7 +21,9 @@
 //! See `docs/decisions/0005-java-math-has-three-implementations.md` for the measurement.
 
 pub mod beta;
+pub mod binomial;
 pub mod combinatorics;
+pub mod continued_fraction;
 pub mod dd;
 pub mod fast_math_exp;
 pub mod fast_math_log;
