@@ -33,9 +33,22 @@ fn golden() -> String {
 /// it: `10e-15`, which is 1e-14 and not 1e-15.
 const DEFAULT_EPSILON: f64 = 10e-15;
 
-/// The rows whose answer is an invalid operation's NaN: `erfInv(NaN)` and the two normal-quantile
-/// rows that go through it. Three off x86-64, none on it.
-const EXPECTED_NAN_SIGN_EXEMPTIONS: usize = 3;
+/// The rows whose answer is an invalid operation's NaN. None of them is exempt on x86-64, where the
+/// FPU chooses the reference's sign; off it, each of these MAY be, and nothing else may.
+///
+/// They are `erfInv(NaN)`, `logGamma(+inf)` and `inverseCumulativeProbability(NaN)`. The comment
+/// this replaced said "erfInv(NaN) and the two normal-quantile rows that go through it", which named
+/// one of the three wrongly: `logGamma` is not a normal quantile. Naming them is what caught that;
+/// counting them had not.
+///
+/// A count would be wrong here. An optimising build folds some of these at compile time with LLVM's
+/// own APFloat, which chooses the reference's sign, so the release profile takes fewer exemptions
+/// than the debug one and a count reads that as a regression -- which is exactly what #166 was.
+const NAN_SIGN_EXEMPT: [&str; 3] = [
+    "erfInv[NaN]",
+    "logGamma[inf]",
+    "inverseCumulativeProbability[NaN]",
+];
 
 /// Decision 0012: two renderings that are both NaN and differ only in the sign bit.
 fn is_nan_sign_only(ours: &str, expected: &str) -> bool {
@@ -129,7 +142,7 @@ fn every_answer_is_bit_identical_to_the_reference() {
     let text = golden();
     let mut count = 0;
     let mut refusals = 0;
-    let mut nan_sign_exemptions = 0;
+    let mut nan_sign_exemptions: Vec<String> = Vec::new();
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("gamma\t") else {
             continue;
@@ -151,7 +164,7 @@ fn every_answer_is_bit_identical_to_the_reference() {
             // Decision 0012: an invalid operation's NaN carries the sign the FPU chose, and the
             // two architectures choose differently. Exempted only off x86-64, and counted.
             if is_nan_sign_only(&ours, expected) && !cfg!(target_arch = "x86_64") {
-                nan_sign_exemptions += 1;
+                nan_sign_exemptions.push(format!("{name}{inputs:?}"));
             } else {
                 panic!("{name}{inputs:?}: ours {ours}, reference {expected}");
             }
@@ -160,18 +173,28 @@ fn every_answer_is_bit_identical_to_the_reference() {
     }
     assert!(count > 0, "the golden carries no rows");
     if cfg!(target_arch = "x86_64") {
-        assert_eq!(
-            nan_sign_exemptions, 0,
+        assert!(
+            nan_sign_exemptions.is_empty(),
             "on x86-64 there is nothing to exempt; the FPU produces the same NaN as the oracle"
         );
     } else {
-        assert_eq!(
-            nan_sign_exemptions, EXPECTED_NAN_SIGN_EXEMPTIONS,
-            "the NaN-sign exemption count changed; see decision 0012"
+        // Which rows may be exempt is fixed; HOW MANY of them are is not. An optimising build folds
+        // some of these at compile time with LLVM's own APFloat, which happens to choose the
+        // reference's sign, so the release profile takes fewer exemptions than the debug one. A
+        // count would call that a regression; the set is what decision 0012 is about.
+        let mut unrecorded: Vec<String> = Vec::new();
+        for exemption in &nan_sign_exemptions {
+            if !NAN_SIGN_EXEMPT.contains(&exemption.as_str()) {
+                unrecorded.push(exemption.clone());
+            }
+        }
+        assert!(
+            unrecorded.is_empty(),
+            "exempt and not on the record; see decision 0012: {unrecorded:?}"
         );
     }
     println!(
-        "{count} answers identical, {refusals} refusals, {nan_sign_exemptions} NaN-sign exemptions"
+        "{count} answers identical, {refusals} refusals, NaN-sign exemptions {nan_sign_exemptions:?}"
     );
 }
 
