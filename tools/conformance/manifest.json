@@ -145,6 +145,22 @@
       ]
     },
     {
+      "id": "bam-header-version",
+      "status": "golden-pending",
+      "title": "Which @HD version a written BAM carries",
+      "harness": "tools/bam-conformance",
+      "why": "BAMFileWriter has two header paths and they disagree. The ordinary writer goes through SAMFileWriterImpl.writeHeader, which encodes with keepExistingVersionNumber = FALSE and rebuilds the @HD line from a fresh SAMFileHeader, so a written BAM carries the CURRENT version whatever the input said. The static BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader) passes TRUE and keeps it, and is only reachable from the block-copy reheader path. This port calls one function for both and keeps the input's version in each, which is right for the reheader and wrong for the writer. No existing fixture can see it: every one of them builds its header with new SAMFileHeader(), whose constructor already sets the current version. The dump also asks whether VN can sit anywhere but first, since the reference rebuilds the line rather than editing it, and records the answer rather than assuming it.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "BamHeaderVersionDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "bam-reheader",
       "title": "BAM reheader",
       "status": "oracle-backed",
