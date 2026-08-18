@@ -18,10 +18,17 @@
 //!
 //! # What this port refuses
 //!
-//! Two arms of `binomialCoefficient` beyond `n <= 61` — a gcd-splitting one for `n <= 66` and an
-//! overflow-checking one past that — and the whole `n >= 1030` sum-of-logs route. Nothing measured
-//! reaches any of them: the golden's totals are 0, 1, 10, 100 and 1000. They are refused rather
-//! than guessed, on the same rule as `gamma` past 20.
+//! Two arms of `binomialCoefficient` beyond `n <= 61`: a gcd-splitting one for `n <= 66` and an
+//! overflow-checking one past that. Nothing measured reaches either. They are refused rather than
+//! guessed, on the same rule as `gamma` past 20.
+//!
+//! # The sum-of-logs route is measured now
+//!
+//! It was refused with them until gatk-rs's `contamination-filter` golden reached it: a site of
+//! depth 1050 goes through `BetaBinomialDistribution.logProbability`, which asks for
+//! `binomialCoefficientLog(1050, 200)`. The route never forms the coefficient at all, and its
+//! `k > n / 2` reflection comes **before** the loops, so a large `k` is answered by a shorter sum
+//! rather than a longer one.
 
 use crate::fast_math;
 
@@ -109,8 +116,22 @@ pub fn binomial_coefficient_log(n: i64, k: i64) -> Result<f64, CombinatoricsErro
     if n < 1030 {
         return Ok(fast_math::log(binomial_coefficient_double(n, k)?));
     }
-    // The sum-of-logs route, which nothing measured reaches.
-    Err(CombinatoricsError::Unmeasured { n })
+    // Past 1030 the coefficient itself would overflow a double, so it is never formed: the ratio
+    // is summed in log space instead. The reflection comes FIRST, so `k > n / 2` is answered by
+    // the same route with a smaller `k` rather than by a longer loop.
+    if k > n / 2 {
+        return binomial_coefficient_log(n, n - k);
+    }
+    let mut log_sum = 0.0;
+    // `n! / (n - k)!`
+    for i in (n - k + 1)..=n {
+        log_sum += fast_math::log(i as f64);
+    }
+    // divided by `k!`
+    for i in 2..=k {
+        log_sum -= fast_math::log(i as f64);
+    }
+    Ok(log_sum)
 }
 
 #[cfg(test)]
@@ -167,14 +188,66 @@ mod tests {
             binomial_coefficient(-1, -1),
             Err(CombinatoricsError::Negative { n: -1 })
         );
-        // The two unported arms of the exact route, and the sum-of-logs route.
+        // The two unported arms of the exact route. The sum-of-logs route used to be refused
+        // beside them and is measured now.
         assert_eq!(
             binomial_coefficient(62, 31),
             Err(CombinatoricsError::Unmeasured { n: 62 })
         );
         assert_eq!(
-            binomial_coefficient_log(1030, 515),
-            Err(CombinatoricsError::Unmeasured { n: 1030 })
+            binomial_coefficient_double(62, 31),
+            Err(CombinatoricsError::Unmeasured { n: 62 })
         );
+    }
+
+    /// The sum-of-logs route, past 1030, where the coefficient itself would overflow a double.
+    ///
+    /// Every value is the reference's, from the pinned oracle container; gatk-rs's
+    /// `contamination-filter` golden is what exercises the route end to end, through a site of
+    /// depth 1050.
+    #[test]
+    fn the_sum_of_logs_route_answers_what_the_reference_answers() {
+        assert_eq!(
+            binomial_coefficient_log(1050, 200).expect("in range"),
+            507.79546692773414
+        );
+        assert_eq!(
+            binomial_coefficient_log(1050, 50).expect("in range"),
+            198.16406048906853
+        );
+        // At the boundary itself: 1030 is the first `n` the route takes.
+        assert_eq!(
+            binomial_coefficient_log(1030, 2).expect("in range"),
+            13.180509636497787
+        );
+        // `k > n / 2`, which reflects before the loops rather than summing more terms.
+        assert_eq!(
+            binomial_coefficient_log(1030, 515).expect("in range"),
+            710.2469048650747
+        );
+        assert_eq!(
+            binomial_coefficient_log(2000, 1900).expect("in range"),
+            393.83377418920224
+        );
+        assert_eq!(
+            binomial_coefficient_log(5000, 2500).expect("in range"),
+            3461.2514648514098
+        );
+    }
+
+    /// One below the boundary is the double route, and `k == n - 1` never reaches either.
+    #[test]
+    fn the_boundary_is_the_route() {
+        assert_eq!(
+            binomial_coefficient_log(1029, 200).expect("in range"),
+            503.3102211260805
+        );
+        // `k == n - 1` returns `log(n)` before any route is chosen.
+        assert_eq!(
+            binomial_coefficient_log(1030, 1029).expect("in range"),
+            6.937314081223682
+        );
+        // And `n == k` is zero, however large.
+        assert_eq!(binomial_coefficient_log(1050, 1050).expect("in range"), 0.0);
     }
 }
