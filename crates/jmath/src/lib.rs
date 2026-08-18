@@ -22,6 +22,7 @@
 
 pub mod beta;
 pub mod combinatorics;
+pub mod continued_fraction;
 pub mod dd;
 pub mod fast_math_exp;
 pub mod fast_math_log;

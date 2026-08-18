@@ -1,4 +1,5 @@
-//! `Beta.logBeta`, ported from `org.apache.commons.math3.special.Beta` (commons-math 3.5).
+//! `Beta.logBeta` and `Beta.regularizedBeta`, ported from `org.apache.commons.math3.special.Beta`
+//! (commons-math 3.5).
 //!
 //! The log of the beta function, which is what every beta-binomial likelihood is built from. GATK
 //! reaches it through `BetaBinomialDistribution.logProbability`, and Mutect's somatic clustering
@@ -36,6 +37,7 @@
 
 #![allow(clippy::excessive_precision)]
 
+use crate::continued_fraction::{self, ContinuedFractionError};
 use crate::fast_math;
 use crate::gamma::{gamma, log_gamma, log_gamma1p, GammaError};
 
@@ -70,11 +72,19 @@ pub enum BetaError {
     TooSmall { value: f64, bound: f64 },
     /// A gamma the reference could compute and this port has not measured.
     Gamma(GammaError),
+    /// The continued fraction of `regularizedBeta` refused to converge.
+    ContinuedFraction(ContinuedFractionError),
 }
 
 impl From<GammaError> for BetaError {
     fn from(error: GammaError) -> Self {
         BetaError::Gamma(error)
+    }
+}
+
+impl From<ContinuedFractionError> for BetaError {
+    fn from(error: ContinuedFractionError) -> Self {
+        BetaError::ContinuedFraction(error)
     }
 }
 
@@ -270,6 +280,67 @@ pub fn log_beta(p: f64, q: f64) -> Result<f64, BetaError> {
     Ok(fast_math::log(gamma(a)? * gamma(b)? / gamma(a + b)?))
 }
 
+/// `Beta.DEFAULT_EPSILON`, which is **not** `ContinuedFraction`'s own `10e-9`.
+pub const DEFAULT_EPSILON: f64 = 1E-14;
+
+/// `regularizedBeta(x, a, b)`, the regularized incomplete beta function `I(x, a, b)`.
+///
+/// `BinomialDistribution.cumulativeProbability(k)` is `1 - regularizedBeta(p, k + 1, n - k)`, which
+/// is how Mutect's normal-artifact filter gets its p-value.
+pub fn regularized_beta(x: f64, a: f64, b: f64) -> Result<f64, BetaError> {
+    regularized_beta_with(x, a, b, DEFAULT_EPSILON, i32::MAX)
+}
+
+/// `regularizedBeta(x, a, b, epsilon, maxIterations)`.
+///
+/// # The symmetry test's second conjunct is implied by its first
+///
+/// `1 - x <= (b + 1) / (2 + b + a)` rearranges to `x >= (a + 1) / (2 + b + a)`, which the strict
+/// `x > (a + 1) / (2 + b + a)` beside it already asserts. In the reals the `&&` is redundant; in
+/// doubles the two sides are computed differently, so they can disagree by a rounding at the
+/// boundary alone. Both are transcribed rather than simplified, because which of the two
+/// arrangements a call takes decides its last digits: at `a = 2, b = 5`, one ULP either side of
+/// `1/3` answers the same double by two different routes, and `1/3` itself answers another.
+// The seven guards are one `||` chain in the reference, in this order. `!(0.0..=1.0).contains(&x)`
+// would be the same predicate and a different program to read against the Java.
+#[allow(clippy::manual_range_contains)]
+pub fn regularized_beta_with(
+    x: f64,
+    a: f64,
+    b: f64,
+    epsilon: f64,
+    max_iterations: i32,
+) -> Result<f64, BetaError> {
+    if x.is_nan() || a.is_nan() || b.is_nan() || x < 0.0 || x > 1.0 || a <= 0.0 || b <= 0.0 {
+        return Ok(f64::NAN);
+    }
+    if x > (a + 1.0) / (2.0 + b + a) && 1.0 - x <= (b + 1.0) / (2.0 + b + a) {
+        // The recursion swaps `a` and `b` as well as reflecting `x`.
+        return Ok(1.0 - regularized_beta_with(1.0 - x, b, a, epsilon, max_iterations)?);
+    }
+    let fraction = continued_fraction::evaluate(
+        |_, _| 1.0,
+        |n, x| {
+            if n % 2 == 0 {
+                let m = f64::from(n) / 2.0;
+                (m * (b - m) * x) / ((a + (2.0 * m) - 1.0) * (a + (2.0 * m)))
+            } else {
+                let m = (f64::from(n) - 1.0) / 2.0;
+                -((a + m) * (a + b + m) * x) / ((a + (2.0 * m)) * (a + (2.0 * m) + 1.0))
+            }
+        },
+        x,
+        epsilon,
+        max_iterations,
+    )?;
+    // `FastMath.exp(...) * 1.0 / fraction`, which is `(exp(...) * 1.0) / fraction`: the reference
+    // writes the numerator of the fraction's reciprocal out, and it is exactly one.
+    let numerator = fast_math::exp(
+        (a * fast_math::log(x)) + (b * fast_math::log1p(-x)) - fast_math::log(a) - log_beta(a, b)?,
+    );
+    Ok(numerator * 1.0 / fraction)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,5 +400,104 @@ mod tests {
             delta_minus_delta_sum(20.0, 10.0),
             Err(BetaError::OutOfRange { .. })
         ));
+    }
+
+    /// Every value here is the reference's, from gatk-rs's `normal-artifact-filter` dump.
+    #[test]
+    fn the_two_branches_answer_what_the_reference_answers() {
+        // The direct branch: `x` at or below `(a + 1) / (2 + b + a)`.
+        assert_eq!(
+            regularized_beta(0.01, 2.0, 5.0).unwrap(),
+            0.001460447605000002
+        );
+        assert_eq!(regularized_beta(0.2, 2.0, 5.0).unwrap(), 0.3446400000000001);
+        // The symmetry branch, which recurses on `1 - x` with `a` and `b` swapped.
+        assert_eq!(
+            regularized_beta(0.5, 2.0, 2.0).unwrap(),
+            0.49999999999999994
+        );
+        assert_eq!(regularized_beta(0.99, 2.0, 5.0).unwrap(), 0.999999999405);
+        assert_eq!(regularized_beta(0.4, 2.0, 5.0).unwrap(), 0.7667200000000001);
+        // The shapes a binomial CDF asks for.
+        assert_eq!(
+            regularized_beta(0.001, 1.0, 100.0).unwrap(),
+            0.09520785288629108
+        );
+        assert_eq!(
+            regularized_beta(0.001, 11.0, 90.0).unwrap(),
+            1.3053208102366178E-19
+        );
+        assert_eq!(
+            regularized_beta(0.25, 4.0, 1.0).unwrap(),
+            0.003906250000000001
+        );
+        assert_eq!(
+            regularized_beta(0.25, 1.0, 4.0).unwrap(),
+            0.6835937500000003
+        );
+        assert_eq!(
+            regularized_beta(0.5, 500.0, 500.0).unwrap(),
+            0.5000000000000142
+        );
+        assert_eq!(
+            regularized_beta(0.5, 0.001, 0.001).unwrap(),
+            0.49999999999999944
+        );
+        // The endpoints, where the logarithms go to infinity and the guards do not catch them.
+        assert_eq!(regularized_beta(0.0, 2.0, 5.0).unwrap(), 0.0);
+        assert_eq!(regularized_beta(1.0, 2.0, 5.0).unwrap(), 1.0);
+    }
+
+    /// One ULP either side of the branch boundary, which is where the redundant conjunct lives.
+    #[test]
+    fn the_boundary_is_the_branch() {
+        let boundary = 3.0 / 9.0;
+        // At the boundary itself `x > (a + 1) / (2 + b + a)` is false: the direct branch.
+        assert_eq!(
+            regularized_beta(boundary, 2.0, 5.0).unwrap(),
+            0.6488340192043897
+        );
+        // One ULP below, still direct, and one ULP above, which reflects -- and the two answer the
+        // same double, which is not the one the boundary answers.
+        assert_eq!(
+            regularized_beta(f64::from_bits(boundary.to_bits() - 1), 2.0, 5.0).unwrap(),
+            0.6488340192043895
+        );
+        assert_eq!(
+            regularized_beta(f64::from_bits(boundary.to_bits() + 1), 2.0, 5.0).unwrap(),
+            0.6488340192043895
+        );
+    }
+
+    /// Every guard answers NaN rather than refusing, as `logBeta`'s do.
+    #[test]
+    fn the_guards_answer_not_a_number() {
+        for (x, a, b) in [
+            (-0.5, 2.0, 5.0),
+            (1.5, 2.0, 5.0),
+            (0.5, 0.0, 5.0),
+            (0.5, 2.0, -1.0),
+            (f64::NAN, 2.0, 5.0),
+        ] {
+            assert!(regularized_beta(x, a, b).unwrap().is_nan(), "{x}, {a}, {b}");
+        }
+    }
+
+    /// `BinomialDistribution.cumulativeProbability`, which is the one caller that matters here.
+    #[test]
+    fn the_binomial_cumulative_probability_is_one_minus_this() {
+        // 100 trials at Q30, nine or fewer successes.
+        let p = 10.0f64.powf(-3.0);
+        assert_eq!(1.0 - regularized_beta(p, 10.0, 91.0).unwrap(), 1.0);
+        // Ten trials, four or fewer.
+        assert_eq!(
+            1.0 - regularized_beta(p, 5.0, 6.0).unwrap(),
+            0.9999999999997491
+        );
+        // Twenty fair trials, nine or fewer.
+        assert_eq!(
+            1.0 - regularized_beta(0.5, 10.0, 11.0).unwrap(),
+            0.4119014739990241
+        );
     }
 }
