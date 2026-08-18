@@ -22,6 +22,7 @@
 
 pub mod beta;
 pub mod binomial;
+pub mod brent;
 pub mod combinatorics;
 pub mod continued_fraction;
 pub mod dd;
