@@ -37,8 +37,16 @@ pub struct BamWriter<W: Write> {
 /// `BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader)`: the BAM header binary content, written
 /// to any sink: `BAM\1` magic, the length-prefixed header text, then the binary sequence dictionary.
 /// Shared by [`BamWriter::new`] and [`write_bam_header_block`] so the two cannot drift.
-pub(crate) fn write_header_binary<W: Write>(w: &mut W, header: &SamHeader) -> io::Result<()> {
-    let text = header.encode();
+pub(crate) fn write_header_binary<W: Write>(
+    w: &mut W,
+    header: &SamHeader,
+    keep_existing_version_number: bool,
+) -> io::Result<()> {
+    let text = if keep_existing_version_number {
+        header.encode()
+    } else {
+        header.encode_replacing_version()
+    };
 
     w.write_all(&BAM_MAGIC)?;
 
@@ -67,15 +75,48 @@ pub(crate) fn write_header_binary<W: Write>(w: &mut W, header: &SamHeader) -> io
 /// block-copy reheader; the copied data blocks and the terminator follow it.
 pub fn write_bam_header_block(header: &SamHeader) -> io::Result<Vec<u8>> {
     let mut bgzf = BgzfWriter::new(Vec::new());
-    write_header_binary(&mut bgzf, header)?;
+    // The reheader path is the one that passes true: it is copying an existing file's blocks, and
+    // its whole purpose is to leave everything but the header alone.
+    write_header_binary(&mut bgzf, header, true)?;
     bgzf.into_inner_without_terminator()
+}
+
+/// `SAMFileWriterImpl.setHeader`'s `header.setSortOrder(this.sortOrder)`.
+///
+/// The writer's own sort order comes from `SAMFileWriterFactory.makeBAMWriter`, which reads it off
+/// the header with `getSortOrder()` and hands it straight back. So a header carrying a recognised
+/// `SO` keeps it, and one carrying none gets `unsorted` -- which is why a BAM written from a header
+/// with no `@HD SO` still has one.
+///
+/// `getSortOrder()` answers `unsorted` for a value it does not recognise as well, so an `SO` of
+/// something else would be replaced rather than kept. No golden reaches that, and the branch is
+/// written to match the reference rather than to be convenient.
+fn stamp_sort_order(header: &SamHeader) -> SamHeader {
+    const RECOGNISED: [&str; 5] = [
+        "unsorted",
+        "queryname",
+        "coordinate",
+        "duplicate",
+        "unknown",
+    ];
+    let mut stamped = header.clone();
+    let order = match header.attributes.get("SO") {
+        Some(value) if RECOGNISED.contains(&value) => value.to_string(),
+        _ => "unsorted".to_string(),
+    };
+    stamped.set_sort_order(&order);
+    stamped
 }
 
 impl<W: Write> BamWriter<W> {
     /// `BAMFileWriter.writeHeader`: magic, header text, then the binary dictionary.
     pub fn new(inner: W, header: &SamHeader) -> io::Result<Self> {
         let mut bgzf = BgzfWriter::new(inner);
-        write_header_binary(&mut bgzf, header)?;
+        // `SAMFileWriterImpl.setHeader` stamps the sort order onto the header before writing it,
+        // defaulting to `unsorted`, and only then encodes -- with the version REPLACED, which is
+        // the half `write_bam_header_block` does not do. See the `bam-header-version` golden.
+        let stamped = stamp_sort_order(header);
+        write_header_binary(&mut bgzf, &stamped, false)?;
 
         Ok(BamWriter {
             bgzf,

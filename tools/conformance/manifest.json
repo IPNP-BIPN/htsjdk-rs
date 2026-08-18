@@ -146,7 +146,7 @@
     },
     {
       "id": "bam-header-version",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "Which @HD version a written BAM carries",
       "harness": "tools/bam-conformance",
       "why": "BAMFileWriter has two header paths and they disagree. The ordinary writer goes through SAMFileWriterImpl.writeHeader, which encodes with keepExistingVersionNumber = FALSE and rebuilds the @HD line from a fresh SAMFileHeader, so a written BAM carries the CURRENT version whatever the input said. The static BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader) passes TRUE and keeps it, and is only reachable from the block-copy reheader path. This port calls one function for both and keeps the input's version in each, which is right for the reheader and wrong for the writer. No existing fixture can see it: every one of them builds its header with new SAMFileHeader(), whose constructor already sets the current version. The dump also asks whether VN can sit anywhere but first, since the reference rebuilds the line rather than editing it, and records the answer rather than assuming it.",
@@ -156,7 +156,8 @@
       "cases": [
         {
           "dump": "BamHeaderVersionDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/bam_header_version.txt.gz",
+          "why": "8 rows, no files: four headers, each encoded with keepExistingVersionNumber = true and also written through SAMFileWriterFactory. One already current, one at VN:1.5, one at VN:1.5 parsed from text whose @HD line puts SO before VN, and one at VN:1.4 beside a sort order. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 32197064547, and byte for byte what this laptop produced."
         }
       ]
     },

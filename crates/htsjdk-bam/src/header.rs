@@ -170,18 +170,53 @@ impl SamHeader {
         self.comments.push(format!("@CO\t{comment}"));
     }
 
-    /// `SAMTextHeaderCodec.encode` with `keepExistingVersionNumber = true`, which is what
-    /// `BAMFileWriter.writeHeader` passes.
+    /// `SAMTextHeaderCodec.encode` with `keepExistingVersionNumber = true`.
+    ///
+    /// That is the STATIC `BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader)`, reachable only
+    /// from the block-copy reheader. The ordinary writer passes false and gets
+    /// [`SamHeader::encode_replacing_version`] instead; the two differ on any header that did not
+    /// come from a fresh `SAMFileHeader`.
     ///
     /// Line order is fixed by the Java: `@HD`, then every `@SQ`, then every `@RG`, then every
     /// `@PG`, then the comments. Within a line the fixed fields come first and the attributes
     /// follow in insertion order.
     pub fn encode(&self) -> String {
+        self.encode_with(true)
+    }
+
+    /// `SAMTextHeaderCodec.encode` with `keepExistingVersionNumber = false`, which is what every
+    /// writer built by `SAMFileWriterFactory` uses.
+    ///
+    /// `writeHDLine(false)` does not edit the version, it REBUILDS the line: a fresh
+    /// `SAMFileHeader` starts with `VN` set to [`CURRENT_VERSION`], every attribute of the original
+    /// except `VN` is copied into it, and that is what gets printed. So the version becomes the
+    /// current one and lands first, whatever the input said and wherever it was.
+    ///
+    /// In practice the position never changes, because `SAMFileHeader`'s constructor sets `VN`
+    /// before any text is parsed and `setAttribute` overwrites in place, so `VN` is already first
+    /// on any header htsjdk built. The `parsed_kept` row of the `bam-header-version` golden is
+    /// what says so.
+    pub fn encode_replacing_version(&self) -> String {
+        self.encode_with(false)
+    }
+
+    fn encode_with(&self, keep_existing_version_number: bool) -> String {
         let mut out = String::new();
 
         // @HD, even when it carries nothing but VN.
         let mut fields = vec![format!("{HEADER_LINE_START}HD")];
-        push_attributes(&mut fields, &self.attributes);
+        if keep_existing_version_number {
+            push_attributes(&mut fields, &self.attributes);
+        } else {
+            let mut rebuilt = Attributes::new();
+            rebuilt.set(VERSION_TAG, CURRENT_VERSION);
+            for (key, value) in self.attributes.iter() {
+                if key != VERSION_TAG {
+                    rebuilt.set(key, value);
+                }
+            }
+            push_attributes(&mut fields, &rebuilt);
+        }
         let _ = writeln!(out, "{}", fields.join("\t"));
 
         for seq in &self.sequences {
