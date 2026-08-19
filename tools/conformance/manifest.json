@@ -162,6 +162,22 @@
       ]
     },
     {
+      "id": "fasta-reference-writer",
+      "status": "golden-pending",
+      "title": "The FASTA, the .fai and the .dict FastaReferenceWriter writes",
+      "harness": "tools/bam-conformance",
+      "why": "Three GATK tools write a reference through this class and none of them can be ported until it is. THE INDEX OFFSET IS TAKEN AFTER THE HEADER LINE, so it counts this sequence's header bytes and every byte before it. BYTES-PER-LINE IS BASES-PER-LINE PLUS ONE always, even for a sequence shorter than one line. A SEQUENCE IS TERMINATED BY EXACTLY ONE NEWLINE, written when the sequence is closed rather than after each line, so a length that is a multiple of the width gets no blank line. THE LINE WIDTH IS PER SEQUENCE rather than per file. APPENDING IN CHUNKS IS THE SAME FILE as appending at once, because the breaks come from a running count. THE MD5 IS OF THE UPPER-CASED BASES, computed chunk by chunk, so a lower-case sequence keeps its case in the FASTA and hashes as though it did not. AND THE REFUSALS ARE PART OF THE CONTRACT: a blank in a name, a control character, an empty name, a sequence with no bases, a repeated name, a base that is not IUPAC and a line width of zero are each a different class or message, while a TAB in a description is allowed.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "FastaReferenceWriterDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "bam-reheader",
       "title": "BAM reheader",
       "status": "oracle-backed",
