@@ -205,64 +205,60 @@ jobs:
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode bgzf bgzf-termination"
           - group: oracle-backed
             index: "2/14"
-            slug: "bam-codec-bam-file-bam-header-version-bam-reheader-bam-gather"
-            suites: "bam-codec bam-file bam-header-version bam-reheader bam-gather"
+            slug: "bam-codec-bam-file-bam-header-version-fasta-reference-writer-bam-reheader"
+            suites: "bam-codec bam-file bam-header-version fasta-reference-writer bam-reheader"
           - group: oracle-backed
             index: "3/14"
-            slug: "bam-tag-read-histogram-sam-text-sam-file-bai"
-            suites: "bam-tag-read histogram sam-text sam-file bai"
+            slug: "bam-gather-bam-tag-read-histogram-sam-text-sam-file"
+            suites: "bam-gather bam-tag-read histogram sam-text sam-file"
           - group: oracle-backed
             index: "4/14"
-            slug: "build-index-interval-list-vcf-header-vcf-header-parse-vcf-header-lines"
-            suites: "build-index interval-list vcf-header vcf-header-parse vcf-header-lines"
+            slug: "bai-build-index-interval-list-vcf-header-vcf-header-parse"
+            suites: "bai build-index interval-list vcf-header vcf-header-parse"
           - group: oracle-backed
             index: "5/14"
-            slug: "vcf-record-vcf-file-vcf-record-parse-vcf-genotype-parse-vcf-read"
-            suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse vcf-read"
+            slug: "vcf-header-lines-vcf-record-vcf-file-vcf-record-parse-vcf-genotype-parse"
+            suites: "vcf-header-lines vcf-record vcf-file vcf-record-parse vcf-genotype-parse"
           - group: oracle-backed
             index: "6/14"
-            slug: "vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type"
-            suites: "vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type vcf-attribute-type"
+            slug: "vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type"
+            suites: "vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
             index: "7/14"
-            slug: "rg-checksum-cigar-clip-mateinfo-percentile-fastmath-exp"
-            suites: "rg-checksum cigar-clip mateinfo percentile fastmath-exp"
+            slug: "vcf-attribute-type-rg-checksum-cigar-clip-mateinfo-percentile"
+            suites: "vcf-attribute-type rg-checksum cigar-clip mateinfo percentile"
           - group: oracle-backed
             index: "8/14"
-            slug: "gamma-erf-normal-saddle-point-variant-comparator-smart-merge-headers-tribble-index"
-            suites: "gamma-erf-normal saddle-point variant-comparator smart-merge-headers tribble-index"
+            slug: "fastmath-exp-gamma-erf-normal-saddle-point-variant-comparator-smart-merge-headers"
+            suites: "fastmath-exp gamma-erf-normal saddle-point variant-comparator smart-merge-headers"
           - group: oracle-backed
             index: "9/14"
-            slug: "tribble-index-write-cram-varint-cram-bit-stream-cram-core-codecs-cram-huffman"
-            suites: "tribble-index-write cram-varint cram-bit-stream cram-core-codecs cram-huffman"
+            slug: "tribble-index-tribble-index-write-cram-varint-cram-bit-stream-cram-core-codecs"
+            suites: "tribble-index tribble-index-write cram-varint cram-bit-stream cram-core-codecs"
           - group: oracle-backed
             index: "10/14"
-            slug: "cram-external-codecs-cram-golomb-cram-encoding-factory-cram-compression-header-cram-record-flags"
-            suites: "cram-external-codecs cram-golomb cram-encoding-factory cram-compression-header cram-record-flags"
+            slug: "cram-huffman-cram-external-codecs-cram-golomb-cram-encoding-factory-cram-compression-header"
+            suites: "cram-huffman cram-external-codecs cram-golomb cram-encoding-factory cram-compression-header"
           - group: oracle-backed
             index: "11/14"
-            slug: "cram-slice-blocks-cram-record-read-cram-record-write-cram-crai-cram-negotiation"
-            suites: "cram-slice-blocks cram-record-read cram-record-write cram-crai cram-negotiation"
+            slug: "cram-record-flags-cram-slice-blocks-cram-record-read-cram-record-write-cram-crai"
+            suites: "cram-record-flags cram-slice-blocks cram-record-read cram-record-write cram-crai"
           - group: oracle-backed
             index: "12/14"
-            slug: "cram-file-read-cram-container-cram-block-cram-rans-cram-rans-order1"
-            suites: "cram-file-read cram-container cram-block cram-rans cram-rans-order1"
+            slug: "cram-negotiation-cram-file-read-cram-container-cram-block-cram-rans"
+            suites: "cram-negotiation cram-file-read cram-container cram-block cram-rans"
           - group: oracle-backed
             index: "13/14"
-            slug: "cram-preservation-map-cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header"
-            suites: "cram-preservation-map cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header"
+            slug: "cram-rans-order1-cram-preservation-map-cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map"
+            suites: "cram-rans-order1 cram-preservation-map cram-substitution-matrix cram-encoding-map cram-tag-encoding-map"
           - group: oracle-backed
             index: "14/14"
-            slug: "cram-read-features-cram-record-cigar-cram-restore-bases"
-            suites: "cram-read-features cram-record-cigar cram-restore-bases"
+            slug: "cram-slice-header-cram-read-features-cram-record-cigar-cram-restore-bases"
+            suites: "cram-slice-header cram-read-features cram-record-cigar cram-restore-bases"
           - group: unchecked
             index: "1/1"
             slug: "format"
             suites: "format"
-          - group: golden-pending
-            index: "1/1"
-            slug: "fasta-reference-writer"
-            suites: "fasta-reference-writer"
     steps:
       - uses: actions/checkout@v4
 
