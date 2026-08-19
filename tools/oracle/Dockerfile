@@ -38,13 +38,19 @@ RUN set -eux; \
     fetch $M/org/apache/commons/commons-jexl/2.1.1/commons-jexl-2.1.1.jar \
           commons-jexl.jar 03c9a9fae5da78ce52c0bf24467cc37355b7e23196dff4839e2c0ff018a01306; \
     fetch $M/org/apache/commons/commons-math3/3.5/commons-math3-3.5.jar \
-          commons-math3.jar dcf9768726b82e8d7b8a928447b08bca7cfe2773d5120a63a41ec224207c1a29
+          commons-math3.jar dcf9768726b82e8d7b8a928447b08bca7cfe2773d5120a63a41ec224207c1a29; \
+    fetch $M/org/apache/commons/commons-compress/1.26.0/commons-compress-1.26.0.jar \
+          commons-compress.jar 051aceb8bbcc62d0f5b2b8ac72c53767f9c59bfbd050151e65bef6f51c8ed9c9
 
 # commons-math3 is pinned to 3.5, not to the 3.6.1 the jmath corpus job downloads for its
 # FastMath columns. 3.5 is what GATK pins (`strictly '3.5'` in its build.gradle), so it is the
 # version whose numbers reach a golden downstream. The two pins disagreeing is a real gap and is
 # recorded in the manifest rather than papered over.
-ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/jars/commons-jexl.jar:/opt/oracle/jars/commons-math3.jar:/opt/oracle/classes
+# commons-compress is NOT optional either. `FastaReferenceWriter` counts the bytes it has
+# written with `org.apache.commons.compress.utils.CountingOutputStream`, and every offset in
+# the .fai it writes comes from that counter, so without the jar the class does not load at
+# all: a NoClassDefFoundError rather than a degraded output. htsjdk 4.2.0 pins 1.26.0.
+ENV ORACLE_CP=/opt/oracle/jars/htsjdk.jar:/opt/oracle/jars/gkl.jar:/opt/oracle/jars/gatk-native-bindings.jar:/opt/oracle/jars/commons-logging.jar:/opt/oracle/jars/commons-io.jar:/opt/oracle/jars/commons-jexl.jar:/opt/oracle/jars/commons-math3.jar:/opt/oracle/jars/commons-compress.jar:/opt/oracle/classes
 
 WORKDIR /opt/oracle
 COPY OracleProbe.java .
