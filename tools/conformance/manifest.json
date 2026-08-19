@@ -163,7 +163,7 @@
     },
     {
       "id": "fasta-reference-writer",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The FASTA, the .fai and the .dict FastaReferenceWriter writes",
       "harness": "tools/bam-conformance",
       "why": "Three GATK tools write a reference through this class and none of them can be ported until it is. THE INDEX OFFSET IS TAKEN AFTER THE HEADER LINE, so it counts this sequence's header bytes and every byte before it. BYTES-PER-LINE IS BASES-PER-LINE PLUS ONE always, even for a sequence shorter than one line. A SEQUENCE IS TERMINATED BY EXACTLY ONE NEWLINE, written when the sequence is closed rather than after each line, so a length that is a multiple of the width gets no blank line. THE LINE WIDTH IS PER SEQUENCE rather than per file. APPENDING IN CHUNKS IS THE SAME FILE as appending at once, because the breaks come from a running count. THE MD5 IS OF THE UPPER-CASED BASES, computed chunk by chunk, so a lower-case sequence keeps its case in the FASTA and hashes as though it did not. AND THE REFUSALS ARE PART OF THE CONTRACT: a blank in a name, a control character, an empty name, a sequence with no bases, a repeated name, a base that is not IUPAC and a line width of zero are each a different class or message, while a TAB in a description is allowed.",
@@ -173,7 +173,8 @@
       "cases": [
         {
           "dump": "FastaReferenceWriterDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/fasta_reference_writer.txt.gz",
+          "why": "38 rows, no files: eight writers run to completion and eleven run into a refusal, each printing its FASTA, its .fai and its .dict as escaped text. The eight cover the default width, a width that divides the length, a sequence shorter than one line, two sequences at different widths in one file, the same sequence appended in three unaligned chunks, mixed case with IUPAC codes, and the md5 over lower and upper case. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 32272833549, and byte for byte what this laptop produced."
         }
       ]
     },

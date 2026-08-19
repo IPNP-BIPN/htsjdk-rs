@@ -23,6 +23,7 @@ pub mod build_index;
 pub mod cigar;
 pub mod coordinate;
 pub mod fasta;
+pub mod fasta_writer;
 pub mod fastq;
 pub mod gather;
 pub mod header;
