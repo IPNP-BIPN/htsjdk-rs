@@ -150,6 +150,45 @@ const INFO_STANDARDS: &[Standard] = &[
     },
 ];
 
+/// `Genotype.PRIMARY_KEYS`, in the order htsjdk declares them.
+///
+/// `VCFStandardHeaderLines.addStandardFormatLines` is called with this list by tools that rebuild a
+/// header, so the six lines land in a header whether or not the file uses them.
+pub const PRIMARY_KEYS: [&str; 6] = ["GT", "AD", "DP", "GQ", "PL", "FT"];
+
+/// The standard FORMAT line for an ID, or `None` for an ID htsjdk has no standard for.
+///
+/// The line is the whole standard definition, description included, which is what
+/// `addStandardFormatLines` puts into a header it is fixing.
+pub fn standard_format_line(id: &str) -> Option<HeaderLine> {
+    FORMAT_STANDARDS
+        .iter()
+        .find(|standard| standard.id == id)
+        .map(|standard| HeaderLine::Compound {
+            key: "FORMAT".to_string(),
+            id: standard.id.to_string(),
+            number: standard.number,
+            line_type: standard.line_type,
+            description: standard.description.to_string(),
+            extra: Vec::new(),
+        })
+}
+
+/// The standard INFO line for an ID, the same way.
+pub fn standard_info_line(id: &str) -> Option<HeaderLine> {
+    INFO_STANDARDS
+        .iter()
+        .find(|standard| standard.id == id)
+        .map(|standard| HeaderLine::Compound {
+            key: "INFO".to_string(),
+            id: standard.id.to_string(),
+            number: standard.number,
+            line_type: standard.line_type,
+            description: standard.description.to_string(),
+            extra: Vec::new(),
+        })
+}
+
 /// `Standards.repair`, for one line. Anything that is not a compound line is returned untouched.
 pub fn repair(line: &HeaderLine) -> HeaderLine {
     let HeaderLine::Compound {
@@ -275,5 +314,39 @@ mod tests {
     fn an_id_with_no_standard_is_untouched() {
         let line = HeaderLine::info("XX", Cardinality::Fixed(2), LineType::Float, "Mine");
         assert_eq!(repair(&line), line);
+    }
+}
+
+#[cfg(test)]
+mod standard_line_tests {
+    use super::*;
+
+    #[test]
+    fn the_six_primary_keys_all_have_a_standard_line() {
+        for id in PRIMARY_KEYS {
+            let line = standard_format_line(id)
+                .unwrap_or_else(|| panic!("{id} is a primary key with no standard line"));
+            // `render` writes the line without its `##`, which the header writer adds.
+            assert!(
+                line.render().starts_with(&format!("FORMAT=<ID={id},")),
+                "{}",
+                line.render()
+            );
+        }
+    }
+
+    #[test]
+    fn dp_differs_between_the_two_tables() {
+        // The same ID, two descriptions, which is why the accessors are separate.
+        assert_ne!(
+            standard_format_line("DP").expect("a FORMAT DP").render(),
+            standard_info_line("DP").expect("an INFO DP").render()
+        );
+    }
+
+    #[test]
+    fn an_id_with_no_standard_is_none() {
+        assert!(standard_format_line("ZZ").is_none());
+        assert!(standard_info_line("ZZ").is_none());
     }
 }
