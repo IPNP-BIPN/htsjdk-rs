@@ -418,10 +418,24 @@ impl VcfHeader {
         self.has_compound("FORMAT", id)
     }
 
+    /// Whether the header declares this filter.
+    ///
+    /// TWO SHAPES CARRY A FILTER LINE. A header built in code holds
+    /// [`HeaderLine::Filter`]; a header PARSED from a file holds a [`HeaderLine::Structured`] whose
+    /// key is `FILTER`, because [`crate::header_parse`] types only INFO, FORMAT and contig lines.
+    /// Checking one shape and not the other made every parsed record carrying a filter other than
+    /// `PASS` unencodable: the round trip refused a file it had just read, and htsjdk does not.
     pub fn has_filter_line(&self, wanted: &str) -> bool {
-        self.lines
-            .iter()
-            .any(|l| matches!(l, HeaderLine::Filter { id, .. } if id == wanted))
+        self.lines.iter().any(|l| match l {
+            HeaderLine::Filter { id, .. } => id == wanted,
+            HeaderLine::Structured { key, fields } => {
+                key == "FILTER"
+                    && fields
+                        .iter()
+                        .any(|(name, value)| name == "ID" && value == wanted)
+            }
+            _ => false,
+        })
     }
 }
 
@@ -451,5 +465,35 @@ mod tests {
         assert!(is_missing_value(""));
         assert!(!is_missing_value("0"));
         assert!(!is_missing_value(".0"));
+    }
+}
+
+#[cfg(test)]
+mod filter_line_tests {
+    use crate::reader::read_vcf;
+    use crate::vcf_file::write_vcf;
+
+    const FILE: &str = "##fileformat=VCFv4.2\n\
+                        ##FILTER=<ID=LowQual,Description=\"Low quality\">\n\
+                        ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+                        ##contig=<ID=chr1,length=240>\n\
+                        #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA12878\n\
+                        chr1\t20\t.\tT\tG\t.\tLowQual\t.\tGT\t0/1\n";
+
+    #[test]
+    fn a_parsed_filter_line_is_a_declaration() {
+        let file = read_vcf(FILE).expect("the file reads");
+        assert!(
+            file.header.has_filter_line("LowQual"),
+            "a FILTER line the parser typed as Structured still declares its filter"
+        );
+        assert!(!file.header.has_filter_line("Absent"));
+    }
+
+    #[test]
+    fn a_record_carrying_a_declared_filter_writes_back_out() {
+        let file = read_vcf(FILE).expect("the file reads");
+        let written = write_vcf(&file.header, &file.records).expect("the record encodes");
+        assert_eq!(written, FILE, "the round trip is the file it read");
     }
 }
