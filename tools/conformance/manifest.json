@@ -659,7 +659,7 @@
     },
     {
       "id": "binomial-inverse",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "The binomial quantile a noise floor is read off",
       "harness": "tools/jmath-conformance",
       "why": "BinomialDistribution.inverseCumulativeProbability, which GATK reaches through PowerCalculationUtils.calculateMinCountForSignal. It is not a formula but a bracket narrowed by a one-sided Chebyshev inequality and then bisected, so where the bracket starts is part of the answer. THE ANSWER IS THE SMALLEST x WITH cdf(x) >= p and the bisection returns upper rather than lower. THE LOWER BOUND IS DECREMENTED BEFORE THE SEARCH, which is what makes the invariant true at the start. THE CHEBYSHEV NARROWING USES ceil AND THEN SUBTRACTS ONE on both ends, so the bracket is asymmetric. IT IS SKIPPED ENTIRELY when the variance is zero, which for a binomial means a probability of exactly zero or one. p = 0 RETURNS THE SUPPORT'S LOWER BOUND AND p = 1 ITS UPPER, before any search. AND A p OUTSIDE THE UNIT INTERVAL IS AN OutOfRangeException. The cumulative probabilities the search bisects over are dumped beside the answers, so a port that disagrees on the CDF can be told apart from one whose search is wrong.",
@@ -669,7 +669,8 @@
       "cases": [
         {
           "dump": "BinomialInverseDump",
-          "golden": null
+          "golden": "crates/jmath/tests/data/binomial_inverse.txt.gz",
+          "why": "1243 rows, no files: eight trial counts from zero to 317, ten probabilities including both degenerate ends, and nine quantiles including the 0.99 GATK's noise model uses. Each answer is printed beside the cumulative probabilities the search bisects over and the mean and variance that decide whether the Chebyshev narrowing runs at all, so a port that disagrees on the CDF can be told apart from one whose search is wrong. Two rows are refusals and one is the NaN quantile, which answers the number of trials rather than throwing. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 32371170107, and byte for byte what this laptop produced."
         }
       ]
     },
