@@ -65,6 +65,102 @@ pub fn cumulative_probability(trials: i32, p: f64, x: i32) -> Result<f64, Binomi
     }
 }
 
+/// `BinomialDistribution.getNumericalMean()`.
+pub fn numerical_mean(trials: i32, p: f64) -> f64 {
+    f64::from(trials) * p
+}
+
+/// `BinomialDistribution.getNumericalVariance()`.
+///
+/// `n * p * (1 - p)`, written in that order: the reference computes `p * (1 - p)` first and then
+/// multiplies, which is a different rounding from `(n * p) * (1 - p)`.
+pub fn numerical_variance(trials: i32, p: f64) -> f64 {
+    f64::from(trials) * p * (1.0 - p)
+}
+
+/// `AbstractIntegerDistribution.inverseCumulativeProbability`, for a binomial.
+///
+/// Not a formula: a bracket narrowed by a one-sided Chebyshev inequality and then bisected. Three
+/// things in it are not what a reader would write from the description.
+///
+///  * **the lower bound is decremented before the search**, so the invariant the bisection keeps is
+///    `cdf(lower) < p <= cdf(upper)` from the first iteration;
+///  * **the narrowing takes `ceil` and then subtracts one** on both ends, so the bracket is
+///    asymmetric and can drop the answer's neighbour without dropping the answer;
+///  * **and it is skipped when the variance is zero**, which for a binomial is a probability of
+///    exactly zero or exactly one.
+///
+/// A `p` outside the unit interval is refused. A NaN is NOT: `NaN < 0` and `NaN > 1` are both
+/// false, the equality tests fail, the narrowing produces NaNs that narrow nothing, and the
+/// bisection returns the support's upper bound -- so a NaN quantile answers the number of trials.
+/// The `binomial-inverse` golden carries that row.
+pub fn inverse_cumulative_probability(
+    trials: i32,
+    probability: f64,
+    p: f64,
+) -> Result<i32, BinomialError> {
+    // Two comparisons rather than a `RangeInclusive::contains`, because a NaN has to pass BOTH of
+    // them: `contains` would refuse it, and the reference does not.
+    #[allow(clippy::manual_range_contains)]
+    if p < 0.0 || p > 1.0 {
+        return Err(BinomialError::ProbabilityOutOfRange(p));
+    }
+
+    // THE SUPPORT'S BOUNDS ARE NOT 0 AND `trials`. `getSupportLowerBound` is
+    // `probabilityOfSuccess < 1 ? 0 : numberOfTrials` and `getSupportUpperBound` is
+    // `probabilityOfSuccess > 0 ? numberOfTrials : 0`, so a probability of exactly one has a
+    // support starting at the trial count and a probability of exactly zero has one ending at
+    // zero. Both degenerate cases return a bound directly, and getting the bound wrong is how a
+    // port answers `1` where the reference answers `0`.
+    let support_lower = if probability < 1.0 { 0 } else { trials };
+    let support_upper = if probability > 0.0 { trials } else { 0 };
+
+    // Neither bound is `Integer.MIN_VALUE`, so the branch that checks the CDF at the lower bound
+    // is unreachable here and the decrement always happens.
+    let mut lower = support_lower - 1;
+    if p == 0.0 {
+        return Ok(support_lower);
+    }
+    let mut upper = support_upper;
+    if p == 1.0 {
+        return Ok(upper);
+    }
+
+    let mean = numerical_mean(trials, probability);
+    let sigma = numerical_variance(trials, probability).sqrt();
+    let chebyshev_applies = !(mean.is_infinite()
+        || mean.is_nan()
+        || sigma.is_infinite()
+        || sigma.is_nan()
+        || sigma == 0.0);
+    if chebyshev_applies {
+        let mut k = ((1.0 - p) / p).sqrt();
+        let mut tmp = mean - k * sigma;
+        if tmp > f64::from(lower) {
+            lower = (tmp.ceil() as i32) - 1;
+        }
+        k = 1.0 / k;
+        tmp = mean + k * sigma;
+        if tmp < f64::from(upper) {
+            upper = (tmp.ceil() as i32) - 1;
+        }
+    }
+
+    // `solveInverseCumulativeProbability`: bisect, and answer the UPPER end.
+    while lower + 1 < upper {
+        let mut middle = (lower + upper) / 2;
+        if middle < lower || middle > upper {
+            middle = lower + (upper - lower) / 2;
+        }
+        if cumulative_probability(trials, probability, middle)? >= p {
+            upper = middle;
+        } else {
+            lower = middle;
+        }
+    }
+    Ok(upper)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
