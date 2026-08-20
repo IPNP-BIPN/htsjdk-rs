@@ -658,6 +658,22 @@
       ]
     },
     {
+      "id": "binomial-inverse",
+      "status": "golden-pending",
+      "title": "The binomial quantile a noise floor is read off",
+      "harness": "tools/jmath-conformance",
+      "why": "BinomialDistribution.inverseCumulativeProbability, which GATK reaches through PowerCalculationUtils.calculateMinCountForSignal. It is not a formula but a bracket narrowed by a one-sided Chebyshev inequality and then bisected, so where the bracket starts is part of the answer. THE ANSWER IS THE SMALLEST x WITH cdf(x) >= p and the bisection returns upper rather than lower. THE LOWER BOUND IS DECREMENTED BEFORE THE SEARCH, which is what makes the invariant true at the start. THE CHEBYSHEV NARROWING USES ceil AND THEN SUBTRACTS ONE on both ends, so the bracket is asymmetric. IT IS SKIPPED ENTIRELY when the variance is zero, which for a binomial means a probability of exactly zero or one. p = 0 RETURNS THE SUPPORT'S LOWER BOUND AND p = 1 ITS UPPER, before any search. AND A p OUTSIDE THE UNIT INTERVAL IS AN OutOfRangeException. The cumulative probabilities the search bisects over are dumped beside the answers, so a port that disagrees on the CDF can be told apart from one whose search is wrong.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "BinomialInverseDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "variant-comparator",
       "status": "oracle-backed",
       "title": "VariantContextComparator: contig order, then start",
