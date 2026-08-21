@@ -96,6 +96,150 @@ mod tests {
         assert!(!bases_equal(b'.', b'A'));
     }
 
+    /// A read with one mismatch sums that base's quality and nothing else.
+    #[test]
+    fn only_the_mismatched_qualities_are_summed() {
+        use crate::alignment_block::alignment_blocks;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        let cigar = Cigar::new(vec![CigarElement {
+            length: 5,
+            op: Op::M,
+        }]);
+        let blocks = alignment_blocks(&cigar, 1);
+        let read = b"ACGTA";
+        let qualities = [10u8, 20, 30, 40, 50];
+        let reference = b"ACCTA";
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, reference, 0, false, false),
+            Ok(30)
+        );
+        // The same read against itself sums nothing.
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, read, 0, false, false),
+            Ok(0)
+        );
+    }
+
+    /// An insertion is not compared and a deletion steps the reference on, exactly as the
+    /// mismatch count does, because both walk alignment blocks.
+    #[test]
+    fn the_walk_is_over_alignment_blocks() {
+        use crate::alignment_block::alignment_blocks;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        let cigar = Cigar::new(vec![
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::I,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+        ]);
+        let blocks = alignment_blocks(&cigar, 1);
+        let read = b"ACTTGT";
+        let qualities = [10u8, 11, 99, 99, 12, 13];
+        // The inserted bases carry a quality of 99 and never meet the reference, so only the four
+        // aligned bases are compared: here the last one mismatches and only its 13 is summed.
+        let reference = b"ACGA";
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, reference, 0, false, false),
+            Ok(13)
+        );
+        // And against a reference the aligned bases all match, nothing is summed at all.
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, b"ACGT", 0, false, false),
+            Ok(0)
+        );
+    }
+
+    /// A bisulfite read's C -> T on the forward strand is not a mismatch, so its quality is not
+    /// summed.
+    #[test]
+    fn bisulfite_conversion_is_not_a_mismatch() {
+        use crate::alignment_block::alignment_blocks;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        let cigar = Cigar::new(vec![CigarElement {
+            length: 2,
+            op: Op::M,
+        }]);
+        let blocks = alignment_blocks(&cigar, 1);
+        let read = b"TA";
+        let qualities = [40u8, 40];
+        let reference = b"CA";
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, reference, 0, false, false),
+            Ok(40)
+        );
+        assert_eq!(
+            sum_qualities_of_mismatches(read, &qualities, &blocks, 1, reference, 0, false, true),
+            Ok(0)
+        );
+    }
+
+    /// The guard `countMismatches` does not have: an offset at or after the alignment start.
+    #[test]
+    fn an_offset_at_the_alignment_start_is_refused() {
+        use crate::alignment_block::alignment_blocks;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        let cigar = Cigar::new(vec![CigarElement {
+            length: 2,
+            op: Op::M,
+        }]);
+        let blocks = alignment_blocks(&cigar, 5);
+        let error = sum_qualities_of_mismatches(b"AC", &[1, 1], &blocks, 5, b"AC", 5, false, false)
+            .expect_err("the guard");
+        assert_eq!(error.class(), "java.lang.IllegalArgumentException");
+        assert_eq!(
+            error.message(),
+            "read.getAlignmentStart(5) <= referenceOffset(5)"
+        );
+    }
+
+    /// `calculateSamNmTag` counts the indels the mismatch count skips.
+    #[test]
+    fn the_sam_nm_tag_adds_every_inserted_and_deleted_base() {
+        use crate::alignment_block::alignment_blocks;
+        use crate::cigar::{Cigar, CigarElement, Op};
+        let cigar = Cigar::new(vec![
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::I,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::D,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+        ]);
+        let blocks = alignment_blocks(&cigar, 1);
+        let read = b"ACTTGTGT";
+        //           ^^    ^^  ^^  against the reference below
+        let reference = b"ACGTNNGT";
+        // Two mismatches at the N positions are skipped by the deletion, so what is left is the
+        // block comparison plus 2 inserted and 2 deleted bases.
+        let mismatches = count_mismatches(read, &blocks, reference, 0, false, false);
+        assert_eq!(
+            calculate_sam_nm_tag(read, &blocks, &cigar, reference, 0, false, false),
+            mismatches + 4
+        );
+    }
+
     /// The mask test is equality, not overlap, so an ambiguity code does not match the bases it
     /// stands for.
     #[test]
@@ -194,6 +338,111 @@ pub fn count_mismatches(
         }
     }
     mismatches
+}
+
+/// `SequenceUtil.sumQualitiesOfMismatches(read, ref, referenceOffset, bisulfiteSequence)`.
+///
+/// The same walk as [`count_mismatches`], summing the read's base qualities at the mismatched
+/// positions instead of counting them. Two things make it a different function rather than a
+/// parameter of that one:
+///
+///   * it reads `getBaseQualities()`, so a read with no qualities has nothing to sum and the
+///     caller is expected not to ask (`AbstractAlignmentMerger.fixUq` checks `NULL_QUALS` first);
+///   * and it has a guard `count_mismatches` does not, refusing a reference offset at or after the
+///     alignment start, which is [`QualitySumError::AlignmentStartBeforeOffset`].
+///
+/// The qualities are summed as `int`, so nothing saturates before 2^31.
+// The Java takes a SAMRecord and reads five things off it; this takes the five.
+#[allow(clippy::too_many_arguments)]
+pub fn sum_qualities_of_mismatches(
+    read_bases: &[u8],
+    base_qualities: &[u8],
+    blocks: &[crate::alignment_block::AlignmentBlock],
+    alignment_start: i32,
+    reference_bases: &[u8],
+    reference_offset: i32,
+    negative_strand: bool,
+    bisulfite_sequence: bool,
+) -> Result<i32, QualitySumError> {
+    if alignment_start <= reference_offset {
+        return Err(QualitySumError::AlignmentStartBeforeOffset {
+            alignment_start,
+            reference_offset,
+        });
+    }
+    let mut qualities: i32 = 0;
+    for block in blocks {
+        let read_block_start = (block.read_start - 1) as usize;
+        let reference_block_start = (block.reference_start - 1 - reference_offset) as usize;
+        for i in 0..block.length as usize {
+            let read = read_bases[read_block_start + i];
+            let reference = reference_bases[reference_block_start + i];
+            let matches = if bisulfite_sequence {
+                bisulfite_bases_equal(negative_strand, read, reference)
+            } else {
+                bases_equal(read, reference)
+            };
+            if !matches {
+                qualities += i32::from(base_qualities[read_block_start + i]);
+            }
+        }
+    }
+    Ok(qualities)
+}
+
+/// The one refusal [`sum_qualities_of_mismatches`] raises, which htsjdk throws as an
+/// `IllegalArgumentException`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QualitySumError {
+    AlignmentStartBeforeOffset {
+        alignment_start: i32,
+        reference_offset: i32,
+    },
+}
+
+impl QualitySumError {
+    pub fn class(&self) -> &'static str {
+        "java.lang.IllegalArgumentException"
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            QualitySumError::AlignmentStartBeforeOffset {
+                alignment_start,
+                reference_offset,
+            } => format!(
+                "read.getAlignmentStart({alignment_start}) <= referenceOffset({reference_offset})"
+            ),
+        }
+    }
+}
+
+/// `SequenceUtil.calculateSamNmTag(read, ref, referenceOffset, bisulfiteSequence)`: the mismatches
+/// plus every inserted and deleted base.
+///
+/// It is NOT [`crate::md_nm::calculate_md_and_nm`]'s `NM`. That one walks the cigar itself and
+/// treats a read base of `0` as a match; this one goes through [`count_mismatches`], which does
+/// not, and it is the one `fixNmMdAndUq` reaches for a bisulfite read.
+// Likewise: the record's bases, its blocks and its cigar are three parameters here.
+#[allow(clippy::too_many_arguments)]
+pub fn calculate_sam_nm_tag(
+    read_bases: &[u8],
+    blocks: &[crate::alignment_block::AlignmentBlock],
+    cigar: &crate::cigar::Cigar,
+    reference_bases: &[u8],
+    reference_offset: i32,
+    negative_strand: bool,
+    bisulfite_sequence: bool,
+) -> i32 {
+    count_mismatches(
+        read_bases,
+        blocks,
+        reference_bases,
+        reference_offset,
+        negative_strand,
+        bisulfite_sequence,
+    ) + count_inserted_bases(cigar)
+        + count_deleted_bases(cigar)
 }
 
 /// `SequenceUtil.countInsertedBases(cigar)`: the summed length of `I` elements.
