@@ -24,6 +24,9 @@ pub const VERSION_TAG: &str = "VN";
 /// `SAMTextHeaderCodec.HEADER_LINE_START`.
 const HEADER_LINE_START: char = '@';
 
+/// `SAMTextHeaderCodec.COMMENT_PREFIX`, tab included.
+pub const COMMENT_PREFIX: &str = "@CO\t";
+
 /// An attribute list with `LinkedHashMap` semantics.
 ///
 /// Insertion order is preserved, and re-setting an existing key updates its value **in place**
@@ -165,9 +168,24 @@ impl SamHeader {
         self.attributes.set("GO", order);
     }
 
-    /// `SAMFileHeader.addComment`, which prefixes `@CO\t`.
+    /// `SAMFileHeader.addComment`, which prefixes `@CO\t` ONLY when it is not already there.
+    ///
+    /// ```java
+    /// if (!comment.startsWith(SAMTextHeaderCodec.COMMENT_PREFIX)) {
+    ///     comment = SAMTextHeaderCodec.COMMENT_PREFIX + comment;
+    /// }
+    /// ```
+    ///
+    /// `COMMENT_PREFIX` is `@CO\t`, tab included, so a comment beginning `@CO` with anything else
+    /// after it IS prefixed again: `@COMMENT` becomes `@CO\t@COMMENT`. Picard's `AddCommentsToBam`
+    /// passes user text straight in, and the gatk-rs suite for it measured a comment that already
+    /// carried the prefix coming out exactly once.
     pub fn add_comment(&mut self, comment: &str) {
-        self.comments.push(format!("@CO\t{comment}"));
+        if comment.starts_with(COMMENT_PREFIX) {
+            self.comments.push(comment.to_string());
+        } else {
+            self.comments.push(format!("{COMMENT_PREFIX}{comment}"));
+        }
     }
 
     /// `SAMTextHeaderCodec.encode` with `keepExistingVersionNumber = true`.
@@ -320,6 +338,24 @@ mod tests {
     }
 
     /// The section order is fixed: HD, SQ, RG, PG, CO.
+    /// `addComment` prefixes only when the prefix is not already there, and the prefix is
+    /// `@CO` FOLLOWED BY A TAB: a comment starting `@COMMENT` is prefixed again.
+    #[test]
+    fn a_comment_is_not_prefixed_twice() {
+        let mut h = SamHeader::default();
+        h.add_comment("plain");
+        h.add_comment("@CO\talready prefixed");
+        h.add_comment("@COMMENT");
+        assert_eq!(
+            h.comments,
+            vec![
+                "@CO\tplain".to_string(),
+                "@CO\talready prefixed".to_string(),
+                "@CO\t@COMMENT".to_string(),
+            ]
+        );
+    }
+
     #[test]
     fn sections_come_in_htsjdks_order() {
         let mut h = SamHeader::new();
