@@ -382,6 +382,100 @@ fn write_reference(out: &mut Vec<u8>, content: Option<&(IndexContent, IndexMetaD
     }
 }
 
+/// One reference's whole content, as `CachingBAMFileIndex.getQueryResults` hands it over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReferenceContent {
+    /// Every bin in the file's own order, which htsjdk keeps sorted by bin number. The pseudo-bin
+    /// 37450 is NOT here: it is [`ReferenceContent::metadata`] instead.
+    pub bins: Vec<Bin>,
+    /// The pseudo-bin's four numbers, absent for a reference written as null content.
+    pub metadata: Option<PseudoBin>,
+    /// The linear index, one virtual file pointer per 16kb window.
+    pub linear_index: Vec<u64>,
+}
+
+/// The four values the pseudo-bin's two "chunks" really hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PseudoBin {
+    pub first_offset: u64,
+    pub last_offset: u64,
+    pub aligned: i64,
+    pub unaligned: i64,
+}
+
+/// A whole `.bai`, bins and linear index included.
+///
+/// [`parse_bai_metadata`] reads the pseudo-bins alone, which is all `printIndexStats` needs.
+/// This reads everything, which is what `TextualBAMIndexWriter` prints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BamIndex {
+    pub references: Vec<ReferenceContent>,
+    pub no_coordinate_records: i64,
+}
+
+/// `CachingBAMFileIndex` over a whole `.bai`.
+pub fn read_bai(bai: &[u8]) -> Result<BamIndex, BaiParseError> {
+    let mut p = 0usize;
+    let take = |p: &mut usize, n: usize| -> Result<&[u8], BaiParseError> {
+        let s = bai.get(*p..*p + n).ok_or(BaiParseError::Truncated)?;
+        *p += n;
+        Ok(s)
+    };
+    let i32_at = |p: &mut usize| -> Result<i32, BaiParseError> {
+        Ok(i32::from_le_bytes(take(p, 4)?.try_into().unwrap()))
+    };
+    let u64_at = |p: &mut usize| -> Result<u64, BaiParseError> {
+        Ok(u64::from_le_bytes(take(p, 8)?.try_into().unwrap()))
+    };
+
+    if take(&mut p, 4)? != BAM_INDEX_MAGIC {
+        return Err(BaiParseError::NotABai);
+    }
+    let n_ref = i32_at(&mut p)?;
+    let mut references = Vec::with_capacity(n_ref.max(0) as usize);
+    for _ in 0..n_ref {
+        let n_bin = i32_at(&mut p)?;
+        let mut bins = Vec::new();
+        let mut metadata = None;
+        for _ in 0..n_bin {
+            let bin_number = i32_at(&mut p)?;
+            let n_chunk = i32_at(&mut p)?;
+            if bin_number == MAX_BINS && n_chunk == 2 {
+                metadata = Some(PseudoBin {
+                    first_offset: u64_at(&mut p)?,
+                    last_offset: u64_at(&mut p)?,
+                    aligned: u64_at(&mut p)? as i64,
+                    unaligned: u64_at(&mut p)? as i64,
+                });
+                continue;
+            }
+            let mut chunks = Vec::with_capacity(n_chunk.max(0) as usize);
+            for _ in 0..n_chunk {
+                chunks.push(Chunk {
+                    start: u64_at(&mut p)?,
+                    end: u64_at(&mut p)?,
+                });
+            }
+            bins.push(Bin { bin_number, chunks });
+        }
+        let n_intv = i32_at(&mut p)?;
+        let mut linear_index = Vec::with_capacity(n_intv.max(0) as usize);
+        for _ in 0..n_intv {
+            linear_index.push(u64_at(&mut p)?);
+        }
+        references.push(ReferenceContent {
+            bins,
+            metadata,
+            linear_index,
+        });
+    }
+    let no_coordinate_records = u64_at(&mut p)? as i64;
+    Ok(BamIndex {
+        references,
+        no_coordinate_records,
+    })
+}
+
 /// Per-reference index metadata: the aligned and unaligned record counts from the pseudo-bin, or
 /// `None` when the reference has no content (`writeNullContent`, so no pseudo-bin).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,6 +552,45 @@ pub fn parse_bai_metadata(bai: &[u8]) -> Result<IndexStats, BaiParseError> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A whole `.bai` reads back the bins, the pseudo-bin and the linear index that
+    /// [`parse_bai_metadata`] skips.
+    #[test]
+    fn the_whole_index_reads_back_what_the_indexer_wrote() {
+        // Two references, the second with no content at all.
+        let mut indexer = BamIndexer::new(vec![100_000, 100_000]);
+        indexer.process(
+            0,
+            100,
+            200,
+            crate::bin::compute_indexing_bin(100, 200).expect("a bin"),
+            false,
+            Chunk { start: 1, end: 2 },
+        );
+        let bai = indexer.finish();
+
+        let index = read_bai(&bai).expect("a bai");
+        assert_eq!(index.references.len(), 2);
+        let first = &index.references[0];
+        assert_eq!(first.bins.len(), 1);
+        assert_eq!(first.bins[0].chunks, vec![Chunk { start: 1, end: 2 }]);
+        let metadata = first.metadata.expect("a pseudo-bin");
+        assert_eq!(metadata.aligned, 1);
+        assert_eq!(metadata.unaligned, 0);
+        assert!(!first.linear_index.is_empty());
+        // The reference with no reads is written as null content: no bins, no pseudo-bin.
+        assert!(index.references[1].bins.is_empty());
+        assert_eq!(index.references[1].metadata, None);
+        assert_eq!(index.no_coordinate_records, 0);
+
+        // And the metadata-only reader agrees with the whole one.
+        let stats = parse_bai_metadata(&bai).expect("the metadata");
+        assert_eq!(stats.no_coordinate_records, index.no_coordinate_records);
+        assert_eq!(
+            stats.references[0].map(|m| (m.aligned, m.unaligned)),
+            Some((metadata.aligned, metadata.unaligned))
+        );
+    }
     use super::*;
 
     fn chunk(start: u64, end: u64) -> Chunk {

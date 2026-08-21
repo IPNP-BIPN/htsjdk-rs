@@ -14,6 +14,68 @@ pub const BIN_GENOMIC_SPAN: i32 = 512 * 1024 * 1024;
 /// `GenomicIndexUtil.LEVEL_STARTS`.
 pub const LEVEL_STARTS: [i32; 6] = [0, 1, 9, 73, 585, 4681];
 
+/// `GenomicIndexUtil.binTolevel`, which is a base-8 logarithm computed in floating point.
+///
+/// The arithmetic is `floor(log2(7 * bin + 1) / 3)` and is reproduced rather than replaced by an
+/// integer walk: the two agree on every bin in range, and this is the one the reference runs.
+pub fn bin_to_level(bin: i32) -> i32 {
+    assert!(
+        (0..=MAX_BINS).contains(&bin),
+        "Bin number must be >=0 and <= 37450"
+    );
+    ((((7 * bin + 1) as f64).ln() / 2f64.ln()) / 3.0).floor() as i32
+}
+
+/// `GenomicIndexUtil.levelToSize`: `2^(29 - 3 * level)`.
+pub fn level_to_size(level: i32) -> i32 {
+    assert!(
+        (0..=5).contains(&level),
+        "Level number must be >=0 and <= 5"
+    );
+    2f64.powi(29 - 3 * level) as i32
+}
+
+/// `GenomicIndexUtil.getBinSummaryString`, which `PrintFileDiagnostics` writes beside every bin.
+///
+/// Not defined for the pseudo-bin: `binTolevel(37450)` answers 6, one past `LEVEL_STARTS`, so Java
+/// throws `ArrayIndexOutOfBoundsException` and this panics. Callers stop at [`MAX_BINS`], which is
+/// what `TextualBAMIndexWriter` does.
+///
+/// The two sizes are formatted with Java's `%,d`, so they carry group separators: a bin at level 5
+/// reads `bin size=16,384 bin range=(0-16,384)`. There is no comma between the size and the range.
+pub fn bin_summary_string(bin: i32) -> String {
+    let level = bin_to_level(bin);
+    let level_start = LEVEL_STARTS[level as usize];
+    let bin_size = level_to_size(level);
+    let bin_start = (bin - level_start) * bin_size;
+    format!(
+        "bin={}, level={}, first bin={}, bin size={} bin range=({}-{})",
+        bin,
+        level,
+        level_start,
+        grouped(i64::from(bin_size)),
+        grouped(i64::from(bin_start)),
+        grouped(i64::from(bin_start) + i64::from(bin_size))
+    )
+}
+
+/// Java's `%,d` for a non-negative value: digits in groups of three, separated by commas.
+fn grouped(value: i64) -> String {
+    let digits = value.abs().to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    if value < 0 {
+        format!("-{out}")
+    } else {
+        out
+    }
+}
+
 /// `GenomicIndexUtil.MAX_BINS`, `(8^6-1)/7+1`.
 pub const MAX_BINS: i32 = 37450;
 
@@ -94,6 +156,35 @@ pub fn compute_indexing_bin(alignment_start: i32, alignment_end: i32) -> Result<
 
 #[cfg(test)]
 mod tests {
+
+    /// `getBinSummaryString` down to Java's `%,d` grouping and the missing comma between the size
+    /// and the range.
+    #[test]
+    fn the_bin_summary_is_the_reference_s_own_wording() {
+        assert_eq!(
+            bin_summary_string(4681),
+            "bin=4681, level=5, first bin=4681, bin size=16,384 bin range=(0-16,384)"
+        );
+        assert_eq!(
+            bin_summary_string(4682),
+            "bin=4682, level=5, first bin=4681, bin size=16,384 bin range=(16,384-32,768)"
+        );
+        // Level 0 is the whole contig, and its size carries three separators.
+        assert_eq!(
+            bin_summary_string(0),
+            "bin=0, level=0, first bin=0, bin size=536,870,912 bin range=(0-536,870,912)"
+        );
+        assert_eq!(bin_to_level(0), 0);
+        assert_eq!(bin_to_level(1), 1);
+        // Level 5 runs 4681..=37448, which is every bin a .bai can hold.
+        assert_eq!(bin_to_level(37_448), 5);
+        assert_eq!(level_to_size(5), 16_384);
+        // The pseudo-bin is past the table: `binTolevel` answers 6 for it, which is not a level
+        // at all, so `getBinSummaryString(MAX_BINS)` would walk off `LEVEL_STARTS` in Java as it
+        // panics here. Every caller stops at that bin. So does 37449, the number between.
+        assert_eq!(bin_to_level(37_449), 6);
+        assert_eq!(bin_to_level(MAX_BINS), 6);
+    }
     use super::*;
 
     /// The inline literals in `regionToBin` must equal the declared level starts. If they ever
