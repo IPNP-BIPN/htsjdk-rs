@@ -62,8 +62,13 @@ impl From<GammaError> for PoissonError {
 }
 
 /// The constructor's one check.
+///
+/// `if (p <= 0) { throw new NotStrictlyPositiveException(MEAN, p); }`, written as the comparison
+/// the reference makes rather than as its negation. The difference is a NaN: `NaN <= 0` is false in
+/// Java, so a NaN mean is CONSTRUCTED rather than refused, and `!(mean > 0.0)` would have refused
+/// it.
 fn check_mean(mean: f64) -> Result<(), PoissonError> {
-    if !(mean > 0.0) {
+    if mean <= 0.0 {
         return Err(PoissonError::MeanNotStrictlyPositive(mean));
     }
     Ok(())
