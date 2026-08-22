@@ -20,7 +20,9 @@
     "suites_per_job": 5,
     "$why": "Suites are grouped into jobs of this size: one job per suite would restore the oracle image once per suite, and one job for all of them is what the hand-written workflow did, where a failing suite hid every suite after it."
   },
-  "default_java_props": [],
+  "default_java_props": [
+    "-Dsamjdk.use_libdeflate=false"
+  ],
   "suites": [
     {
       "id": "tribble-bed",

@@ -50,6 +50,24 @@ public final class OracleProbe {
         final java.util.Locale locale = java.util.Locale.getDefault();
         final String decimalSample = new java.text.DecimalFormat("0.0#####").format(1.0 / 3.0);
 
+        // libdeflate, which does not exist before htsjdk 5.0.0 and is ON by default from 5.0.0.
+        // There it makes the plain `new DeflaterFactory()` return a LibdeflateDeflater, so a pin
+        // written that way keeps compiling, keeps reading like a pin, and produces a third flavour
+        // of bytes beside JDK zlib and GKL. The field is `static final`, read at class load, so
+        // the only place to set it is the command line, which is where the manifest sets it:
+        // `-Dsamjdk.use_libdeflate=false`. Read reflectively so one probe covers both versions:
+        // absent is the correct answer under htsjdk 4.2.0, not a failure.
+        String libdeflate = "absent";
+        try {
+            final Object value = Class.forName("htsjdk.samtools.Defaults")
+                    .getField("USE_LIBDEFLATE").get(null);
+            libdeflate = String.valueOf(value);
+        } catch (final NoSuchFieldException | ClassNotFoundException expectedBefore5) {
+            libdeflate = "absent";
+        } catch (final Throwable t) {
+            failures.add("htsjdk.samtools.Defaults.USE_LIBDEFLATE could not be read: " + t);
+        }
+
         if (!EXPECTED_ARCH.equals(arch)) {
             failures.add("os.arch is '" + arch + "', expected '" + EXPECTED_ARCH + "'");
         }
@@ -65,6 +83,13 @@ public final class OracleProbe {
         if (intelInflater != EXPECTED_GKL_AVAILABLE) {
             failures.add("usingIntelInflater is " + intelInflater + ", expected "
                     + EXPECTED_GKL_AVAILABLE);
+        }
+        if ("true".equals(libdeflate)) {
+            failures.add("htsjdk.samtools.Defaults.USE_LIBDEFLATE is true. From htsjdk 5.0.0 that"
+                    + " makes `new DeflaterFactory()` return a LibdeflateDeflater, so a deflater"
+                    + " pin written that way would compile, look like a pin, and produce"
+                    + " libdeflate bytes. Pass -Dsamjdk.use_libdeflate=false; the property is read"
+                    + " at class load and cannot be set from inside the run.");
         }
         if (!EXPECTED_LOCALE.equals(locale.toString())) {
             failures.add("default locale is '" + locale + "', expected '" + EXPECTED_LOCALE
@@ -88,6 +113,7 @@ public final class OracleProbe {
         json.append("  \"java_vendor\": \"").append(javaVendor).append("\",\n");
         json.append("  \"using_intel_deflater\": ").append(intelDeflater).append(",\n");
         json.append("  \"using_intel_inflater\": ").append(intelInflater).append(",\n");
+        json.append("  \"use_libdeflate\": \"").append(libdeflate).append("\",\n");
         json.append("  \"default_locale\": \"").append(locale).append("\",\n");
         json.append("  \"decimal_sample\": \"").append(decimalSample).append("\",\n");
         json.append("  \"cpu_flags_checked\": \"").append(String.join(",", REQUIRED_CPU_FLAGS)).append("\",\n");
