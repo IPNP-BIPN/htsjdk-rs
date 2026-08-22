@@ -33,6 +33,7 @@ pub mod gamma;
 mod log;
 pub mod normal;
 pub mod percentile;
+pub mod poisson;
 pub mod saddle_point;
 pub mod strict_exp;
 pub mod strict_pow;
