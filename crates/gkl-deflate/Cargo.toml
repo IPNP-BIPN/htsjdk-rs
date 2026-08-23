@@ -20,4 +20,4 @@ isal-sys = { version = "0.5.3", optional = true }
 [dev-dependencies]
 flate2.workspace = true
 # Only to compare against the sha256 column the oracle recorded; nothing in the crate hashes.
-sha2 = "0.10"
+sha2 = "0.11"
