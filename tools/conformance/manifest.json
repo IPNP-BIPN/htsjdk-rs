@@ -1393,6 +1393,23 @@
           "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-cram-restore-bases artefact of run 31112240771, the golden-pending run of htsjdk-rs #128. 55 rows: twenty-four cases, six failures with the reference's own exception and message, eighteen entries of the lookup table every restored base goes through, and the five rows of the substitution matrix the cases are resolved against. The reference is aperiodic on purpose: against ACGTACGT... a cursor off by four reads the same bases as a correct one, and every case would pass anyway."
         }
       ]
+    },
+    {
+      "id": "mersenne-twister",
+      "status": "golden-pending",
+      "title": "commons-math3's MersenneTwister and the permutation a fingerprint metric draws from it",
+      "harness": "tools/jmath-conformance",
+      "compare": {
+        "mode": "lines"
+      },
+      "why": "commons-math3 seeds from an int with Knuth's multiplier and skips the array-seeding step the reference algorithm runs, so its stream is not a textbook MT19937's. Each accessor consumes its own words, which makes the ORDER of calls part of the answer, and nextPermutation is a partial Fisher-Yates whose first k entries are the result.",
+      "cases": [
+        {
+          "dump": "MersenneTwisterDump",
+          "golden": null,
+          "why": "Five seeds including zero and both extremes, twelve draws of each accessor, four bounds including a power of two, a mixed sequence that shows each accessor consuming its own words, five permutations including a partial one and one of a single element, the index-map direction a caller reads a permutation in, and the three bound pairs whose refusals name what they were given."
+        }
+      ]
     }
   ],
   "probes": [
