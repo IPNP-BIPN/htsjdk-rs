@@ -31,6 +31,7 @@ pub mod fast_math_log;
 pub mod fast_math_tables;
 pub mod gamma;
 mod log;
+pub mod mersenne_twister;
 pub mod normal;
 pub mod percentile;
 pub mod poisson;
