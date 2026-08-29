@@ -1396,7 +1396,7 @@
     },
     {
       "id": "mersenne-twister",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "title": "commons-math3's MersenneTwister and the permutation a fingerprint metric draws from it",
       "harness": "tools/jmath-conformance",
       "compare": {
@@ -1406,7 +1406,7 @@
       "cases": [
         {
           "dump": "MersenneTwisterDump",
-          "golden": null,
+          "golden": "crates/jmath/tests/data/mersenne_twister.txt.gz",
           "why": "Five seeds including zero and both extremes, twelve draws of each accessor, four bounds including a power of two, a mixed sequence that shows each accessor consuming its own words, five permutations including a partial one and one of a single element, the index-map direction a caller reads a permutation in, and the three bound pairs whose refusals name what they were given."
         }
       ]
