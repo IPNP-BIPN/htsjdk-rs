@@ -52,7 +52,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | htsjdk class | ported in | why it belongs here |
 |---|---|---|
 | `util.QualityUtil` | **moved here** (`htsjdk-bam::quality_util`); `picard-rs` still has its three copies until it bumps the pin | two call sites already, in two unrelated tools, and GATK reaches it as well |
-| `ConstantMemoryDownsamplingIterator` | `picard-rs`: `downsample_sam` | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
+| `ConstantMemoryDownsamplingIterator` | **moved here** (`htsjdk-bam::downsampling`) | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
 | `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
 | `filter.AlignedFilter` | **moved here** (`htsjdk-bam::filter`) | `htsjdk.samtools.filter` is a package of reusable predicates |
 | `filter.ReadNameFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
