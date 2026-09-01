@@ -37,16 +37,16 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | SAM text record parser | BAM → SAM → BAM byte-identical |
 | Whole SAM text files | **byte-identical**, 5 goldens; BAM → SAM matches htsjdk |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
-| Metrics number formatting (`FormatUtil`) | **99.73%**; the last 112 are **licence-blocked**, decision 0013 |
-| `MetricsFile` layout | planned |
+| Metrics number formatting (`FormatUtil`) | **99.73%** over 41,678 doubles re-derived by the oracle on every run; the last 112 are **licence-blocked**, decisions 0013 and 0040 |
+| `MetricsFile` layout | ported (`htsjdk-metrics::file`); no suite of its own, exercised end to end by every picard-rs metrics golden |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
 | Interval lists (`IntervalList`, `.interval_list`) | **byte-identical**, 11 goldens |
 | VCF header | **byte-identical**, 7 goldens, decision 0016 |
 | VCF records (`VCFEncoder`, `Allele`, genotypes) | **byte-identical**, 54 records + 29 double cases, decisions 0017, 0018 |
 | JVM `%f` / `%e` number formatting | **99.85%** over 127,803 doubles; **100%** for `%.3e` and below 6.9e14, decision 0017 |
 | Whole VCF files (`VariantContextWriter`) | **byte-identical**, 7 goldens, decision 0019 |
-| Tribble index | planned |
-| CRAM | planned, later phase |
+| Tribble index | **byte-identical**, both layouts, read and written: 5 suites (`tribble-index`, `tribble-index-write`, `tribble-bed`, `tribble-interval-list`, `tribble-vcf-candecode`) |
+| CRAM (container model, codecs, negotiation, CRAI) | **byte-identical**, 27 suites; CRAM 3.1 is the extension surface of decision 0039 |
 
 ## Bit-identity contract
 
@@ -94,6 +94,7 @@ compiler will never catch any of them.
 | [0019](docs/decisions/0019-re-sorting-a-sorted-header-is-stable-measured-not-proven.md) | Re-sorting an already-sorted VCF header is stable: measured, not proven |
 | [0022](docs/decisions/0022-the-format-corpus-was-never-checked-against-the-oracle.md) | The format corpus was never checked against the oracle |
 | [0025](docs/decisions/0025-fdlibm-is-portable-and-is-the-worse-stand-in-for-the-intrinsic.md) | FDLIBM is portable, and it is the *worse* stand-in for `Math.exp` |
+| [0040](docs/decisions/0040-the-format-corpus-came-back-green.md) | The format corpus came back green, so the 99.73% is the oracle's number (closes 0022) |
 
 ## Conformance suites
 
@@ -108,7 +109,11 @@ python3 tools/conformance/run_suite.py --suites bgzf
 
 A suite's `status` is part of the claim it supports: **oracle-backed** means CI re-derives the
 golden in the pinned container on every run; **unchecked** means it has never been re-derived.
-Decision 0022 records the one corpus in the second category.
+Decision 0022 found one corpus in the second category and decision 0040 closed it: `format` has been
+re-derived on every push since and agrees, so **all 72 suites are oracle-backed** and no committed
+golden here is unchecked. What remains outside that guarantee is `tools/zlib-conformance`, which
+compares a Java run to a Rust run rather than a dump to a golden and has only ever run on a
+developer machine.
 
 ## Part of a three-repository program
 
