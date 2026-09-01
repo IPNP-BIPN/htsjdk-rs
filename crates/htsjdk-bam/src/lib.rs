@@ -51,6 +51,7 @@ pub mod sequence;
 pub mod tag;
 pub mod text;
 pub mod text_parse;
+pub mod textual_index;
 pub mod writer;
 
 pub use bin::compute_indexing_bin;

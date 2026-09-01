@@ -424,6 +424,22 @@
       ]
     },
     {
+      "id": "textual-index",
+      "title": "TextualBAMIndexWriter, whose spacing is not uniform",
+      "status": "golden-pending",
+      "harness": "tools/textual-index-conformance",
+      "why": "The only place a BAM index is written as anything but bytes, and its format is a set of decisions nobody would make twice the same way: an empty reference prints n_bin=0 with no space where every other line prints n_bin= 4 with one, the pseudo-bin is counted with the real bins and printed after them out of numeric order always claiming two chunks, and the numbers are Long.toString(value, 16), a SIGNED hexadecimal. gatk-rs ports this inside PrintFileDiagnostics; the format is htsjdk's.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "TextualIndexDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "interval-list",
       "title": "Interval lists",
       "status": "oracle-backed",
