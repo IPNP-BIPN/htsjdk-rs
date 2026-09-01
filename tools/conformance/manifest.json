@@ -270,7 +270,7 @@
     {
       "id": "query",
       "title": "QueryInterval, Chunk coalescing and the bins a region reaches",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/query-conformance",
       "why": "The first half of a BAI query, and the half a consumer writes by hand when it is missing: picard-rs's MergeSamFiles port did, and gatk-rs names QueryInterval and Chunk without reaching either from here. Two conventions carry most of the behaviour and neither is obvious -- an end of 0 means 'to the end of the reference', and adjacency is merged as well as overlap, in both the interval list and the chunk list. A third is only visible against the reference: overlaps closes on CoordMath.encloses, so an inverted interval overlaps itself. The bin set is dumped as well: regionToBins converts a 1-based region to 0-based, masks both ends to 29 bits and answers null on an empty one, and htsjdk's own source carries three TODOs about that conversion.",
       "compare": {
@@ -279,7 +279,7 @@
       "cases": [
         {
           "dump": "QueryDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/query.txt.gz"
         }
       ]
     },
@@ -379,7 +379,7 @@
     {
       "id": "validator",
       "title": "SamFileValidator, in its own words",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/validator-conformance",
       "why": "The last class of the call-site list. picard-rs ported the validator and the Picard tool that drives it together, because there was nowhere here to put the first half; this suite measures the half that is htsjdk's, the checks and the SAMValidationError.toString rendering, against the reference class directly rather than through the tool. The corpus is nine SAM files, each broken in one way, read from disk by both sides so the harness and the test measure the same bytes rather than two transcriptions.",
       "compare": {
@@ -388,7 +388,7 @@
       "cases": [
         {
           "dump": "ValidatorDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/validator.txt.gz"
         }
       ]
     },
@@ -410,7 +410,7 @@
     {
       "id": "sbi",
       "title": "SBIIndexWriter, whose two counters are different numbers",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/sbi-conformance",
       "why": "The splitting index says where a BAM may be cut, and its bytes are decided by two counters rather than by its format. An offset is written every granularity records starting with the first, and finish writes the final offset as well, so an index over n records holds ceil(n / granularity) + 1 offsets while the header records n. gatk-rs ports this inside CreateHadoopBamSplittingIndex; it is htsjdk's.",
       "compare": {
@@ -419,7 +419,7 @@
       "cases": [
         {
           "dump": "SbiDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/sbi.txt.gz"
         }
       ]
     },
@@ -442,7 +442,7 @@
     {
       "id": "textual-index",
       "title": "TextualBAMIndexWriter, whose spacing is not uniform",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/textual-index-conformance",
       "why": "The only place a BAM index is written as anything but bytes, and its format is a set of decisions nobody would make twice the same way: an empty reference prints n_bin=0 with no space where every other line prints n_bin= 4 with one, the pseudo-bin is counted with the real bins and printed after them out of numeric order always claiming two chunks, and the numbers are Long.toString(value, 16), a SIGNED hexadecimal. gatk-rs ports this inside PrintFileDiagnostics; the format is htsjdk's.",
       "compare": {
@@ -451,7 +451,7 @@
       "cases": [
         {
           "dump": "TextualIndexDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/textual_index.txt.gz"
         }
       ]
     },
@@ -713,7 +713,7 @@
     {
       "id": "cigar-clip-3prime",
       "title": "CigarUtil.softClip3PrimeEndOfRead, which moves the record and not just the cigar",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/cigar-conformance",
       "why": "The one method of CigarUtil that was not here: picard-rs ports it inside MergeBamAlignment's adapter clip, and its copy is the cigar half alone. The other half is the record: on a negative strand the alignment start moves by the reference span the clip removed, a record with nothing aligned left becomes unmapped and loses its coordinates, and NM/MD/UQ are dropped whenever the reference length changed at all, which happens far more often. Ten cigars against both strands and six clip points, so the strand-dependent start and the unmapping are both reached.",
       "compare": {
@@ -722,7 +722,7 @@
       "cases": [
         {
           "dump": "CigarClip3PrimeDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/cigar_clip_3prime.txt.gz"
         }
       ]
     },
