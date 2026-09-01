@@ -433,6 +433,38 @@ jobs:
                 f"real host ({vendor}). Other vendors remain untested.")
           PY
 
+  benchmark:
+    name: "The I/O floor, on real x86-64"
+    # Dispatch only. Issue #78 asks for a number, not a gate: this job costs several minutes of a
+    # runner and its output moves with the runner's load, so running it on every push would spend
+    # time to produce a figure nobody reads. What makes it worth having is the platform -- a number
+    # from an emulated container on a developer machine measures the emulator.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Record the host CPU
+        # The figures below are a property of this line as much as of the code.
+        run: grep -m1 'model name' /proc/cpuinfo; grep -m1 'vendor_id' /proc/cpuinfo
+
+      - name: Build the oracle image
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+
+      - name: Time the port against htsjdk, on the same payloads
+        # The runner asserts byte equality of every framed stream before it prints a single
+        # duration: a speed number for a path whose bytes were not compared is not a measurement of
+        # this port.
+        run: tools/benchmark/run.sh 64 3 | tee /tmp/benchmark.txt
+
+      - name: Publish the measurement
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: io-floor-benchmark
+          path: /tmp/benchmark.txt
+          if-no-files-found: ignore
+
   igzip-portability:
     name: "Decision 0028: does igzip emit the same bytes on every CPU?"
     runs-on: ubuntu-latest
@@ -564,6 +596,7 @@ jobs:
       - oracle-probes
       - jvm-format-model
       - pow-portability
+      - benchmark
       - igzip-portability
     if: always()
     runs-on: ubuntu-latest
