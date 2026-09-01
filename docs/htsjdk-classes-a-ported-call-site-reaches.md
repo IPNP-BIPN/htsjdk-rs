@@ -64,7 +64,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | `filter.AlignedFilter` | **moved here** (`htsjdk-bam::filter`) | `htsjdk.samtools.filter` is a package of reusable predicates |
 | `filter.ReadNameFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `filter.TagFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
-| `SamFileValidator` | `picard-rs`: `validate_sam_file` | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
+| `SamFileValidator` | **moved here** (`htsjdk-bam::validation`) | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
 | `QueryInterval`, `Chunk`, `BAMIteratorFilter` | **all three moved here** (`htsjdk-bam::query` and `::iterator_filter`), with the bins a region reaches, the span a query reads and the per-record decision that ends it | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
 | `SBIIndexWriter`, `TextualBAMIndexWriter` | **both moved here** (`htsjdk-bam::sbi` and `::textual_index`) | index formats htsjdk writes, with no home here |
 
@@ -80,10 +80,14 @@ wrong because it is duplicated, it is wrong because it is unverified.
 Nothing about the formats. BAM, SAM, BGZF, CRAM, VCF, Tribble and the index *writer* are ported and
 oracle-backed, and no consumer reimplements any of them.
 
-What it changes is the meaning of the milestone. "Finish htsjdk-rs" is these twelve classes plus one
-method of `CigarUtil`, and each row is a move with a suite attached rather than an open-ended
-"more of htsjdk". A row is done when the class lives here, its consumer calls it, and the consumer's
-own goldens still pass, which is the cheapest possible acceptance test, because it already exists.
+What it changed is the meaning of the milestone. "Finish htsjdk-rs" was these twelve classes plus
+one method of `CigarUtil`, each a move with a suite attached rather than an open-ended "more of
+htsjdk". **All thirteen are here now**, each with a suite of its own measured against the reference
+class rather than through the tool that drives it.
+
+What is left of the moves is the other half of a row's acceptance test: the consumer calls the class
+here and drops its copy, and its own goldens still pass. That is a pin bump in `picard-rs` and in
+`gatk-rs`, and it is where a move stops being a duplicate and becomes a move.
 
 The first two moves are `QualityUtil` and the three `filter` predicates, and both repaid the trip.
 
