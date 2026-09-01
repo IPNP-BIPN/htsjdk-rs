@@ -14,6 +14,7 @@ jmath = { path = "../jmath" }
 md-5 = "0.11"
 
 [dev-dependencies]
+md-5 = "0.11"
 flate2.workspace = true
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 # A second, independent reader for the files this crate writes. A DEV dependency on purpose: it

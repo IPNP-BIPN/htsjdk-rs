@@ -46,6 +46,7 @@ pub mod reader;
 pub mod record;
 pub mod reheader;
 pub mod sam_file;
+pub mod sbi;
 pub mod sequence;
 pub mod tag;
 pub mod text;

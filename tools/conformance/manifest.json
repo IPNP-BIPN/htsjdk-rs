@@ -392,6 +392,22 @@
       ]
     },
     {
+      "id": "sbi",
+      "title": "SBIIndexWriter, whose two counters are different numbers",
+      "status": "golden-pending",
+      "harness": "tools/sbi-conformance",
+      "why": "The splitting index says where a BAM may be cut, and its bytes are decided by two counters rather than by its format. An offset is written every granularity records starting with the first, and finish writes the final offset as well, so an index over n records holds ceil(n / granularity) + 1 offsets while the header records n. gatk-rs ports this inside CreateHadoopBamSplittingIndex; it is htsjdk's.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "SbiDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "build-index",
       "title": "BuildBamIndex (read-side BAI)",
       "status": "oracle-backed",
