@@ -244,12 +244,127 @@ pub fn optimize_chunk_list(chunks: &[Chunk], minimum_offset: u64) -> Vec<Chunk> 
     result
 }
 
+/// `GenomicIndexUtil.MAX_BINS`, the number of bins the six-level scheme addresses.
+pub const MAX_BINS: usize = 37450;
+
+/// `GenomicIndexUtil.regionToBins(startPos, endPos)`: every bin that can hold a record overlapping
+/// the region, in ascending bin order.
+///
+/// `None` is htsjdk's `null`, which it returns when the region is empty after the conversion below
+/// and which its caller turns into "no chunks at all" rather than into an error.
+///
+/// Three conversions decide the answer and all three are easy to get wrong. The coordinates come in
+/// **1-based** and are used **0-based**, so both ends are decremented; a start at or below zero
+/// becomes 0 and an end at or below zero becomes the maximum position, which is how an open-ended
+/// query is written; and both are masked to 29 bits, so a coordinate past the addressable span
+/// wraps rather than clamping. htsjdk's own source carries three `TODO`s about exactly this.
+pub fn region_to_bins(start_pos: i32, end_pos: i32) -> Option<Vec<i32>> {
+    const MAX_POS: i32 = 0x1FFF_FFFF;
+    let start = if start_pos <= 0 {
+        0
+    } else {
+        (start_pos - 1) & MAX_POS
+    };
+    let end = if end_pos <= 0 {
+        MAX_POS
+    } else {
+        (end_pos - 1) & MAX_POS
+    };
+    if start > end {
+        return None;
+    }
+    // Bin 0 is the whole reference and is always in the set.
+    let mut bins = vec![0];
+    for (offset, shift) in [(1, 26), (9, 23), (73, 20), (585, 17), (4681, 14)] {
+        for k in (offset + (start >> shift))..=(offset + (end >> shift)) {
+            bins.push(k);
+        }
+    }
+    Some(bins)
+}
+
+/// `LinearIndex.getMinimumOffset(startPos)`: the earliest virtual offset a record overlapping this
+/// position can have.
+///
+/// A start beyond the linear index's last window answers **zero** rather than the last entry, which
+/// means a query past the end of the data optimizes nothing away. That is htsjdk's behaviour and
+/// not an oversight this port corrects.
+pub fn linear_index_minimum_offset(entries: &[u64], start_pos: i32) -> u64 {
+    const BAM_LIDX_SHIFT: i32 = 14;
+    let start = if start_pos <= 0 { 0 } else { start_pos - 1 };
+    let window = (start >> BAM_LIDX_SHIFT) as usize;
+    if window < entries.len() {
+        entries[window]
+    } else {
+        0
+    }
+}
+
+/// `BinningIndexContent.getChunksOverlapping(startPos, endPos)`: the file ranges a query has to
+/// read, already coalesced.
+///
+/// `None` where htsjdk answers `null`: either the region converts to nothing, or no bin in it holds
+/// a chunk. Its caller treats both as an empty span, and the distinction is kept here because the
+/// two are different questions and a future caller may want to tell them apart.
+pub fn chunks_overlapping(
+    bins: &[crate::index::Bin],
+    linear_index: &[u64],
+    start_pos: i32,
+    end_pos: i32,
+) -> Option<Vec<Chunk>> {
+    let overlapping = region_to_bins(start_pos, end_pos)?;
+    let mut chunks = Vec::new();
+    for bin_number in overlapping {
+        // The bin list is sparse: htsjdk indexes an array by bin number and skips the nulls.
+        if let Some(bin) = bins.iter().find(|bin| bin.bin_number == bin_number) {
+            chunks.extend(bin.chunks.iter().copied());
+        }
+    }
+    if chunks.is_empty() {
+        return None;
+    }
+    Some(optimize_chunk_list(
+        &chunks,
+        linear_index_minimum_offset(linear_index, start_pos),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn vfp(block: u64, offset: u16) -> u64 {
         (block << 16) | offset as u64
+    }
+
+    #[test]
+    fn the_whole_reference_bin_is_always_in_the_set() {
+        let bins = region_to_bins(1, 100).expect("a real region");
+        assert_eq!(bins[0], 0, "bin 0 covers the whole reference");
+        // Six levels, each contributing at least one bin for a short region.
+        assert_eq!(bins.len(), 6);
+    }
+
+    #[test]
+    fn an_empty_region_answers_none_rather_than_an_empty_list() {
+        // start > end after the 0-based conversion, which htsjdk answers with null.
+        assert!(region_to_bins(100, 50).is_none());
+    }
+
+    #[test]
+    fn an_open_ended_query_takes_every_bin_of_the_reference() {
+        let open = region_to_bins(1, 0).expect("an open-ended region");
+        // 1 + 8 + 64 + 512 + 4096 + 32768 = the whole scheme.
+        assert_eq!(open.len(), 1 + 8 + 64 + 512 + 4096 + 32768);
+    }
+
+    #[test]
+    fn a_start_past_the_linear_index_answers_zero() {
+        let entries = [vfp(5, 0), vfp(9, 0)];
+        assert_eq!(linear_index_minimum_offset(&entries, 1), vfp(5, 0));
+        assert_eq!(linear_index_minimum_offset(&entries, 16385), vfp(9, 0));
+        // Past the end: zero, so nothing is optimized away.
+        assert_eq!(linear_index_minimum_offset(&entries, 1_000_000), 0);
     }
 
     #[test]

@@ -32,6 +32,7 @@ pub mod gather;
 pub mod header;
 pub mod index;
 pub mod interval;
+pub mod iterator_filter;
 pub mod liftover;
 pub mod md_nm;
 pub mod murmur3;
