@@ -66,7 +66,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | `filter.TagFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `SamFileValidator` | `picard-rs`: `validate_sam_file` | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
 | `QueryInterval`, `Chunk`, `BAMIteratorFilter` | **all three moved here** (`htsjdk-bam::query` and `::iterator_filter`), with the bins a region reaches, the span a query reads and the per-record decision that ends it | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
-| `SBIIndexWriter` **moved here** (`htsjdk-bam::sbi`); `TextualBAMIndexWriter` still in `gatk-rs` | `gatk-rs`: two tools | index formats htsjdk writes, with no home here |
+| `SBIIndexWriter`, `TextualBAMIndexWriter` | **both moved here** (`htsjdk-bam::sbi` and `::textual_index`) | index formats htsjdk writes, with no home here |
 
 The index query is the one with visible cost already. Nothing here turns a `.bai` plus an interval
 list into the records that overlap it, so a consumer that needs it writes its own overlap loop:
