@@ -268,6 +268,22 @@
       ]
     },
     {
+      "id": "duplicate-scoring",
+      "title": "DuplicateScoringStrategy, its clamps and its tie-break",
+      "status": "golden-pending",
+      "harness": "tools/duplicate-scoring-conformance",
+      "why": "The score is a short and every step of it is written to stay away from overflow: the quality sum is clamped at Short.MAX_VALUE/2, the random branch masks 14 bits and shifts by Short.MIN_VALUE/4, and a vendor-failed record is discounted by Short.MIN_VALUE/2 once per end. Those clamps are where two records tie, and the tie-break is what decides which read a BAM keeps, so they are measured rather than reasoned about. picard-rs ported this inside MarkDuplicates; it is htsjdk's, and MarkDuplicatesSpark reaches it too.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "DuplicateScoringDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "downsampling",
       "title": "ConstantMemoryDownsamplingIterator's threshold and statistics",
       "status": "golden-pending",

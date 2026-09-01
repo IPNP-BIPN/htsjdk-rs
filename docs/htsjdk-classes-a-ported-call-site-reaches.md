@@ -53,7 +53,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 |---|---|---|
 | `util.QualityUtil` | **moved here** (`htsjdk-bam::quality_util`); `picard-rs` still has its three copies until it bumps the pin | two call sites already, in two unrelated tools, and GATK reaches it as well |
 | `ConstantMemoryDownsamplingIterator` | **moved here** (`htsjdk-bam::downsampling`) | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
-| `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
+| `DuplicateScoringStrategy` | **moved here** (`htsjdk-bam::duplicate_scoring`) | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
 | `filter.AlignedFilter` | **moved here** (`htsjdk-bam::filter`) | `htsjdk.samtools.filter` is a package of reusable predicates |
 | `filter.ReadNameFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `filter.TagFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
@@ -87,6 +87,13 @@ either end is unmapped; `ReadNameFilter` needs both names listed or neither; `Ta
 pair when either end carries a listed value and drops one only when both do. Three classes, three
 different asymmetries, and a port can agree on every single-record row while getting all three
 wrong. The suite dumps both forms for that reason.
+
+`DuplicateScoringStrategy` repaid it in a number that is not a sign. `compare` returns
+`String.compareTo` verbatim when the scores tie, and `String.compareTo` answers the difference of
+the first differing code units: comparing `read2` with `read5` is **-3**, not -1. A port that
+normalized to a sign sorts identically and disagrees with the reference on every tie-break. Its
+`RANDOM` strategy and its `compare` had no port at all before this: `picard-rs` needed the two
+scores and stopped there.
 
 `QualityUtil` repaid it immediately: the three copies in `picard-rs`
 each closed on `f64::round`, which rounds half away from zero where `Math.round` rounds half up, so
