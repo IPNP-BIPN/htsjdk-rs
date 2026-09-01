@@ -39,10 +39,17 @@ produce; `SAMException` is not a class it must have.
 
 ## 2. Ported here under a different name (partial, 1)
 
-`CigarUtil` is here (`htsjdk-bam::cigar`) for `softClipEndOfRead`, `clipEndOfRead` and
-`mergeClippingCigarElement`, and **not** here for `softClip3PrimeEndOfRead`, which
-`picard-rs`'s `merge_bam_alignment_clip` ports locally. One class, two homes: the adapter clip
-belongs beside its siblings.
+`CigarUtil` was here (`htsjdk-bam::cigar`) for `softClipEndOfRead`, `clipEndOfRead` and
+`mergeClippingCigarElement`, and not for `softClip3PrimeEndOfRead`, which `picard-rs`'s
+`merge_bam_alignment_clip` ported locally. **It is here now**, and the half picard-rs's copy left
+out is the half that is not about cigars: on a negative strand the alignment start moves by the
+reference span the clip removed, a record with nothing aligned left becomes unmapped and loses its
+coordinates, and `NM`/`MD`/`UQ` are dropped whenever the reference length changed at all.
+
+The row also produced the sort of finding this list exists for: a cigar that is **all clipping**
+comes back **unclipped**, not unmapped. `clip3PrimeEndOfRead` opens with
+`if (!isValidCigar(rec, cigar, true)) return;`, and `Cigar.isValid` requires at least one real
+operator, so `50S` leaves the method having done nothing at all.
 
 ## 3. htsjdk classes living in a repository that consumes htsjdk (12, in 9 rows)
 

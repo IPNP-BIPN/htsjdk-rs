@@ -259,6 +259,109 @@ fn merge_clipping_cigar_element(
     }
 }
 
+/// What `CigarUtil.clip3PrimeEndOfRead` does to a record, as data rather than as mutation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreePrimeClip {
+    /// The new cigar, or `None` when the record came out with no aligned base and was unmapped.
+    pub cigar: Option<Cigar>,
+    /// The new alignment start. Zero is `SAMRecord.NO_ALIGNMENT_START`, which an unmapped result
+    /// carries.
+    pub alignment_start: i32,
+    /// Whether the record ends up flagged unmapped, which happens when nothing aligned survives.
+    pub unmapped: bool,
+    /// Whether `NM`, `MD` and `UQ` must be dropped: they are invalidated whenever the reference
+    /// length changed, and htsjdk removes them rather than recomputing.
+    pub invalidate_nm_md_uq: bool,
+}
+
+/// `CigarUtil.softClip3PrimeEndOfRead(rec, clipFrom)`, which is `clip3PrimeEndOfRead` with a soft
+/// clip.
+///
+/// Three things happen here that a cigar-only port leaves out, and `picard-rs` left all three out:
+///
+/// * **The strand decides which end is the three-prime one.** For a negative-strand record the
+///   cigar is reversed, clipped, and reversed back, because the read's three-prime end is the start
+///   of the stored bases.
+/// * **The alignment start moves.** Clipping a negative-strand record shortens the reference span
+///   from the left, so the start advances by the difference. A shrink in the other direction is
+///   htsjdk's `SAMException`, reported here as `Err`.
+/// * **A record with nothing aligned left is unmapped**, with no cigar, no reference, no start and
+///   no mapping quality, and separately `NM`/`MD`/`UQ` are dropped whenever the reference length
+///   changed at all.
+pub fn soft_clip_3prime_end_of_read(
+    cigar: &Cigar,
+    negative_strand: bool,
+    alignment_start: i32,
+    clip_from: i32,
+) -> Result<ThreePrimeClip, String> {
+    // `if (!isValidCigar(rec, cigar, true)) return;` -- the record is left exactly as it was, and
+    // the only message is a log line. The rule this corpus reaches is `Cigar.isValid`'s last one:
+    // there must be at least one real operator, `M`, `I`, `D` or `N`. A cigar that is all clipping
+    // therefore comes back unclipped rather than unmapped, which is the opposite of what the
+    // function's name suggests. The other rules `isValid` applies (zero-length elements, a soft
+    // clip that is neither at an end nor inside a hard clip, adjacent indels) are a wider surface
+    // and are not reached here.
+    let has_real_operator = cigar
+        .elements
+        .iter()
+        .any(|element| matches!(element.op, Op::M | Op::I | Op::D | Op::N));
+    if cigar.elements.is_empty() || !has_real_operator {
+        return Ok(ThreePrimeClip {
+            cigar: Some(cigar.clone()),
+            alignment_start,
+            unmapped: false,
+            invalidate_nm_md_uq: false,
+        });
+    }
+
+    let original_reference_length = cigar.reference_length() as i32;
+
+    let mut old: Vec<CigarElement> = cigar.elements.clone();
+    if negative_strand {
+        old.reverse();
+    }
+    let mut new_elements = clip_end_of_read(clip_from, &old, Op::S);
+    if negative_strand {
+        new_elements.reverse();
+    }
+    let new_cigar = Cigar::new(new_elements);
+
+    let mut start = alignment_start;
+    if negative_strand {
+        let size_change = original_reference_length - new_cigar.reference_length() as i32;
+        if size_change > 0 {
+            start += size_change;
+        } else if size_change < 0 {
+            return Err(format!(
+                "The clipped length {} is longer than the old unclipped length {}",
+                new_cigar.reference_length(),
+                original_reference_length
+            ));
+        }
+    }
+
+    let has_mapped_bases = new_cigar
+        .elements
+        .iter()
+        .any(|element| element.op.consumes_reference_bases() && element.op.consumes_read_bases());
+    let invalidate = new_cigar.reference_length() as i32 != original_reference_length;
+
+    if !has_mapped_bases {
+        return Ok(ThreePrimeClip {
+            cigar: None,
+            alignment_start: 0,
+            unmapped: true,
+            invalidate_nm_md_uq: invalidate,
+        });
+    }
+    Ok(ThreePrimeClip {
+        cigar: Some(new_cigar),
+        alignment_start: start,
+        unmapped: false,
+        invalidate_nm_md_uq: invalidate,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

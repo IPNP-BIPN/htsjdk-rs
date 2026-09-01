@@ -265,8 +265,8 @@ jobs:
             suites: "cram-restore-bases mersenne-twister"
           - group: golden-pending
             index: "1/1"
-            slug: "query"
-            suites: "query"
+            slug: "query-cigar-clip-3prime"
+            suites: "query cigar-clip-3prime"
     steps:
       - uses: actions/checkout@v7
 
