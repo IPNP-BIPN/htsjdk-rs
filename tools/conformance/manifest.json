@@ -268,6 +268,22 @@
       ]
     },
     {
+      "id": "query",
+      "title": "QueryInterval, Chunk coalescing and the bins a region reaches",
+      "status": "golden-pending",
+      "harness": "tools/query-conformance",
+      "why": "The first half of a BAI query, and the half a consumer writes by hand when it is missing: picard-rs's MergeSamFiles port did, and gatk-rs names QueryInterval and Chunk without reaching either from here. Two conventions carry most of the behaviour and neither is obvious -- an end of 0 means 'to the end of the reference', and adjacency is merged as well as overlap, in both the interval list and the chunk list. A third is only visible against the reference: overlaps closes on CoordMath.encloses, so an inverted interval overlaps itself. The bin set is dumped as well: regionToBins converts a 1-based region to 0-based, masks both ends to 29 bits and answers null on an empty one, and htsjdk's own source carries three TODOs about that conversion.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "QueryDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "duplicate-scoring",
       "title": "DuplicateScoringStrategy, its clamps and its tie-break",
       "status": "golden-pending",
