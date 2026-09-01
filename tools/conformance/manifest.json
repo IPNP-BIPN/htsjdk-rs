@@ -268,6 +268,22 @@
       ]
     },
     {
+      "id": "downsampling",
+      "title": "ConstantMemoryDownsamplingIterator's threshold and statistics",
+      "status": "golden-pending",
+      "harness": "tools/downsampling-conformance",
+      "why": "The keep decision is a pure function of the read name, so it is easy to port and easy to port wrongly: the threshold is Integer.MIN_VALUE + (int) Math.round(range * proportion), where the cast keeps the low 32 bits and the addition wraps. At a proportion of 1 that wrap IS the behaviour, and a port doing the same arithmetic in 64 bits keeps everything at proportions where the reference does not. Seven proportions and two seeds, plus the iterator's own statistics, which divide by the seen count and answer NaN before anything has been seen.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "DownsamplingDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "filter",
       "title": "The record filters, in both forms of filterOut",
       "status": "golden-pending",

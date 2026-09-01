@@ -22,6 +22,7 @@ pub mod bin;
 pub mod build_index;
 pub mod cigar;
 pub mod coordinate;
+pub mod downsampling;
 pub mod fasta;
 pub mod fasta_writer;
 pub mod fastq;
