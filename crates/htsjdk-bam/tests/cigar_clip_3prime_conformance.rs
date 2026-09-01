@@ -8,6 +8,7 @@
 //! The golden is committed once CI has produced it; until then `CIGAR_CLIP_3PRIME_DUMP` names the
 //! dump (decision 0008).
 
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::cigar::{soft_clip_3prime_end_of_read, Cigar, CigarElement, Op};
@@ -49,19 +50,22 @@ fn show(cigar: &Cigar) -> String {
 
 #[test]
 fn every_clip_matches_the_reference() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cigar_clip_3prime.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `CIGAR_CLIP_3PRIME_DUMP` still overrides it, which is how a harness change is checked before CI
+    // sees it.
     let dump = match std::env::var("CIGAR_CLIP_3PRIME_DUMP") {
-        Ok(path) => std::fs::read_to_string(path).expect("the dump named by the variable"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
+        Ok(path) => {
+            std::fs::read_to_string(path).expect("the dump named by CIGAR_CLIP_3PRIME_DUMP")
         }
         Err(_) => {
-            println!(
-                "skipped: the cigar-clip-3prime golden is still pending. Run the suite and point \
-                 CIGAR_CLIP_3PRIME_DUMP at \
-                 tools/conformance/pending/cigar-clip-3prime.CigarClip3PrimeDump.txt"
-            );
-            return;
+            let golden =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/cigar_clip_3prime.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

@@ -9,9 +9,11 @@
 //! never matched), and a port that produced the same set in another order would be a different
 //! program.
 //!
-//! While the suite is `golden-pending` the dump is named by `VALIDATOR_DUMP` (decision 0008).
+//! The golden is committed and re-derived by the `validator` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use htsjdk_bam::sam_file::read_sam_with;
@@ -27,18 +29,19 @@ fn cases_dir() -> PathBuf {
 
 #[test]
 fn every_case_reports_what_the_reference_reports() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/validator.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `VALIDATOR_DUMP` still overrides it, which is how a harness change is checked before CI
+    // sees it.
     let dump = match std::env::var("VALIDATOR_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by VALIDATOR_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the validator golden is still pending. Run the suite and point \
-                 VALIDATOR_DUMP at tools/conformance/pending/validator.ValidatorDump.txt"
-            );
-            return;
+            let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/validator.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

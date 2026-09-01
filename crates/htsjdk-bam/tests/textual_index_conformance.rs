@@ -5,9 +5,11 @@
 //! what the reference printed for them, which this test reproduces. A blank line is part of the
 //! format and travels as `<blank>`.
 //!
-//! While the suite is `golden-pending` the dump is named by `TEXTUAL_INDEX_DUMP` (decision 0008).
+//! The golden is committed and re-derived by the `textual-index` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::index::read_bai;
@@ -22,18 +24,20 @@ fn unhex(text: &str) -> Vec<u8> {
 
 #[test]
 fn every_index_prints_what_the_reference_prints() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/textual_index.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `TEXTUAL_INDEX_DUMP` still overrides it, which is how a harness change is checked before CI
+    // sees it.
     let dump = match std::env::var("TEXTUAL_INDEX_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by TEXTUAL_INDEX_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the textual-index golden is still pending. Run the suite and point \
-                 TEXTUAL_INDEX_DUMP at tools/conformance/pending/textual-index.TextualIndexDump.txt"
-            );
-            return;
+            let golden =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/textual_index.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

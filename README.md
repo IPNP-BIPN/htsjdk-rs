@@ -116,11 +116,13 @@ compiler will never catch any of them.
 Milestone H's entries are ticked and the formats are done, so the open question is what is left.
 [`docs/htsjdk-classes-a-ported-call-site-reaches.md`](docs/htsjdk-classes-a-ported-call-site-reaches.md)
 answers it by walking the consumers rather than the library, the way decision 0023 answered it for
-`jmath`: of the 43 htsjdk classes `picard-rs` and `gatk-rs` name, 14 are ported here, 15 are named
-only as a type or a message, one is not an htsjdk class at all, and **12 are htsjdk classes ported
-inside the repository that consumes them** because this crate set does not offer them. Those twelve,
-plus one method of `CigarUtil`, are the remaining work, and each is a move with an acceptance test
-that already exists.
+`jmath`: of the 43 htsjdk classes `picard-rs` and `gatk-rs` name, 14 were already ported here, 15
+are named only as a type or a message, one is not an htsjdk class at all, and **12 were htsjdk
+classes ported inside the repository that consumes them**. Those twelve, and the one method of
+`CigarUtil` that was in the same position, **are here now**, each with a suite measured against the
+reference class rather than through the tool that drives it. What is left of each move is the other
+half of its acceptance test: the consumer calls the class here, drops its copy, and its own goldens
+still pass.
 
 ## Conformance suites
 
@@ -136,7 +138,7 @@ python3 tools/conformance/run_suite.py --suites bgzf
 A suite's `status` is part of the claim it supports: **oracle-backed** means CI re-derives the
 golden in the pinned container on every run; **unchecked** means it has never been re-derived.
 Decision 0022 found one corpus in the second category and decision 0040 closed it: `format` has been
-re-derived on every push since and agrees, so **all 73 suites are oracle-backed** and no committed
+re-derived on every push since and agrees, so **all 82 suites are oracle-backed** and no committed
 golden here is unchecked. The zlib vectors decision 0001 rests on joined them in the same pass:
 they had been confirmed inside the pinned container once, by hand, and are now regenerated on every
 push like everything else.
