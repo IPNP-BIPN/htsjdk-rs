@@ -54,9 +54,9 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | `util.QualityUtil` | **moved here** (`htsjdk-bam::quality_util`); `picard-rs` still has its three copies until it bumps the pin | two call sites already, in two unrelated tools, and GATK reaches it as well |
 | `ConstantMemoryDownsamplingIterator` | `picard-rs`: `downsample_sam` | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
 | `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
-| `filter.AlignedFilter` | `picard-rs`: `filter_sam_reads` | `htsjdk.samtools.filter` is a package of reusable predicates |
-| `filter.ReadNameFilter` | `picard-rs`: `filter_sam_reads` | as above |
-| `filter.TagFilter` | `picard-rs`: `filter_sam_reads` | as above |
+| `filter.AlignedFilter` | **moved here** (`htsjdk-bam::filter`) | `htsjdk.samtools.filter` is a package of reusable predicates |
+| `filter.ReadNameFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
+| `filter.TagFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `SamFileValidator` | `picard-rs`: `validate_sam_file` | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
 | `QueryInterval`, `Chunk`, `BAMIteratorFilter` | `gatk-rs`: `gatk-engine::reads` | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
 | `SBIIndexWriter`, `TextualBAMIndexWriter` | `gatk-rs`: two tools | index formats htsjdk writes, with no home here |
@@ -78,7 +78,17 @@ method of `CigarUtil`, and each row is a move with a suite attached rather than 
 "more of htsjdk". A row is done when the class lives here, its consumer calls it, and the consumer's
 own goldens still pass, which is the cheapest possible acceptance test, because it already exists.
 
-The first move is `QualityUtil`, and it repaid the trip immediately: the three copies in `picard-rs`
+The first two moves are `QualityUtil` and the three `filter` predicates, and both repaid the trip.
+
+The filters repaid it in the shape of the port rather than in a number: `filterOut` has a **pair**
+form as well as a single one, and it is not the single form applied twice. `AlignedFilter` with
+`includeAligned` keeps a pair only when both ends are mapped and without it keeps a pair when
+either end is unmapped; `ReadNameFilter` needs both names listed or neither; `TagFilter` keeps a
+pair when either end carries a listed value and drops one only when both do. Three classes, three
+different asymmetries, and a port can agree on every single-record row while getting all three
+wrong. The suite dumps both forms for that reason.
+
+`QualityUtil` repaid it immediately: the three copies in `picard-rs`
 each closed on `f64::round`, which rounds half away from zero where `Math.round` rounds half up, so
 every negative argument, meaning every observed error rate above one, was a different integer. The
 version here goes through `jmath` and is compared against the reference's own answers by the

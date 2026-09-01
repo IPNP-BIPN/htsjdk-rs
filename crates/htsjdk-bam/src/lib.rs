@@ -25,6 +25,7 @@ pub mod coordinate;
 pub mod fasta;
 pub mod fasta_writer;
 pub mod fastq;
+pub mod filter;
 pub mod gather;
 pub mod header;
 pub mod index;
