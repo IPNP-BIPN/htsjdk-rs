@@ -10,7 +10,7 @@ use std::path::Path;
 use htsjdk_bam::index::Chunk;
 use htsjdk_bam::query::{
     chunks_are_adjacent, chunks_overlap, compare_chunks, display, optimize_chunk_list,
-    optimize_intervals, QueryInterval,
+    optimize_intervals, region_to_bins, QueryInterval,
 };
 
 /// `0:100-200`.
@@ -133,6 +133,21 @@ fn every_answer_matches_the_reference() {
             ["chunkadj", a, b, expected] => {
                 let ours = chunks_are_adjacent(&chunk(a), &chunk(b));
                 assert_eq!(ours.to_string(), *expected, "chunkadj {a} {b}");
+            }
+            ["bins", start, end, expected] => {
+                let ours = match region_to_bins(
+                    start.parse().expect("a start"),
+                    end.parse().expect("an end"),
+                ) {
+                    None => "null".to_string(),
+                    Some(bins) if bins.is_empty() => "[]".to_string(),
+                    Some(bins) => bins
+                        .iter()
+                        .map(|b| b.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                };
+                assert_eq!(ours, *expected, "bins {start} {end}");
             }
             ["chunkopt", minimum, input, expected] => {
                 let ours =

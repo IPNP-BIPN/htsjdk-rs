@@ -1,5 +1,7 @@
 import htsjdk.samtools.Chunk;
+import htsjdk.samtools.GenomicIndexUtil;
 import htsjdk.samtools.QueryInterval;
+import java.util.BitSet;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,6 +63,18 @@ public class QueryDump {
     return (block << 16) | offset;
   }
 
+  /** `GenomicIndexUtil.regionToBins`, as a comma-separated list or `null`. */
+  static String bins(int start, int end) {
+    BitSet set = GenomicIndexUtil.regionToBins(start, end);
+    if (set == null) return "null";
+    StringBuilder sb = new StringBuilder();
+    for (int i = set.nextSetBit(0); i >= 0; i = set.nextSetBit(i + 1)) {
+      if (sb.length() > 0) sb.append(",");
+      sb.append(i);
+    }
+    return sb.length() == 0 ? "[]" : sb.toString();
+  }
+
   public static void main(String[] args) throws Exception {
     QueryInterval[] intervals = {
       qi(0, 100, 200), qi(0, 150, 250), qi(0, 201, 300), qi(0, 100, 0),
@@ -89,6 +103,14 @@ public class QueryDump {
       QueryInterval[] optimized = QueryInterval.optimizeIntervals(input.clone());
       System.out.printf(
           "optimize\t%s\t%s%n", show(before), show(Arrays.asList(optimized)));
+    }
+
+    int[][] regions = {
+      {1, 100}, {1, 0}, {0, 0}, {100, 50}, {1, 16384}, {16385, 32768},
+      {1, 536870912}, {536870911, 536870912}, {-5, 100}, {1, -1}, {1, 1},
+    };
+    for (int[] region : regions) {
+      System.out.printf("bins\t%d\t%d\t%s%n", region[0], region[1], bins(region[0], region[1]));
     }
 
     Chunk[] chunks = {
