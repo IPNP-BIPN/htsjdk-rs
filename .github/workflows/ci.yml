@@ -225,44 +225,40 @@ jobs:
             suites: "vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
             index: "7/15"
-            slug: "vcf-attribute-type-rg-checksum-cigar-clip-mateinfo-percentile"
-            suites: "vcf-attribute-type rg-checksum cigar-clip mateinfo percentile"
+            slug: "vcf-attribute-type-rg-checksum-cigar-clip-mateinfo-format"
+            suites: "vcf-attribute-type rg-checksum cigar-clip mateinfo format"
           - group: oracle-backed
             index: "8/15"
-            slug: "fastmath-exp-gamma-erf-normal-saddle-point-binomial-inverse-variant-comparator"
-            suites: "fastmath-exp gamma-erf-normal saddle-point binomial-inverse variant-comparator"
+            slug: "percentile-fastmath-exp-gamma-erf-normal-saddle-point-binomial-inverse"
+            suites: "percentile fastmath-exp gamma-erf-normal saddle-point binomial-inverse"
           - group: oracle-backed
             index: "9/15"
-            slug: "smart-merge-headers-tribble-index-tribble-index-write-cram-varint-cram-bit-stream"
-            suites: "smart-merge-headers tribble-index tribble-index-write cram-varint cram-bit-stream"
+            slug: "variant-comparator-smart-merge-headers-tribble-index-tribble-index-write-cram-varint"
+            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: oracle-backed
             index: "10/15"
-            slug: "cram-core-codecs-cram-huffman-cram-external-codecs-cram-golomb-cram-encoding-factory"
-            suites: "cram-core-codecs cram-huffman cram-external-codecs cram-golomb cram-encoding-factory"
+            slug: "cram-bit-stream-cram-core-codecs-cram-huffman-cram-external-codecs-cram-golomb"
+            suites: "cram-bit-stream cram-core-codecs cram-huffman cram-external-codecs cram-golomb"
           - group: oracle-backed
             index: "11/15"
-            slug: "cram-compression-header-cram-record-flags-cram-slice-blocks-cram-record-read-cram-record-write"
-            suites: "cram-compression-header cram-record-flags cram-slice-blocks cram-record-read cram-record-write"
+            slug: "cram-encoding-factory-cram-compression-header-cram-record-flags-cram-slice-blocks-cram-record-read"
+            suites: "cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks cram-record-read"
           - group: oracle-backed
             index: "12/15"
-            slug: "cram-crai-cram-negotiation-cram-file-read-cram-container-cram-block"
-            suites: "cram-crai cram-negotiation cram-file-read cram-container cram-block"
+            slug: "cram-record-write-cram-crai-cram-negotiation-cram-file-read-cram-container"
+            suites: "cram-record-write cram-crai cram-negotiation cram-file-read cram-container"
           - group: oracle-backed
             index: "13/15"
-            slug: "cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix-cram-encoding-map"
-            suites: "cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix cram-encoding-map"
+            slug: "cram-block-cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix"
+            suites: "cram-block cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix"
           - group: oracle-backed
             index: "14/15"
-            slug: "cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar-cram-restore-bases"
-            suites: "cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar cram-restore-bases"
+            slug: "cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar"
+            suites: "cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar"
           - group: oracle-backed
             index: "15/15"
-            slug: "mersenne-twister"
-            suites: "mersenne-twister"
-          - group: unchecked
-            index: "1/1"
-            slug: "format"
-            suites: "format"
+            slug: "cram-restore-bases-mersenne-twister"
+            suites: "cram-restore-bases mersenne-twister"
     steps:
       - uses: actions/checkout@v7
 
