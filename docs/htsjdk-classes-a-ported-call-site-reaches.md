@@ -44,7 +44,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 
 | htsjdk class | ported in | why it belongs here |
 |---|---|---|
-| `util.QualityUtil` | `picard-rs`: `collect_sequencing_artifact_metrics`, `umi_duplicates` | two call sites already, in two unrelated tools, and GATK reaches it as well |
+| `util.QualityUtil` | **moved here** (`htsjdk-bam::quality_util`); `picard-rs` still has its three copies until it bumps the pin | two call sites already, in two unrelated tools, and GATK reaches it as well |
 | `util.CircularByteBuffer` | `picard-rs`: `fifo_buffer` | a general I/O utility with no Picard in it |
 | `ConstantMemoryDownsamplingIterator` | `picard-rs`: `downsample_sam` | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
 | `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
@@ -71,6 +71,12 @@ What it changes is the meaning of the milestone. "Finish htsjdk-rs" is these thi
 method of `CigarUtil`, and each row is a move with a suite attached rather than an open-ended
 "more of htsjdk". A row is done when the class lives here, its consumer calls it, and the consumer's
 own goldens still pass, which is the cheapest possible acceptance test, because it already exists.
+
+The first move is `QualityUtil`, and it repaid the trip immediately: the three copies in `picard-rs`
+each closed on `f64::round`, which rounds half away from zero where `Math.round` rounds half up, so
+every negative argument, meaning every observed error rate above one, was a different integer. The
+version here goes through `jmath` and is compared against the reference's own answers by the
+`quality-util` suite.
 
 ## How to regenerate this
 
