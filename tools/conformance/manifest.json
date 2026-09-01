@@ -252,6 +252,22 @@
       ]
     },
     {
+      "id": "quality-util",
+      "title": "QualityUtil conversions and its error-probability table",
+      "status": "golden-pending",
+      "harness": "tools/quality-util-conformance",
+      "why": "QualityUtil was ported three times inside picard-rs, each time with f64::log10 and f64::round, and neither is the function Java calls. It moves here, and it arrives with the dump that settles the two places it can still differ: the static table is built with Math.pow, which decision 0007 deferred and decision 0027 bounded at 1 ulp, and getPhredScoreFromErrorProbability closes on Math.round, which is half up where Rust's is half away from zero. Both are measured here rather than argued. The golden may only come from the pinned container on real x86-64 (decision 0008), so the suite lands pending and CI publishes the first candidate.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "QualityUtilDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "histogram",
       "title": "Histogram statistics",
       "status": "oracle-backed",
