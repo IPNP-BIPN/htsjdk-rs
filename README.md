@@ -111,6 +111,16 @@ compiler will never catch any of them.
 | [0025](docs/decisions/0025-fdlibm-is-portable-and-is-the-worse-stand-in-for-the-intrinsic.md) | FDLIBM is portable, and it is the *worse* stand-in for `Math.exp` |
 | [0040](docs/decisions/0040-the-format-corpus-came-back-green.md) | The format corpus came back green, so the 99.73% is the oracle's number (closes 0022) |
 
+## What "finished" means
+
+Milestone H's entries are ticked and the formats are done, so the open question is what is left.
+[`docs/htsjdk-classes-a-ported-call-site-reaches.md`](docs/htsjdk-classes-a-ported-call-site-reaches.md)
+answers it by walking the consumers rather than the library, the way decision 0023 answered it for
+`jmath`: of the 43 htsjdk classes `picard-rs` and `gatk-rs` name, 14 are ported here, 15 are named
+only as a type or a message, and **13 are htsjdk classes ported inside the repository that consumes
+them** because this crate set does not offer them. Those thirteen, plus one method of `CigarUtil`,
+are the remaining work, and each is a move with an acceptance test that already exists.
+
 ## Conformance suites
 
 Every suite is declared once in [`tools/conformance/manifest.json`](tools/conformance/manifest.json):

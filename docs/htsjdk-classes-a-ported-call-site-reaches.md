@@ -1,0 +1,80 @@
+# The htsjdk classes a ported call site reaches
+
+Milestone H's entries are ticked, and "the htsjdk port is finished" is still not a statement anyone
+can check. This is the same problem decision 0023 had for `jmath`, and the answer is the same one:
+**walk the call sites rather than the library**. A port of htsjdk is finished when every htsjdk
+class a ported call site reaches is reproduced, and every one that is not is named.
+
+The list below is built from the two consumers. Every `htsjdk.<package>.<Class>` named in a Rust
+source file of `picard-rs` or `gatk-rs` is collected, and each is answered with where its Rust
+equivalent actually lives.
+
+```sh
+grep -rhoE 'htsjdk\.[a-z0-9_.]*[A-Z][A-Za-z0-9]*' picard-rs/crates gatk-rs/crates --include='*.rs'
+```
+
+43 distinct classes are named. 14 of them are named here as well and are ported here. The other 29
+split three ways -- 15, 1 and 13 -- and only the third group is work.
+
+## 1. Named as a type or a message, not as behaviour (15)
+
+`SAMException`, `SAMFormatException`, `RuntimeIOException`, `CodecLineParsingException`,
+`SAMTextReader`, `SamReaderFactory`, `BAMRecord`, `Cigar`, `SAMFileHeader`, `SAMSequenceDictionary`,
+`SAMSequenceRecord`, `SAMReadGroupRecord`, `Feature`, `Strand` and `StringUtil` appear in a comment
+that explains a refusal message, a header field, or which Java type a record came from. The
+behaviour behind each is either in `htsjdk-bam`/`htsjdk-tribble` already, or is the JVM's rather
+than htsjdk's.
+
+The exception types are the clearest case: a port reproduces the *text* htsjdk throws, because that
+text is compared, and there is nothing else to port. `Exception in thread "main"
+htsjdk.samtools.SAMException: Mate CIGAR (Tag MC) not found` is a string this programme must
+produce; `SAMException` is not a class it must have.
+
+## 2. Ported here under a different name (partial, 1)
+
+`CigarUtil` is here (`htsjdk-bam::cigar`) for `softClipEndOfRead`, `clipEndOfRead` and
+`mergeClippingCigarElement`, and **not** here for `softClip3PrimeEndOfRead`, which
+`picard-rs`'s `merge_bam_alignment_clip` ports locally. One class, two homes: the adapter clip
+belongs beside its siblings.
+
+## 3. htsjdk classes living in a repository that consumes htsjdk (13, in 10 rows)
+
+This is the list that makes "finished" checkable, and every row is the same shape: a class that is
+htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not offer it.
+
+| htsjdk class | ported in | why it belongs here |
+|---|---|---|
+| `util.QualityUtil` | `picard-rs`: `collect_sequencing_artifact_metrics`, `umi_duplicates` | two call sites already, in two unrelated tools, and GATK reaches it as well |
+| `util.CircularByteBuffer` | `picard-rs`: `fifo_buffer` | a general I/O utility with no Picard in it |
+| `ConstantMemoryDownsamplingIterator` | `picard-rs`: `downsample_sam` | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
+| `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
+| `filter.AlignedFilter` | `picard-rs`: `filter_sam_reads` | `htsjdk.samtools.filter` is a package of reusable predicates |
+| `filter.ReadNameFilter` | `picard-rs`: `filter_sam_reads` | as above |
+| `filter.TagFilter` | `picard-rs`: `filter_sam_reads` | as above |
+| `SamFileValidator` | `picard-rs`: `validate_sam_file` | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
+| `QueryInterval`, `Chunk`, `BAMIteratorFilter` | `gatk-rs`: `gatk-engine::reads` | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
+| `SBIIndexWriter`, `TextualBAMIndexWriter` | `gatk-rs`: two tools | index formats htsjdk writes, with no home here |
+
+The index query is the one with visible cost already. Nothing here turns a `.bai` plus an interval
+list into the records that overlap it, so a consumer that needs it writes its own overlap loop:
+`picard-rs`'s `MergeSamFiles` port does exactly that for its `INTERVALS` path, and its first run
+was five records out because `queryOverlapping` returns placed-but-unmapped reads and a hand-written
+filter did not. That is the failure mode this list exists to predict: a reimplementation is not
+wrong because it is duplicated, it is wrong because it is unverified.
+
+## What this changes
+
+Nothing about the formats. BAM, SAM, BGZF, CRAM, VCF, Tribble and the index *writer* are ported and
+oracle-backed, and no consumer reimplements any of them.
+
+What it changes is the meaning of the milestone. "Finish htsjdk-rs" is these thirteen classes plus one
+method of `CigarUtil`, and each row is a move with a suite attached rather than an open-ended
+"more of htsjdk". A row is done when the class lives here, its consumer calls it, and the consumer's
+own goldens still pass, which is the cheapest possible acceptance test, because it already exists.
+
+## How to regenerate this
+
+The command at the top produces the raw list; the three groups are judgement, and the judgement is
+in this file rather than in a script, because "named in a message" and "ported behaviour" cannot be
+told apart mechanically. Re-run it when a consumer gains a tool: a new name in the third group is a
+new row, and a new name in the first is not.
