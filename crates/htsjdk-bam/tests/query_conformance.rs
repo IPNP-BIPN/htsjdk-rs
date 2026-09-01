@@ -7,11 +7,16 @@
 
 use std::path::Path;
 
+use htsjdk_bam::cigar::{Cigar, CigarElement, Op};
 use htsjdk_bam::index::Chunk;
+use htsjdk_bam::iterator_filter::{
+    compare_interval_to_record, FilteringIteratorState, IntervalComparison, MultipleIntervalsFilter,
+};
 use htsjdk_bam::query::{
     chunks_are_adjacent, chunks_overlap, compare_chunks, display, optimize_chunk_list,
     optimize_intervals, region_to_bins, QueryInterval,
 };
+use htsjdk_bam::record::BamRecord;
 
 /// `0:100-200`.
 fn interval(text: &str) -> QueryInterval {
@@ -81,6 +86,47 @@ fn show_intervals(list: &[QueryInterval]) -> String {
     list.iter().map(display).collect::<Vec<_>>().join(",")
 }
 
+const READ_UNMAPPED: u16 = 0x4;
+
+/// Record `i` of the filter corpus, as `QueryDump.filterRecord` builds it.
+fn filter_record(i: usize) -> BamRecord {
+    let mut record = BamRecord {
+        read_name: format!("read{i}"),
+        reference_index: (i % 2) as i32,
+        alignment_start: 100 * (i as i32 + 1),
+        read_bases: b"ACGTACGTAC".to_vec(),
+        base_qualities: vec![30; 10],
+        ..Default::default()
+    };
+    if i % 3 == 2 {
+        record.flags = READ_UNMAPPED;
+    } else {
+        record.cigar = Cigar::new(vec![CigarElement {
+            length: 10,
+            op: Op::M,
+        }]);
+        record.mapping_quality = 60;
+    }
+    record
+}
+
+fn comparison_name(comparison: IntervalComparison) -> &'static str {
+    match comparison {
+        IntervalComparison::Before => "BEFORE",
+        IntervalComparison::After => "AFTER",
+        IntervalComparison::Overlapping => "OVERLAPPING",
+        IntervalComparison::Contained => "CONTAINED",
+    }
+}
+
+fn state_name(state: FilteringIteratorState) -> &'static str {
+    match state {
+        FilteringIteratorState::MatchesFilter => "MATCHES_FILTER",
+        FilteringIteratorState::StopIteration => "STOP_ITERATION",
+        FilteringIteratorState::ContinueIteration => "CONTINUE_ITERATION",
+    }
+}
+
 #[test]
 fn every_answer_matches_the_reference() {
     let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/query.txt.gz");
@@ -133,6 +179,34 @@ fn every_answer_matches_the_reference() {
             ["chunkadj", a, b, expected] => {
                 let ours = chunks_are_adjacent(&chunk(a), &chunk(b));
                 assert_eq!(ours.to_string(), *expected, "chunkadj {a} {b}");
+            }
+            ["cmprec", interval_text, index, expected] => {
+                let ours = compare_interval_to_record(
+                    &interval(interval_text),
+                    &filter_record(index.parse().expect("a record index")),
+                );
+                assert_eq!(
+                    comparison_name(ours),
+                    *expected,
+                    "cmprec {interval_text} {index}"
+                );
+            }
+            ["filter", contained, index, expected] => {
+                // The filter is stateful, so the run is replayed from the top for each row rather
+                // than kept between rows: the dump records the answer at that point in the walk.
+                let intervals = vec![
+                    QueryInterval::new(0, 100, 200),
+                    QueryInterval::new(0, 500, 900),
+                    QueryInterval::new(1, 100, 100000),
+                ];
+                let upto: usize = index.parse().expect("a record index");
+                let mut filter =
+                    MultipleIntervalsFilter::new(intervals, contained.parse().expect("a flag"));
+                let mut state = FilteringIteratorState::ContinueIteration;
+                for i in 0..=upto {
+                    state = filter.compare_to_filter(&filter_record(i));
+                }
+                assert_eq!(state_name(state), *expected, "filter {contained} {index}");
             }
             ["bins", start, end, expected] => {
                 let ours = match region_to_bins(
