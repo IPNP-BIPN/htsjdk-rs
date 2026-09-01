@@ -110,10 +110,10 @@ python3 tools/conformance/run_suite.py --suites bgzf
 A suite's `status` is part of the claim it supports: **oracle-backed** means CI re-derives the
 golden in the pinned container on every run; **unchecked** means it has never been re-derived.
 Decision 0022 found one corpus in the second category and decision 0040 closed it: `format` has been
-re-derived on every push since and agrees, so **all 72 suites are oracle-backed** and no committed
-golden here is unchecked. What remains outside that guarantee is `tools/zlib-conformance`, which
-compares a Java run to a Rust run rather than a dump to a golden and has only ever run on a
-developer machine.
+re-derived on every push since and agrees, so **all 73 suites are oracle-backed** and no committed
+golden here is unchecked. The zlib vectors decision 0001 rests on joined them in the same pass:
+they had been confirmed inside the pinned container once, by hand, and are now regenerated on every
+push like everything else.
 
 ## Part of a three-repository program
 

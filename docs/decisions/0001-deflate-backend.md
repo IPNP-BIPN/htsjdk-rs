@@ -87,6 +87,22 @@ JDK 1.3.2 (container amd64), and vendored 1.3.2 (Rust).
 
 See `tools/oracle/` for the image and the runner that reproduces this.
 
+## Follow-up 3 (done): the confirmation is re-derived, not remembered
+
+The section above is true and was, until now, a claim about one afternoon. The 70 vectors were
+regenerated in the container once, by hand, and nothing ran that comparison again; the committed
+table in `crates/htsjdk-bgzf/tests/zlib_conformance.rs` has since been compared only against the
+Rust backend, never against the JDK that produced it.
+
+That is the position decision 0022 found the format corpus in, and the same answer applies: the
+vectors are now a declared suite (`zlib`), so `Z2.java` runs in the pinned container on every push
+and its 70 rows are compared to the table, keyed on payload and level. A JDK bump, a zlib bump
+inside it, or an edit to the table now fails a job rather than passing quietly.
+
+The manual reproduction path stays, and the Rust half of it was four vectors where the Java half
+had seventy: `tools/zlib-conformance/rust` now mirrors `Z2.java` exactly, same payloads, same
+levels, same printed lines, so `diff` is the whole comparison.
+
 ## Reproduction
 
 See `tools/zlib-conformance/`.
