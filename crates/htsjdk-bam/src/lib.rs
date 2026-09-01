@@ -38,6 +38,7 @@ pub mod murmur3;
 pub mod overlap;
 pub mod pair;
 pub mod quality_util;
+pub mod query;
 pub mod query_name;
 pub mod read_group_checksum;
 pub mod reader;

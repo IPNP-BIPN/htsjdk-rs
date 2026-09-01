@@ -261,8 +261,8 @@ jobs:
             suites: "cram-record-cigar cram-restore-bases mersenne-twister"
           - group: golden-pending
             index: "1/1"
-            slug: "quality-util-duplicate-scoring-downsampling-filter"
-            suites: "quality-util duplicate-scoring downsampling filter"
+            slug: "quality-util-query-duplicate-scoring-downsampling-filter"
+            suites: "quality-util query duplicate-scoring downsampling filter"
     steps:
       - uses: actions/checkout@v7
 

@@ -58,7 +58,7 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | `filter.ReadNameFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `filter.TagFilter` | **moved here** (`htsjdk-bam::filter`) | as above |
 | `SamFileValidator` | `picard-rs`: `validate_sam_file` | `ValidateSamFile` is a thin wrapper around it; the validation rules are htsjdk's |
-| `QueryInterval`, `Chunk`, `BAMIteratorFilter` | `gatk-rs`: `gatk-engine::reads` | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
+| `QueryInterval`, `Chunk` **moved here** (`htsjdk-bam::query`), with the bins a region reaches and the span a query reads; `BAMIteratorFilter` still to come | `gatk-rs`: `gatk-engine::reads` | the **read** side of the BAI. This crate builds an index (`htsjdk-bam::build_index`) and parses one; it cannot answer a query with one |
 | `SBIIndexWriter`, `TextualBAMIndexWriter` | `gatk-rs`: two tools | index formats htsjdk writes, with no home here |
 
 The index query is the one with visible cost already. Nothing here turns a `.bai` plus an interval
