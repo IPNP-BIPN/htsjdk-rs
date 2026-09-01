@@ -10,6 +10,11 @@ description = "BGZF codec matching htsjdk's BlockCompressedOutputStream byte for
 flate2.workspace = true
 libz-sys.workspace = true
 
+# The benchmark binary hashes what it writes, so the comparison is bytes before seconds. It is a
+# normal dependency rather than a dev one because a `src/bin` target is not a test target.
+[dependencies.md-5]
+version = "0.11"
+
 [dev-dependencies]
 md-5 = "0.11"
 rapidgzip-core = "=0.3.1"

@@ -48,6 +48,21 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | Tribble index | **byte-identical**, both layouts, read and written: 5 suites (`tribble-index`, `tribble-index-write`, `tribble-bed`, `tribble-interval-list`, `tribble-vcf-candecode`) |
 | CRAM (container model, codecs, negotiation, CRAI) | **byte-identical**, 27 suites; CRAM 3.1 is the extension surface of decision 0039 |
 
+## Throughput
+
+Measured, not claimed, and only where the bytes are pinned first: `tools/benchmark/run.sh` times
+the port's BGZF against htsjdk's on the same payloads, in the same pinned container, and asserts
+that every framed stream the two write is byte-identical **before** it prints a duration. A speed
+number for a path with no golden is not a measurement of this port
+([#78](https://github.com/IPNP-BIPN/htsjdk-rs/issues/78)).
+
+```sh
+tools/benchmark/run.sh 64 3
+```
+
+The figures come from the `benchmark` job, which runs it on a real x86-64 runner; a run on a
+developer machine goes through an emulated container and measures the emulator.
+
 ## Bit-identity contract
 
 Output is compared byte-for-byte against goldens produced by the pinned reference running in
