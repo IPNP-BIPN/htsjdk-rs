@@ -14,7 +14,14 @@ grep -rhoE 'htsjdk\.[a-z0-9_.]*[A-Z][A-Za-z0-9]*' picard-rs/crates gatk-rs/crate
 ```
 
 43 distinct classes are named. 14 of them are named here as well and are ported here. The other 29
-split three ways -- 15, 1 and 13 -- and only the third group is work.
+split four ways -- 15, 1, 12 and 1 -- and only the third group is work.
+
+The fourth is one row, and it is the reason every row was checked against the reference tree rather
+than taken from the comment that named it: `CircularByteBuffer` is **not an htsjdk class**. It is
+`picard.util.CircularByteBuffer`, and `picard-rs`'s `fifo_buffer` says `htsjdk.samtools.util` in its
+header. A misattribution in a comment becomes a work item in a list built from comments, so the
+list is built from the comments and then answered from `htsjdk/src/main/java`: each of the twelve
+below has a file there, and this one does not.
 
 ## 1. Named as a type or a message, not as behaviour (15)
 
@@ -37,7 +44,7 @@ produce; `SAMException` is not a class it must have.
 `picard-rs`'s `merge_bam_alignment_clip` ports locally. One class, two homes: the adapter clip
 belongs beside its siblings.
 
-## 3. htsjdk classes living in a repository that consumes htsjdk (13, in 10 rows)
+## 3. htsjdk classes living in a repository that consumes htsjdk (12, in 9 rows)
 
 This is the list that makes "finished" checkable, and every row is the same shape: a class that is
 htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not offer it.
@@ -45,7 +52,6 @@ htsjdk's, ported inside `picard-rs` or `gatk-rs` because this crate set did not 
 | htsjdk class | ported in | why it belongs here |
 |---|---|---|
 | `util.QualityUtil` | **moved here** (`htsjdk-bam::quality_util`); `picard-rs` still has its three copies until it bumps the pin | two call sites already, in two unrelated tools, and GATK reaches it as well |
-| `util.CircularByteBuffer` | `picard-rs`: `fifo_buffer` | a general I/O utility with no Picard in it |
 | `ConstantMemoryDownsamplingIterator` | `picard-rs`: `downsample_sam` | it is an htsjdk iterator; `DownsampleSam` only drives it, and GATK's downsamplers reach the same family |
 | `DuplicateScoringStrategy` | `picard-rs`: `mark_duplicates` | scoring is htsjdk's, and both `MarkDuplicates` and GATK's `MarkDuplicatesSpark` use it |
 | `filter.AlignedFilter` | `picard-rs`: `filter_sam_reads` | `htsjdk.samtools.filter` is a package of reusable predicates |
@@ -67,7 +73,7 @@ wrong because it is duplicated, it is wrong because it is unverified.
 Nothing about the formats. BAM, SAM, BGZF, CRAM, VCF, Tribble and the index *writer* are ported and
 oracle-backed, and no consumer reimplements any of them.
 
-What it changes is the meaning of the milestone. "Finish htsjdk-rs" is these thirteen classes plus one
+What it changes is the meaning of the milestone. "Finish htsjdk-rs" is these twelve classes plus one
 method of `CigarUtil`, and each row is a move with a suite attached rather than an open-ended
 "more of htsjdk". A row is done when the class lives here, its consumer calls it, and the consumer's
 own goldens still pass, which is the cheapest possible acceptance test, because it already exists.
@@ -77,6 +83,13 @@ each closed on `f64::round`, which rounds half away from zero where `Math.round`
 every negative argument, meaning every observed error rate above one, was a different integer. The
 version here goes through `jmath` and is compared against the reference's own answers by the
 `quality-util` suite.
+
+## 4. Named as htsjdk and belonging to something else (1)
+
+`CircularByteBuffer` is `picard.util.CircularByteBuffer`. `picard-rs` ports it in `fifo_buffer`,
+where it belongs, and the module's header names the wrong package. The row is here rather than
+deleted because the check that caught it is the point: a list built from comments inherits the
+comments' mistakes unless every entry is answered from the reference tree.
 
 ## How to regenerate this
 

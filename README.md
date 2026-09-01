@@ -117,9 +117,10 @@ Milestone H's entries are ticked and the formats are done, so the open question 
 [`docs/htsjdk-classes-a-ported-call-site-reaches.md`](docs/htsjdk-classes-a-ported-call-site-reaches.md)
 answers it by walking the consumers rather than the library, the way decision 0023 answered it for
 `jmath`: of the 43 htsjdk classes `picard-rs` and `gatk-rs` name, 14 are ported here, 15 are named
-only as a type or a message, and **13 are htsjdk classes ported inside the repository that consumes
-them** because this crate set does not offer them. Those thirteen, plus one method of `CigarUtil`,
-are the remaining work, and each is a move with an acceptance test that already exists.
+only as a type or a message, one is not an htsjdk class at all, and **12 are htsjdk classes ported
+inside the repository that consumes them** because this crate set does not offer them. Those twelve,
+plus one method of `CigarUtil`, are the remaining work, and each is a move with an acceptance test
+that already exists.
 
 ## Conformance suites
 
