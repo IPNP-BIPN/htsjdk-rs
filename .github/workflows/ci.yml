@@ -261,8 +261,8 @@ jobs:
             suites: "cram-record-cigar cram-restore-bases mersenne-twister"
           - group: golden-pending
             index: "1/1"
-            slug: "quality-util"
-            suites: "quality-util"
+            slug: "quality-util-filter"
+            suites: "quality-util filter"
     steps:
       - uses: actions/checkout@v7
 

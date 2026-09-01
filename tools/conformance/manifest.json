@@ -268,6 +268,22 @@
       ]
     },
     {
+      "id": "filter",
+      "title": "The record filters, in both forms of filterOut",
+      "status": "golden-pending",
+      "harness": "tools/filter-conformance",
+      "why": "AlignedFilter, ReadNameFilter and TagFilter were ported inside picard-rs's FilterSamReads, which is the tool that composes them rather than the library that owns them. They move here with the dump that covers the part a port gets wrong: the pair form of filterOut, which is not the single form applied twice and is asymmetric in a different way in each of the three. The golden may only come from the pinned container on real x86-64 (decision 0008), so the suite lands pending.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "FilterDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "histogram",
       "title": "Histogram statistics",
       "status": "oracle-backed",
