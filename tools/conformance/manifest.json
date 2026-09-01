@@ -73,6 +73,28 @@
       ]
     },
     {
+      "id": "zlib",
+      "title": "Deflate against java.util.zip.Deflater",
+      "status": "oracle-backed",
+      "harness": "tools/zlib-conformance",
+      "why": "Decision 0001 rests on these 70 vectors, and nothing re-derived them. The record says the corpus was confirmed inside the pinned container, and it was -- once, by hand. The reasoning decision 0022 applied to the format corpus applies here: a comparison run once is a property of the machine that ran it. The Rust test carries the vectors as a literal table, so it is the golden, and this suite regenerates the Java side on every push.",
+      "compare": {
+        "mode": "regex",
+        "pattern": "\\(\"(\\w+)\", (\\d+), (\\d+), \"([0-9a-f]{32})\"\\)",
+        "key_groups": [
+          0,
+          1
+        ],
+        "why": "Keyed on payload and level. The corpus is a literal array in the Rust test rather than a .txt.gz, so both sides are read with the same pattern; the test's separate table of uncompressed-input digests has two fields and does not match this shape."
+      },
+      "cases": [
+        {
+          "dump": "Z2",
+          "golden": "crates/htsjdk-bgzf/tests/zlib_conformance.rs"
+        }
+      ]
+    },
+    {
       "id": "bgzf",
       "title": "BGZF blocks",
       "status": "oracle-backed",
@@ -681,7 +703,7 @@
       "status": "oracle-backed",
       "title": "VariantContextComparator: contig order, then start",
       "harness": "tools/vcf-conformance",
-      "why": "H.2, and one of the two things gatk-rs's MultiVariantDataSource needs: the multi-input walkers gatk-rs G1.6 handed over cannot be ported until this and VCFUtils.smartMergeHeaders exist. Three behaviours are the reason for the case list. The two constructors refuse different things and word them differently: from a contig list the index is the position so only a repeated name can go wrong, while from header lines the index is carried by the line, so a repeated INDEX is a second, separately-worded error that a contig list cannot express at all \u2014 and the empty case is refused by both with different sentences, which the port got wrong until this dump said so. An unknown contig throws NullPointerException, and htsjdk's own comment says it does so happily, meaning a caller sorting a variant outside the dictionary gets an exception rather than an arbitrary order. And compare returns a subtraction rather than a normalised sign, so the magnitude is observable and the dump records the number: a comparator built from lines with sparse indexes returns the difference of those indexes, not of their positions in the collection.",
+      "why": "H.2, and one of the two things gatk-rs's MultiVariantDataSource needs: the multi-input walkers gatk-rs G1.6 handed over cannot be ported until this and VCFUtils.smartMergeHeaders exist. Three behaviours are the reason for the case list. The two constructors refuse different things and word them differently: from a contig list the index is the position so only a repeated name can go wrong, while from header lines the index is carried by the line, so a repeated INDEX is a second, separately-worded error that a contig list cannot express at all — and the empty case is refused by both with different sentences, which the port got wrong until this dump said so. An unknown contig throws NullPointerException, and htsjdk's own comment says it does so happily, meaning a caller sorting a variant outside the dictionary gets an exception rather than an arbitrary order. And compare returns a subtraction rather than a normalised sign, so the magnitude is observable and the dump records the number: a comparator built from lines with sparse indexes returns the difference of those indexes, not of their positions in the collection.",
       "compare": {
         "mode": "lines"
       },
@@ -698,7 +720,7 @@
       "status": "oracle-backed",
       "title": "VCFUtils.smartMergeHeaders: what survives, and in what order",
       "harness": "tools/vcf-conformance",
-      "why": "H.2, and the second of the two things gatk-rs's MultiVariantDataSource needs: with this and VariantContextComparator the multi-input walkers gatk-rs G1.6 handed over become portable. Eighty lines of Java, and most of what matters in them is not the merge, which is why the suite exists. THE OUTPUT ALWAYS CARRIES A fileformat LINE NO SOURCE WROTE: getMetaDataInSortedOrder prepends one before the sorted metadata, so a merge of two headers holding one INFO line each returns two lines rather than one, and the extra one is VCFv4.2 unless the header's version FIELD is 4.3 or later \u2014 a field set at parse time, not a fileformat line among the metadata, so a header assembled in memory never reaches the version policy however its lines are labelled. THE TWO PROMOTION ARMS ARE BOTH NO-OPS: the Java says promote key to Float in each and neither does it, because the put writes back what the map already holds, so an Integer seen first stays Integer and a Float seen first stays Float. The one branch that does change the map is setNumberToUnbounded, which mutates the stored line in place. And the input order is each source's SORTED order, not its file order, which is what the method's own comment says the ordering exists to protect for contig lines.",
+      "why": "H.2, and the second of the two things gatk-rs's MultiVariantDataSource needs: with this and VariantContextComparator the multi-input walkers gatk-rs G1.6 handed over become portable. Eighty lines of Java, and most of what matters in them is not the merge, which is why the suite exists. THE OUTPUT ALWAYS CARRIES A fileformat LINE NO SOURCE WROTE: getMetaDataInSortedOrder prepends one before the sorted metadata, so a merge of two headers holding one INFO line each returns two lines rather than one, and the extra one is VCFv4.2 unless the header's version FIELD is 4.3 or later — a field set at parse time, not a fileformat line among the metadata, so a header assembled in memory never reaches the version policy however its lines are labelled. THE TWO PROMOTION ARMS ARE BOTH NO-OPS: the Java says promote key to Float in each and neither does it, because the put writes back what the map already holds, so an Integer seen first stays Integer and a Float seen first stays Float. The one branch that does change the map is setNumberToUnbounded, which mutates the stored line in place. And the input order is each source's SORTED order, not its file order, which is what the method's own comment says the ordering exists to protect for contig lines.",
       "compare": {
         "mode": "lines"
       },
@@ -706,7 +728,7 @@
         {
           "dump": "SmartMergeDump",
           "golden": "crates/htsjdk-vcf/tests/data/smart_merge_headers.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 16 rows, no corrections \u2014 to the golden. It corrected the port three times before a single row was compared: the prepended fileformat line, the version being a field rather than a line, and both promotion arms being no-ops."
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of the run that added this suite. 16 rows, no corrections — to the golden. It corrected the port three times before a single row was compared: the prepended fileformat line, the version being a field rather than a line, and both promotion arms being no-ops."
         }
       ]
     },
@@ -715,7 +737,7 @@
       "status": "oracle-backed",
       "title": "The .idx file, and the blocks a query resolves to",
       "harness": "tools/tribble-conformance",
-      "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant \u2014 16000 for one contig and 8000 for another in the same file \u2014 so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
+      "why": "H.2's last named consumer, and the item gatk-rs G1.3 named when it closed: the Tribble index is what turns a Feature file into a random-access source rather than a linear read. The dump was written before the port on purpose, and it earned that order three times over. The index type identifiers cannot be read reliably out of the source at all, because LinearIndex.INDEX_TYPE reads a field of the IndexType enum whose own constructor is handed LinearIndex.INDEX_TYPE; measured here, they are 1 for linear and 2 for interval tree, under the magic number 1480870228, which is TIDX. The bin width is PER CONTIG rather than a constant — 16000 for one contig and 8000 for another in the same file — so a port that took a constant would be wrong without ever failing. And the raw bytes are NOT STABLE ACROSS RUNS: the header carries indexedFileTS, the source file's modification time, so a golden built on them would fail intermittently or, worse, be repaired by regenerating it. That was measured by running the dump twice and diffing rather than reasoned about, and the eight bytes are zeroed with their offset reported so the rest of the layout stays under test. The query rows pin three things the port would otherwise guess: the longest feature is subtracted from the start so a query reaches features that begin before the interval, the answer is always one merged block or none because linear blocks are adjacent by definition, and an unknown contig THROWS rather than returning an empty list.",
       "compare": {
         "mode": "lines"
       },

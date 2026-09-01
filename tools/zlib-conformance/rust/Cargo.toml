@@ -1,3 +1,7 @@
+# Its own workspace: this harness is a program the CI job runs, not a crate the port ships,
+# and the port's workspace must not pick it up.
+[workspace]
+
 [package]
 name = "r2"
 version = "0.1.0"
