@@ -663,6 +663,22 @@
       ]
     },
     {
+      "id": "cigar-clip-3prime",
+      "title": "CigarUtil.softClip3PrimeEndOfRead, which moves the record and not just the cigar",
+      "status": "golden-pending",
+      "harness": "tools/cigar-conformance",
+      "why": "The one method of CigarUtil that was not here: picard-rs ports it inside MergeBamAlignment's adapter clip, and its copy is the cigar half alone. The other half is the record: on a negative strand the alignment start moves by the reference span the clip removed, a record with nothing aligned left becomes unmapped and loses its coordinates, and NM/MD/UQ are dropped whenever the reference length changed at all, which happens far more often. Ten cigars against both strands and six clip points, so the strand-dependent start and the unmapping are both reached.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "CigarClip3PrimeDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "mateinfo",
       "title": "SamPairUtil.setMateInfo",
       "status": "oracle-backed",
