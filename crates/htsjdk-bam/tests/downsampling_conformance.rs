@@ -3,26 +3,30 @@
 //! The corpus is forty records named `read0`..`read39`, rebuilt here rather than read from a
 //! fixture, because the decision is a function of the name and of nothing else.
 //!
-//! While the suite is `golden-pending` the dump is named by `DOWNSAMPLING_DUMP` (decision 0008).
+//! The golden is committed and re-derived by the `downsampling` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::downsampling::ConstantMemoryDownsampler;
 
 #[test]
 fn every_decision_and_count_matches_the_reference() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/downsampling.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `DOWNSAMPLING_DUMP` still overrides it, which is how a local run checks a change to the
+    // harness before CI does.
     let dump = match std::env::var("DOWNSAMPLING_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by DOWNSAMPLING_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the downsampling golden is still pending. Run the suite and point \
-                 DOWNSAMPLING_DUMP at tools/conformance/pending/downsampling.DownsamplingDump.txt"
-            );
-            return;
+            let golden =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/downsampling.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

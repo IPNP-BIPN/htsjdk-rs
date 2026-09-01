@@ -200,69 +200,73 @@ jobs:
       matrix:
         include:
           - group: oracle-backed
-            index: "1/15"
+            index: "1/16"
             slug: "tribble-bed-tribble-interval-list-tribble-vcf-candecode-zlib-bgzf"
             suites: "tribble-bed tribble-interval-list tribble-vcf-candecode zlib bgzf"
           - group: oracle-backed
-            index: "2/15"
+            index: "2/16"
             slug: "bgzf-termination-bam-codec-bam-file-bam-header-version-fasta-reference-writer"
             suites: "bgzf-termination bam-codec bam-file bam-header-version fasta-reference-writer"
           - group: oracle-backed
-            index: "3/15"
-            slug: "bam-reheader-bam-gather-bam-tag-read-histogram-sam-text"
-            suites: "bam-reheader bam-gather bam-tag-read histogram sam-text"
+            index: "3/16"
+            slug: "bam-reheader-bam-gather-bam-tag-read-quality-util-duplicate-scoring"
+            suites: "bam-reheader bam-gather bam-tag-read quality-util duplicate-scoring"
           - group: oracle-backed
-            index: "4/15"
-            slug: "sam-file-bai-build-index-interval-list-vcf-header"
-            suites: "sam-file bai build-index interval-list vcf-header"
+            index: "4/16"
+            slug: "downsampling-filter-histogram-sam-text-sam-file"
+            suites: "downsampling filter histogram sam-text sam-file"
           - group: oracle-backed
-            index: "5/15"
-            slug: "vcf-header-parse-vcf-header-lines-vcf-record-vcf-file-vcf-record-parse"
-            suites: "vcf-header-parse vcf-header-lines vcf-record vcf-file vcf-record-parse"
+            index: "5/16"
+            slug: "bai-build-index-interval-list-vcf-header-vcf-header-parse"
+            suites: "bai build-index interval-list vcf-header vcf-header-parse"
           - group: oracle-backed
-            index: "6/15"
-            slug: "vcf-genotype-parse-vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts"
-            suites: "vcf-genotype-parse vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts"
+            index: "6/16"
+            slug: "vcf-header-lines-vcf-record-vcf-file-vcf-record-parse-vcf-genotype-parse"
+            suites: "vcf-header-lines vcf-record vcf-file vcf-record-parse vcf-genotype-parse"
           - group: oracle-backed
-            index: "7/15"
-            slug: "vcf-genotype-type-vcf-attribute-type-rg-checksum-cigar-clip-mateinfo"
-            suites: "vcf-genotype-type vcf-attribute-type rg-checksum cigar-clip mateinfo"
+            index: "7/16"
+            slug: "vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type"
+            suites: "vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
-            index: "8/15"
-            slug: "format-percentile-fastmath-exp-gamma-erf-normal-saddle-point"
-            suites: "format percentile fastmath-exp gamma-erf-normal saddle-point"
+            index: "8/16"
+            slug: "vcf-attribute-type-rg-checksum-cigar-clip-mateinfo-format"
+            suites: "vcf-attribute-type rg-checksum cigar-clip mateinfo format"
           - group: oracle-backed
-            index: "9/15"
-            slug: "binomial-inverse-variant-comparator-smart-merge-headers-tribble-index-tribble-index-write"
-            suites: "binomial-inverse variant-comparator smart-merge-headers tribble-index tribble-index-write"
+            index: "9/16"
+            slug: "percentile-fastmath-exp-gamma-erf-normal-saddle-point-binomial-inverse"
+            suites: "percentile fastmath-exp gamma-erf-normal saddle-point binomial-inverse"
           - group: oracle-backed
-            index: "10/15"
-            slug: "cram-varint-cram-bit-stream-cram-core-codecs-cram-huffman-cram-external-codecs"
-            suites: "cram-varint cram-bit-stream cram-core-codecs cram-huffman cram-external-codecs"
+            index: "10/16"
+            slug: "variant-comparator-smart-merge-headers-tribble-index-tribble-index-write-cram-varint"
+            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
           - group: oracle-backed
-            index: "11/15"
-            slug: "cram-golomb-cram-encoding-factory-cram-compression-header-cram-record-flags-cram-slice-blocks"
-            suites: "cram-golomb cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks"
+            index: "11/16"
+            slug: "cram-bit-stream-cram-core-codecs-cram-huffman-cram-external-codecs-cram-golomb"
+            suites: "cram-bit-stream cram-core-codecs cram-huffman cram-external-codecs cram-golomb"
           - group: oracle-backed
-            index: "12/15"
-            slug: "cram-record-read-cram-record-write-cram-crai-cram-negotiation-cram-file-read"
-            suites: "cram-record-read cram-record-write cram-crai cram-negotiation cram-file-read"
+            index: "12/16"
+            slug: "cram-encoding-factory-cram-compression-header-cram-record-flags-cram-slice-blocks-cram-record-read"
+            suites: "cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks cram-record-read"
           - group: oracle-backed
-            index: "13/15"
-            slug: "cram-container-cram-block-cram-rans-cram-rans-order1-cram-preservation-map"
-            suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
+            index: "13/16"
+            slug: "cram-record-write-cram-crai-cram-negotiation-cram-file-read-cram-container"
+            suites: "cram-record-write cram-crai cram-negotiation cram-file-read cram-container"
           - group: oracle-backed
-            index: "14/15"
-            slug: "cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features"
-            suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features"
+            index: "14/16"
+            slug: "cram-block-cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix"
+            suites: "cram-block cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix"
           - group: oracle-backed
-            index: "15/15"
-            slug: "cram-record-cigar-cram-restore-bases-mersenne-twister"
-            suites: "cram-record-cigar cram-restore-bases mersenne-twister"
+            index: "15/16"
+            slug: "cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar"
+            suites: "cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar"
+          - group: oracle-backed
+            index: "16/16"
+            slug: "cram-restore-bases-mersenne-twister"
+            suites: "cram-restore-bases mersenne-twister"
           - group: golden-pending
             index: "1/1"
-            slug: "quality-util-query-duplicate-scoring-downsampling-filter"
-            suites: "quality-util query duplicate-scoring downsampling filter"
+            slug: "query"
+            suites: "query"
     steps:
       - uses: actions/checkout@v7
 

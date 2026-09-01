@@ -4,10 +4,11 @@
 //! the same twelve records the Java half made: name `read<i>`, unmapped when `i` is odd, and an
 //! `RG` of `rg1`, `rg2` or nothing as `i % 3` decides.
 //!
-//! While the suite is `golden-pending` the dump is named by `FILTER_DUMP`; the committed corpus may
-//! only come from the pinned container on real x86-64 (decision 0008).
+//! The golden is committed and re-derived by the `filter` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::filter::{AlignedFilter, ReadNameFilter, SamRecordFilter, TagFilter};
@@ -86,18 +87,19 @@ fn filter_for(label: &str) -> Box<dyn SamRecordFilter> {
 
 #[test]
 fn every_decision_matches_the_reference() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/filter.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `FILTER_DUMP` still overrides it, which is how a local run checks a change to the
+    // harness before CI does.
     let dump = match std::env::var("FILTER_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by FILTER_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the filter golden is still pending. Run the suite and point FILTER_DUMP \
-                 at tools/conformance/pending/filter.FilterDump.txt"
-            );
-            return;
+            let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/filter.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

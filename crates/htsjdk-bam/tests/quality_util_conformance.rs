@@ -3,11 +3,10 @@
 //! The dump is `tools/quality-util-conformance/QualityUtilDump.java`, and every value in it is a
 //! bit pattern rather than a decimal, so what is compared is the double and not its rendering.
 //!
-//! While the suite is `golden-pending` there is no committed corpus to read: the golden may only
-//! come from the pinned container on a real x86-64 runner (decision 0008), and CI publishes the
-//! first candidate. Until then this test runs against a dump named by `QUALITY_UTIL_DUMP`, which is
-//! how a local run checks the port without committing anything, and skips with a reason otherwise.
+//! The golden is committed and re-derived by the `quality-util` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::quality_util::{
@@ -33,18 +32,20 @@ fn from_bits(text: &str) -> f64 {
 
 #[test]
 fn every_answer_matches_the_reference() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/quality_util.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `QUALITY_UTIL_DUMP` still overrides it, which is how a local run checks a change to the
+    // harness before CI does.
     let dump = match std::env::var("QUALITY_UTIL_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by QUALITY_UTIL_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the quality-util golden is still pending. Run the suite and point \
-                 QUALITY_UTIL_DUMP at tools/conformance/pending/quality-util.QualityUtilDump.txt"
-            );
-            return;
+            let golden =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/quality_util.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

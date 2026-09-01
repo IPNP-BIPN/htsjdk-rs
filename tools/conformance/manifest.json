@@ -254,16 +254,16 @@
     {
       "id": "quality-util",
       "title": "QualityUtil conversions and its error-probability table",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/quality-util-conformance",
-      "why": "QualityUtil was ported three times inside picard-rs, each time with f64::log10 and f64::round, and neither is the function Java calls. It moves here, and it arrives with the dump that settles the two places it can still differ: the static table is built with Math.pow, which decision 0007 deferred and decision 0027 bounded at 1 ulp, and getPhredScoreFromErrorProbability closes on Math.round, which is half up where Rust's is half away from zero. Both are measured here rather than argued. The golden may only come from the pinned container on real x86-64 (decision 0008), so the suite lands pending and CI publishes the first candidate.",
+      "why": "QualityUtil was ported three times inside picard-rs, each time with f64::log10 and f64::round, and neither is the function Java calls. It moves here, and it arrives with the dump that settles the two places it can still differ: the static table is built with Math.pow, which decision 0007 deferred and decision 0027 bounded at 1 ulp, and getPhredScoreFromErrorProbability closes on Math.round, which is half up where Rust's is half away from zero. Both are measured here rather than argued. The golden was produced by the pinned container on real x86-64 and is re-derived on every run.",
       "compare": {
         "mode": "keyed"
       },
       "cases": [
         {
           "dump": "QualityUtilDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/quality_util.txt.gz"
         }
       ]
     },
@@ -286,7 +286,7 @@
     {
       "id": "duplicate-scoring",
       "title": "DuplicateScoringStrategy, its clamps and its tie-break",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/duplicate-scoring-conformance",
       "why": "The score is a short and every step of it is written to stay away from overflow: the quality sum is clamped at Short.MAX_VALUE/2, the random branch masks 14 bits and shifts by Short.MIN_VALUE/4, and a vendor-failed record is discounted by Short.MIN_VALUE/2 once per end. Those clamps are where two records tie, and the tie-break is what decides which read a BAM keeps, so they are measured rather than reasoned about. picard-rs ported this inside MarkDuplicates; it is htsjdk's, and MarkDuplicatesSpark reaches it too.",
       "compare": {
@@ -295,14 +295,14 @@
       "cases": [
         {
           "dump": "DuplicateScoringDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/duplicate_scoring.txt.gz"
         }
       ]
     },
     {
       "id": "downsampling",
       "title": "ConstantMemoryDownsamplingIterator's threshold and statistics",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/downsampling-conformance",
       "why": "The keep decision is a pure function of the read name, so it is easy to port and easy to port wrongly: the threshold is Integer.MIN_VALUE + (int) Math.round(range * proportion), where the cast keeps the low 32 bits and the addition wraps. At a proportion of 1 that wrap IS the behaviour, and a port doing the same arithmetic in 64 bits keeps everything at proportions where the reference does not. Seven proportions and two seeds, plus the iterator's own statistics, which divide by the seen count and answer NaN before anything has been seen.",
       "compare": {
@@ -311,23 +311,23 @@
       "cases": [
         {
           "dump": "DownsamplingDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/downsampling.txt.gz"
         }
       ]
     },
     {
       "id": "filter",
       "title": "The record filters, in both forms of filterOut",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/filter-conformance",
-      "why": "AlignedFilter, ReadNameFilter and TagFilter were ported inside picard-rs's FilterSamReads, which is the tool that composes them rather than the library that owns them. They move here with the dump that covers the part a port gets wrong: the pair form of filterOut, which is not the single form applied twice and is asymmetric in a different way in each of the three. The golden may only come from the pinned container on real x86-64 (decision 0008), so the suite lands pending.",
+      "why": "AlignedFilter, ReadNameFilter and TagFilter were ported inside picard-rs's FilterSamReads, which is the tool that composes them rather than the library that owns them. They move here with the dump that covers the part a port gets wrong: the pair form of filterOut, which is not the single form applied twice and is asymmetric in a different way in each of the three. The golden was produced by the pinned container on real x86-64 and is re-derived on every run.",
       "compare": {
         "mode": "keyed"
       },
       "cases": [
         {
           "dump": "FilterDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/filter.txt.gz"
         }
       ]
     },
