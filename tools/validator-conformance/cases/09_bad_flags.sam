@@ -1,0 +1,5 @@
+@HD	VN:1.6	SO:coordinate
+@SQ	SN:chr1	LN:1000
+@RG	ID:rg1	SM:s1	PL:ILLUMINA
+u1	2	chr1	100	60	4M	*	0	0	ACGT	IIII	RG:Z:rg1	NM:i:0
+u2	264	*	0	60	*	*	0	0	ACGT	IIII	RG:Z:rg1

@@ -377,6 +377,22 @@
       ]
     },
     {
+      "id": "validator",
+      "title": "SamFileValidator, in its own words",
+      "status": "golden-pending",
+      "harness": "tools/validator-conformance",
+      "why": "The last class of the call-site list. picard-rs ported the validator and the Picard tool that drives it together, because there was nowhere here to put the first half; this suite measures the half that is htsjdk's, the checks and the SAMValidationError.toString rendering, against the reference class directly rather than through the tool. The corpus is nine SAM files, each broken in one way, read from disk by both sides so the harness and the test measure the same bytes rather than two transcriptions.",
+      "compare": {
+        "mode": "keyed"
+      },
+      "cases": [
+        {
+          "dump": "ValidatorDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "bai",
       "title": "BAM index (write side)",
       "status": "oracle-backed",
