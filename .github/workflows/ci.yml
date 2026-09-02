@@ -267,6 +267,10 @@ jobs:
             index: "17/17"
             slug: "cram-record-cigar-cram-restore-bases-mersenne-twister"
             suites: "cram-record-cigar cram-restore-bases mersenne-twister"
+          - group: golden-pending
+            index: "1/1"
+            slug: "tabix-index"
+            suites: "tabix-index"
     steps:
       - uses: actions/checkout@v7
 

@@ -16,9 +16,9 @@ grep -rhoE 'htsjdk\.[a-z0-9_.]*[A-Z][A-Za-z0-9]*' picard-rs/crates gatk-rs/crate
 43 distinct classes are named. 14 of them are named here as well and are ported here. The other 29
 split four ways -- 15, 1, 12 and 1 -- and only the third group is work.
 
-A fifth group follows the four, and it is not from the grep at all: a class a consumer reimplemented
-without naming it is invisible to a list built from names, and the one row there so far is the row
-that cost a wrong answer.
+A fifth group follows the four, and it is not from the grep at all: a class a consumer neither
+ported nor named is invisible to a list built from names, whether it reimplemented the class badly
+or refused the work outright. Both rows there cost a covering-array row.
 
 The fourth is one row, and it is the reason every row was checked against the reference tree rather
 than taken from the comment that named it: `CircularByteBuffer` is **not an htsjdk class**. It is
@@ -123,7 +123,7 @@ where it belongs, and the module's header names the wrong package. The row is he
 deleted because the check that caught it is the point: a list built from comments inherits the
 comments' mistakes unless every entry is answered from the reference tree.
 
-## 5. Named by nothing, because the copy did not know whose it was (1)
+## 5. Named by nothing, because there was no copy to name (2)
 
 The list is built from names, so it can only see a reimplementation that says what it is
 reimplementing. `SamFiles.findIndex` was reached by no comment and no import: `gatk-rs`'s
@@ -146,6 +146,28 @@ still found.
 
 The row is what the grep cannot produce, and it is the reason this file is judgement rather than a
 script: the entry that costs a consumer a wrong answer is the one that never named the class.
+
+The second row is the same blind spot reached from the other side. `TabixIndexCreator` and
+`TabixIndex` were named by nothing because nobody reimplemented them: `gatk-rs`'s
+`IndexFeatureFile` writes the Tribble index a plain VCF gets and **refuses** a block-compressed one,
+in a message whose own words say the refusal is the port's and not GATK's. A refusal is the honest
+form of a gap and it is still a gap, and it was the whole of the last row of that tool's covering
+array (IPNP-BIPN/gatk-rs#1030).
+
+It is here now (`htsjdk-tribble::tabix`), and half of it was here already: the creator drives the
+same `BinningIndexBuilder` a `.bai` is built with, so what had to be ported is the layer that
+decides the layout. Four things there are not what the class's summary suggests. A feature cannot
+be indexed until the **next** one arrives, because the next feature's start is what closes the
+previous one's chunk, and the last feature waits for `finalizeIndex`'s own position. The bin comes
+from `regionToBin(start - 1, end)`, because `getIndexingBin` returns null and the builder computes
+it from a zero-based half-open region. A feature with no end is one base for the **bin** and a
+*shifted window* for the **linear index**, which are two different rules reached by one feature. And
+the name block's declared size counts its null terminators, the names themselves being written a
+low byte at a time rather than encoded.
+
+The suite dumps each case twice, as the little-endian body and as the block-compressed file, so the
+composition is measured as well as the arithmetic: a `.tbi` is a BGZF stream, and its bytes depend
+on the deflate pin like every other block-compressed golden.
 
 ## How to regenerate this
 
