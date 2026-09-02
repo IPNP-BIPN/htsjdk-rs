@@ -16,6 +16,10 @@ grep -rhoE 'htsjdk\.[a-z0-9_.]*[A-Z][A-Za-z0-9]*' picard-rs/crates gatk-rs/crate
 43 distinct classes are named. 14 of them are named here as well and are ported here. The other 29
 split four ways -- 15, 1, 12 and 1 -- and only the third group is work.
 
+A fifth group follows the four, and it is not from the grep at all: a class a consumer reimplemented
+without naming it is invisible to a list built from names, and the one row there so far is the row
+that cost a wrong answer.
+
 The fourth is one row, and it is the reason every row was checked against the reference tree rather
 than taken from the comment that named it: `CircularByteBuffer` is **not an htsjdk class**. It is
 `picard.util.CircularByteBuffer`, and `picard-rs`'s `fifo_buffer` says `htsjdk.samtools.util` in its
@@ -119,9 +123,37 @@ where it belongs, and the module's header names the wrong package. The row is he
 deleted because the check that caught it is the point: a list built from comments inherits the
 comments' mistakes unless every entry is answered from the reference tree.
 
+## 5. Named by nothing, because the copy did not know whose it was (1)
+
+The list is built from names, so it can only see a reimplementation that says what it is
+reimplementing. `SamFiles.findIndex` was reached by no comment and no import: `gatk-rs`'s
+`CountReads` runner opened the index with `path.with_extension("bam.bai")`, four words that name
+neither htsjdk nor the class whose rule they are half of.
+
+Half, because htsjdk writes the index of `reads.bam` as `reads.bai` at least as often, and
+`findIndex` looks for that name **first**. A covering-array row over the corpus's BAM therefore
+counted two reads in the reference and none in the port: the interval query found no index, and no
+index is not an error (IPNP-BIPN/gatk-rs#1020).
+
+It is here now (`htsjdk-bam::sam_files`), and the measurement it arrived with says the rule is not
+the one the method's own summary gives. The extension is **replaced** before it is **appended**, so
+a `.csi` beside `reads.bam` beats a `reads.bam.bai` beside the same file. A CRAM has no replaced
+`.csi` and no replaced `.bai`: `reads.crai`, then `reads.cram.crai`, then the shared fallthrough.
+`Files.isRegularFile` refuses a directory, so a directory named `reads.bai` is stepped over rather
+than returned. And a search that finds nothing resolves the path's symbolic links and runs again at
+the real location, which means an index beside the link wins and an index beside the target is
+still found.
+
+The row is what the grep cannot produce, and it is the reason this file is judgement rather than a
+script: the entry that costs a consumer a wrong answer is the one that never named the class.
+
 ## How to regenerate this
 
 The command at the top produces the raw list; the three groups are judgement, and the judgement is
 in this file rather than in a script, because "named in a message" and "ported behaviour" cannot be
 told apart mechanically. Re-run it when a consumer gains a tool: a new name in the third group is a
 new row, and a new name in the first is not.
+
+Group 5 has no command. It grows when a consumer's own measurement disagrees with the reference and
+the reason turns out to be a rule that belongs to a class nobody named, which is to say from a
+failure rather than from a sweep.
