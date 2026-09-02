@@ -101,6 +101,17 @@ impl<W: Write> BgzfWriter<W> {
                 status == Status::StreamEnd
             }
             Deflater::Gkl => {
+                // Levels 1 and 2 are GKL's igzip pair, and `deflate_gkl` PANICS on them when ISA-L
+                // is absent or unusable rather than answering with zlib's bytes. That refusal is
+                // the right one and a panic is the wrong way to deliver it: a writer is handed a
+                // level by a caller, and a caller can be told.
+                if self.level <= 2 && !gkl_deflate::igzip_available() {
+                    return Err(io::Error::other(format!(
+                        "GKL routes level {} through ISA-L igzip, which this build cannot reach: \
+                         rebuild with the `gkl-igzip` feature, on a host where it is usable",
+                        self.level
+                    )));
+                }
                 compressed = gkl_deflate::deflate_gkl(&self.buffer, self.level as usize);
                 // htsjdk asks the deflater whether it finished, having given it an output array of
                 // exactly `COMPRESSED_BUFFER_SIZE` bytes. A deflater handed a vector never runs
@@ -259,6 +270,41 @@ mod tests {
         assert!(!without.ends_with(&EMPTY_GZIP_BLOCK));
         // Both decompress to the same payload.
         assert_eq!(decompress_all(&without).unwrap(), payload);
+    }
+
+    /// GKL's igzip levels refuse rather than panic when ISA-L is out of reach.
+    ///
+    /// The refusal itself is `gkl-deflate`'s, and it is the right answer: levels 1 and 2 are the
+    /// only pair GKL does not route through zlib, so answering them with zlib's bytes would be a
+    /// wrong answer that looks like a right one. What is asserted here is that a caller is TOLD,
+    /// rather than the process ending.
+    #[test]
+    fn a_gkl_level_that_needs_igzip_refuses_when_it_is_out_of_reach() {
+        if gkl_deflate::igzip_available() {
+            // A build with ISA-L usable answers those levels, which is the other half of the
+            // claim: the refusal is about reach and not about the level.
+            for level in [1, 2] {
+                let mut w = BgzfWriter::with_deflater(Vec::new(), level, Deflater::Gkl);
+                w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
+                assert_eq!(
+                    decompress_all(&w.into_inner().unwrap()).unwrap(),
+                    b"chr1\t100\t.\tA\tC\n"
+                );
+            }
+            return;
+        }
+        for level in [1, 2] {
+            let mut w = BgzfWriter::with_deflater(Vec::new(), level, Deflater::Gkl);
+            w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
+            let error = w
+                .into_inner()
+                .expect_err("igzip is out of reach on this build");
+            assert!(error.to_string().contains("igzip"), "{error}");
+        }
+        // Every other level is unaffected, since GKL routes them through zlib.
+        let mut w = BgzfWriter::with_deflater(Vec::new(), 5, Deflater::Gkl);
+        w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
+        assert!(w.into_inner().is_ok());
     }
 
     /// The deflater changes the block's bytes and nothing else about the file.
