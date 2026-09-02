@@ -1,5 +1,13 @@
 //! BGZF write path, byte-identical to htsjdk's `BlockCompressedOutputStream`.
 //!
+//! # Which deflater, which is not a detail of the framing
+//!
+//! `BlockCompressedOutputStream` deflates through a **static** `defaultDeflaterFactory`, and GATK
+//! replaces it: everything it writes without `--use-jdk-deflater` is Intel's GKL and not the JDK's
+//! zlib. The framing is identical either way and the bytes are not, so a writer that only knew one
+//! of them could reproduce htsjdk's own output and none of GATK's. [`Deflater`] is that choice,
+//! and [`Deflater::Jdk`] is the default because it is htsjdk's.
+//!
 //! Ported from htsjdk 4.2.0
 //! `src/main/java/htsjdk/samtools/util/BlockCompressedOutputStream.java`
 //! (`deflateBlock`, `writeGzipBlock`, `flush`, `close`).
@@ -15,11 +23,24 @@ use crate::{
     GZIP_XLEN,
 };
 
+/// Which implementation deflates a block, which decides its bytes and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Deflater {
+    /// `java.util.zip.Deflater`, which is htsjdk's own default and what `--use-jdk-deflater` asks
+    /// for.
+    #[default]
+    Jdk,
+    /// Intel's GKL, which GATK installs as the default factory: zlib 1.2.13 carrying Intel's
+    /// `deflate_medium` patch above level two, and ISA-L igzip at one and two.
+    Gkl,
+}
+
 /// Writes a BGZF stream whose bytes match `BlockCompressedOutputStream`.
 pub struct BgzfWriter<W: Write> {
     inner: W,
     buffer: Vec<u8>,
     level: u32,
+    deflater: Deflater,
     finished: bool,
     /// Byte offset of the block currently being filled, `mBlockAddress` in htsjdk.
     block_address: u64,
@@ -31,11 +52,18 @@ impl<W: Write> BgzfWriter<W> {
     }
 
     pub fn with_level(inner: W, level: u32) -> Self {
+        Self::with_deflater(inner, level, Deflater::Jdk)
+    }
+
+    /// The same writer with the deflater named, which is the only thing that differs between
+    /// htsjdk's output and GATK's.
+    pub fn with_deflater(inner: W, level: u32, deflater: Deflater) -> Self {
         assert!(level <= 9, "compression level must be 0..=9, got {level}");
         Self {
             inner,
             buffer: Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE),
             level,
+            deflater,
             finished: false,
             block_address: 0,
         }
@@ -59,12 +87,26 @@ impl<W: Write> BgzfWriter<W> {
 
         // Capacity is the bound, matching Java's fixed-size output array.
         let mut compressed = Vec::with_capacity(COMPRESSED_BUFFER_SIZE);
-        let mut c = Compress::new(Compression::new(self.level), false);
-        let status = c
-            .compress_vec(&self.buffer, &mut compressed, FlushCompress::Finish)
-            .map_err(io::Error::other)?;
+        let fits = match self.deflater {
+            Deflater::Jdk => {
+                let mut c = Compress::new(Compression::new(self.level), false);
+                let status = c
+                    .compress_vec(&self.buffer, &mut compressed, FlushCompress::Finish)
+                    .map_err(io::Error::other)?;
+                status == Status::StreamEnd
+            }
+            Deflater::Gkl => {
+                compressed = gkl_deflate::deflate_gkl(&self.buffer, self.level as usize);
+                // htsjdk asks the deflater whether it finished, having given it an output array of
+                // exactly `COMPRESSED_BUFFER_SIZE` bytes. A deflater handed a vector never runs
+                // out, so the same question is asked of the length: output that would have filled
+                // that array is output the JDK path could not have declared finished, EQUAL length
+                // included, which is the boundary the comment below is about.
+                compressed.len() < COMPRESSED_BUFFER_SIZE
+            }
+        };
 
-        if status != Status::StreamEnd {
+        if !fits {
             // Matches htsjdk's `noCompressionDeflater`, explicitly the plain JDK deflater at
             // NO_COMPRESSION, which predictably yields input + 10 bytes.
             compressed.clear();
@@ -212,5 +254,43 @@ mod tests {
         assert!(!without.ends_with(&EMPTY_GZIP_BLOCK));
         // Both decompress to the same payload.
         assert_eq!(decompress_all(&without).unwrap(), payload);
+    }
+
+    /// The deflater changes the block's bytes and nothing else about the file.
+    ///
+    /// The GKL path's own agreement with the reference is measured where a GKL oracle exists,
+    /// which is `gkl-deflate`'s suites and `gatk-rs`'s goldens; what is asserted here is that this
+    /// writer frames what that crate produced, and that the framing is otherwise untouched.
+    #[test]
+    fn the_gkl_deflater_frames_gkl_bytes_and_changes_nothing_else() {
+        // Text rather than random bytes: the two implementations agree on incompressible input.
+        let payload: Vec<u8> = std::iter::repeat_n(&b"chr1\t100\t.\tA\tC\t.\t.\t.\n"[..], 40)
+            .flatten()
+            .copied()
+            .collect();
+
+        let mut jdk = BgzfWriter::new(Vec::new());
+        jdk.write_all(&payload).unwrap();
+        let jdk = jdk.into_inner().unwrap();
+
+        let mut gkl =
+            BgzfWriter::with_deflater(Vec::new(), DEFAULT_COMPRESSION_LEVEL, Deflater::Gkl);
+        gkl.write_all(&payload).unwrap();
+        let gkl = gkl.into_inner().unwrap();
+
+        assert_ne!(jdk, gkl, "the two deflaters do not agree on this payload");
+        assert_eq!(decompress_all(&jdk).unwrap(), payload);
+        assert_eq!(decompress_all(&gkl).unwrap(), payload);
+        // The block's payload is what `gkl-deflate` produced, framed: the header, the CRC and the
+        // uncompressed length are the format's and are not the deflater's to change.
+        let deflated = gkl_deflate::deflate_gkl(&payload, DEFAULT_COMPRESSION_LEVEL as usize);
+        let framed = BLOCK_HEADER_LENGTH + deflated.len() + BLOCK_FOOTER_LENGTH;
+        assert_eq!(
+            &gkl[BLOCK_HEADER_LENGTH..BLOCK_HEADER_LENGTH + deflated.len()],
+            &deflated[..]
+        );
+        assert_eq!(&gkl[framed..], &EMPTY_GZIP_BLOCK[..]);
+        // Both files end with the terminator, and only the middle differs.
+        assert!(jdk.ends_with(&EMPTY_GZIP_BLOCK));
     }
 }

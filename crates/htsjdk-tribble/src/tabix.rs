@@ -36,6 +36,7 @@
 
 use htsjdk_bam::bin::region_to_bin;
 use htsjdk_bam::index::{BinningIndexBuilder, Chunk, IndexContent};
+use htsjdk_bgzf::Deflater;
 
 /// `TabixFormat`'s flag bits.
 pub const ZERO_BASED: i32 = 0x10000;
@@ -355,8 +356,21 @@ impl TabixIndex {
     /// built with a null path, which takes the default compression level. The terminator block is
     /// part of the file: `close` writes it, and a reader that checks termination refuses a file
     /// without it.
+    ///
+    /// The deflater is htsjdk's own, which is the JDK's. A caller running under GATK writes the
+    /// same body through [`Self::write_with`], because GATK replaces the static factory and every
+    /// byte after the framing differs.
     pub fn write(&self) -> Vec<u8> {
-        let mut writer = htsjdk_bgzf::BgzfWriter::new(Vec::new());
+        self.write_with(Deflater::Jdk)
+    }
+
+    /// The same file with the deflater named. See [`htsjdk_bgzf::Deflater`].
+    pub fn write_with(&self, deflater: Deflater) -> Vec<u8> {
+        let mut writer = htsjdk_bgzf::BgzfWriter::with_deflater(
+            Vec::new(),
+            htsjdk_bgzf::DEFAULT_COMPRESSION_LEVEL,
+            deflater,
+        );
         std::io::Write::write_all(&mut writer, &self.write_body()).expect("a vector never fails");
         writer.into_inner().expect("a vector never fails")
     }

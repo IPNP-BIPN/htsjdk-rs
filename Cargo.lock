@@ -295,6 +295,7 @@ name = "htsjdk-bgzf"
 version = "0.0.0"
 dependencies = [
  "flate2",
+ "gkl-deflate",
  "libz-sys",
  "md-5",
  "rapidgzip-core",

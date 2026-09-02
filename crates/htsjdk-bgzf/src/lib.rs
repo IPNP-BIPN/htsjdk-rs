@@ -16,7 +16,7 @@ mod write;
 
 pub use read::{decompress_all, BgzfError, BgzfReader, DecompressedBlock};
 pub use termination::{check_termination, FileTermination};
-pub use write::BgzfWriter;
+pub use write::{BgzfWriter, Deflater};
 
 // Constants transcribed from BlockCompressedStreamConstants.
 pub const BLOCK_HEADER_LENGTH: usize = 18;
