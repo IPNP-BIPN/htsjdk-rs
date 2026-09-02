@@ -8,8 +8,10 @@ description = "Port of htsjdk's Tribble feature codecs"
 
 [dependencies]
 htsjdk-bam = { path = "../htsjdk-bam" }
+# The tabix index is written INSIDE a BGZF stream, so the compression is part of the format and
+# not of the caller's plumbing.
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 flate2.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
-htsjdk-bgzf = { path = "../htsjdk-bgzf" }

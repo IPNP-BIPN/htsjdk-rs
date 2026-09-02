@@ -46,6 +46,7 @@ Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
 | JVM `%f` / `%e` number formatting | **99.85%** over 127,803 doubles; **100%** for `%.3e` and below 6.9e14, decision 0017 |
 | Whole VCF files (`VariantContextWriter`) | **byte-identical**, 7 goldens, decision 0019 |
 | Tribble index | **byte-identical**, both layouts, read and written: 5 suites (`tribble-index`, `tribble-index-write`, `tribble-bed`, `tribble-interval-list`, `tribble-vcf-candecode`) |
+| Tabix index (`.tbi`) | **byte-identical**, written: 19 feature streams as body and as block-compressed file (`tabix-index`) |
 | CRAM (container model, codecs, negotiation, CRAI) | **byte-identical**, 27 suites; CRAM 3.1 is the extension surface of decision 0039 |
 
 ## Throughput
