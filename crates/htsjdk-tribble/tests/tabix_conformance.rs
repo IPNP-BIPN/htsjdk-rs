@@ -9,7 +9,8 @@
 //! record's in the harness. It cannot be composed here, so [`FeatureRef::description`] carries it
 //! and this test supplies the harness's text; the wrapper around it is what is compared.
 //!
-//! While the suite is `golden-pending` the dump is named by `TABIX_INDEX_DUMP`.
+//! The golden is committed and re-derived by the `tabix-index` suite on every run; the dump can
+//! still be overridden with an environment variable while a harness change is being checked.
 
 use htsjdk_tribble::tabix::{FeatureRef, TabixFormat, TabixIndexCreator};
 
@@ -195,14 +196,19 @@ fn build(
 
 #[test]
 fn every_stream_indexes_as_the_reference_indexes_it() {
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `TABIX_INDEX_DUMP` still overrides it, which is how a harness change is checked before
+    // CI sees it.
     let dump = match std::env::var("TABIX_INDEX_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by TABIX_INDEX_DUMP"),
         Err(_) => {
-            println!(
-                "skipped: the tabix-index golden is still pending. Run the suite and point \
-                 TABIX_INDEX_DUMP at tools/conformance/pending/tabix-index.TabixIndexDump.txt"
-            );
-            return;
+            let golden = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/data/tabix_index.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut flate2::read::GzDecoder::new(file), &mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 
