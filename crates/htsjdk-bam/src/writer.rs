@@ -15,7 +15,7 @@
 
 use std::io::{self, Write};
 
-use htsjdk_bgzf::BgzfWriter;
+use htsjdk_bgzf::{BgzfWriter, Deflater, DEFAULT_COMPRESSION_LEVEL};
 
 use crate::bin::BIN_GENOMIC_SPAN;
 use crate::header::SamHeader;
@@ -110,8 +110,23 @@ fn stamp_sort_order(header: &SamHeader) -> SamHeader {
 
 impl<W: Write> BamWriter<W> {
     /// `BAMFileWriter.writeHeader`: magic, header text, then the binary dictionary.
+    ///
+    /// The BGZF underneath takes htsjdk's own defaults: the JDK deflater at level five. A caller
+    /// running under GATK writes the same records through [`Self::with_compression`], because
+    /// GATK replaces the static deflater factory and `GATKConfig` sets the level to two.
     pub fn new(inner: W, header: &SamHeader) -> io::Result<Self> {
-        let mut bgzf = BgzfWriter::new(inner);
+        Self::with_compression(inner, header, DEFAULT_COMPRESSION_LEVEL, Deflater::Jdk)
+    }
+
+    /// The same writer with the BGZF compression named, which is the only thing that differs
+    /// between a file htsjdk writes and the same file written by GATK.
+    pub fn with_compression(
+        inner: W,
+        header: &SamHeader,
+        level: u32,
+        deflater: Deflater,
+    ) -> io::Result<Self> {
+        let mut bgzf = BgzfWriter::with_deflater(inner, level, deflater);
         // `SAMFileWriterImpl.setHeader` stamps the sort order onto the header before writing it,
         // defaulting to `unsorted`, and only then encodes -- with the version REPLACED, which is
         // the half `write_bam_header_block` does not do. See the `bam-header-version` golden.
@@ -334,5 +349,40 @@ mod tests {
             u16::from_le_bytes(plain2[q + 14..q + 16].try_into().unwrap()),
             0
         );
+    }
+
+    /// The compression is the only difference between a file htsjdk writes and GATK's own.
+    ///
+    /// The two deflaters' agreement with the reference is measured where each has an oracle:
+    /// `gkl-deflate`'s suites and `gatk-rs`'s goldens. What is asserted here is that this writer
+    /// hands the choice through and changes nothing else about the file -- the header, the records
+    /// and the terminator are the format's.
+    #[test]
+    fn the_compression_reaches_the_blocks_and_nothing_else() {
+        let header = header();
+        let record = BamRecord {
+            read_name: "r1".to_string(),
+            reference_index: 0,
+            alignment_start: 100,
+            ..BamRecord::default()
+        };
+
+        let mut jdk = BamWriter::new(Vec::new(), &header).unwrap();
+        jdk.write(&record).unwrap();
+        let jdk = jdk.finish().unwrap();
+
+        // Level TWO with GKL is the pair a real `gatk` run writes, and it is igzip's, so a build
+        // without ISA-L refuses rather than answering with zlib's bytes.
+        let mut gatk = BamWriter::with_compression(Vec::new(), &header, 5, Deflater::Gkl).unwrap();
+        gatk.write(&record).unwrap();
+        let gatk = gatk.finish().unwrap();
+
+        // The two files decompress to the same bytes and are not the same file.
+        let (a, b) = (
+            htsjdk_bgzf::decompress_all(&jdk).unwrap(),
+            htsjdk_bgzf::decompress_all(&gatk).unwrap(),
+        );
+        assert_eq!(a, b, "the records are the records whatever compressed them");
+        assert!(jdk.starts_with(&[0x1f, 0x8b]) && gatk.starts_with(&[0x1f, 0x8b]));
     }
 }
