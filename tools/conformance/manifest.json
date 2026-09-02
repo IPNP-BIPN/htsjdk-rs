@@ -458,7 +458,7 @@
     {
       "id": "tabix-index",
       "title": "TabixIndexCreator, whose chunk is closed by the feature after it",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/tabix-conformance",
       "why": "A block-compressed feature file gets a tabix index and a plain one gets a Tribble index, and gatk-rs writes only the second: the last row of IndexFeatureFile's covering array is the reference writing a .tbi where the port refuses (IPNP-BIPN/gatk-rs#1030). The class is htsjdk's and half of it is here already, since the creator drives the same BinningIndexBuilder a .bai is built with. What is not is the half that decides the layout: a feature cannot be indexed until the NEXT one arrives, because the next feature's start is what closes the previous one's chunk; the bin comes from regionToBin(start - 1, end) because getIndexingBin returns null; a feature with no end is one base for the bin and a SHIFTED window for the linear index; and the name block counts its null terminators. Each case is dumped twice, as the body and as the block-compressed file, so the composition is pinned as well as the arithmetic.",
       "compare": {
@@ -467,7 +467,7 @@
       "cases": [
         {
           "dump": "TabixIndexDump",
-          "golden": null
+          "golden": "crates/htsjdk-tribble/tests/data/tabix_index.txt.gz"
         }
       ]
     },
