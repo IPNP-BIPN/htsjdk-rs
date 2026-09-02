@@ -6,10 +6,21 @@ license.workspace = true
 repository.workspace = true
 description = "BGZF codec matching htsjdk's BlockCompressedOutputStream byte for byte"
 
+[features]
+# Forwards `gkl-deflate/isal`, which is what `Deflater::Gkl` needs at levels 1 and 2. Off by
+# default: it links ISA-L and therefore wants nasm or yasm at build time. Without it those two
+# levels refuse rather than answer with zlib's bytes, which is `gkl-deflate`'s own behaviour.
+gkl-igzip = ["gkl-deflate/isal"]
+
 [dependencies]
 # The deflater is a choice the FORMAT does not make: GATK replaces htsjdk's static factory with
 # Intel's GKL, so a writer that knew only the JDK's could not reproduce anything GATK writes.
-gkl-deflate = { path = "../gkl-deflate" }
+#
+# WITHOUT default features on purpose. `gkl-deflate`'s `isal` feature links ISA-L, which needs an
+# assembler at build time, and it exists only for levels 1 and 2 -- the two GKL does not route
+# through zlib. BGZF's default is 5, so every caller here would pay a C toolchain for a pair of
+# levels it never asks for. `gkl-igzip` below turns it back on for one that does.
+gkl-deflate = { path = "../gkl-deflate", default-features = false }
 flate2.workspace = true
 libz-sys.workspace = true
 

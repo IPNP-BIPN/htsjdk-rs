@@ -32,6 +32,11 @@ pub enum Deflater {
     Jdk,
     /// Intel's GKL, which GATK installs as the default factory: zlib 1.2.13 carrying Intel's
     /// `deflate_medium` patch above level two, and ISA-L igzip at one and two.
+    ///
+    /// Levels 1 and 2 need the `gkl-igzip` feature, which links ISA-L and therefore wants an
+    /// assembler at build time. Without it they refuse rather than answer with zlib's bytes, which
+    /// is `gkl-deflate`'s own behaviour and the reason the feature is off by default: BGZF's level
+    /// is 5, so nothing here pays a C toolchain for a pair of levels it never asks for.
     Gkl,
 }
 
