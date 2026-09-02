@@ -5,8 +5,10 @@
 //! directory rather than keeping a second copy of the case table: a case added to the harness is
 //! measured here without a line changing on this side.
 //!
-//! While the suite is `golden-pending` the dump is named by `SAMFILES_DUMP` (decision 0008).
+//! The golden is committed and re-derived by the `samfiles` suite on every run; the dump can still
+//! be overridden with an environment variable while a harness change is being checked.
 
+use std::io::Read;
 use std::path::Path;
 
 use htsjdk_bam::sam_files::find_index;
@@ -51,18 +53,19 @@ fn rel(root: &Path, answer: Option<&Path>) -> String {
 
 #[test]
 fn every_layout_finds_what_the_reference_finds() {
-    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/sam_files.txt.gz");
+    // The golden was produced by the pinned container on real x86-64 and is re-derived on every
+    // run; `SAMFILES_DUMP` still overrides it, which is how a harness change is checked before CI
+    // sees it.
     let dump = match std::env::var("SAMFILES_DUMP") {
         Ok(path) => std::fs::read_to_string(path).expect("the dump named by SAMFILES_DUMP"),
-        Err(_) if golden.exists() => {
-            panic!("the golden landed: read it here instead of skipping, and drop this branch")
-        }
         Err(_) => {
-            println!(
-                "skipped: the samfiles golden is still pending. Run the suite and point \
-                 SAMFILES_DUMP at tools/conformance/pending/samfiles.SamFilesDump.txt"
-            );
-            return;
+            let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/sam_files.txt.gz");
+            let file = std::fs::File::open(&golden).expect("the committed golden");
+            let mut text = String::new();
+            flate2::read::GzDecoder::new(file)
+                .read_to_string(&mut text)
+                .expect("the golden decompresses");
+            text
         }
     };
 

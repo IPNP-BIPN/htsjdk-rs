@@ -442,7 +442,7 @@
     {
       "id": "samfiles",
       "title": "SamFiles.findIndex, whose order is replace before append",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/samfiles-conformance",
       "why": "A consumer that looks for reads.bam.bai only answers an interval query with zero records when htsjdk wrote reads.bai, which is how gatk-rs's CountReads lost two reads of a covering-array row (IPNP-BIPN/gatk-rs#1020). Both names are htsjdk's and the order between them is not the one a summary suggests: the extension is REPLACED before it is APPENDED, so a .csi beside reads.bam beats a reads.bam.bai beside the same file; a CRAM has no replaced .csi at all; a DIRECTORY named like an index is stepped over because Files.isRegularFile refuses it; and finding nothing resolves the path's symbolic links and searches again at the real location. Each row carries its layout as well as its answer, so the port rebuilds the directory from the dump rather than keeping a second copy of the table.",
       "compare": {
@@ -451,7 +451,7 @@
       "cases": [
         {
           "dump": "SamFilesDump",
-          "golden": null
+          "golden": "crates/htsjdk-bam/tests/data/sam_files.txt.gz"
         }
       ]
     },
