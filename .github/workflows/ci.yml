@@ -221,56 +221,52 @@ jobs:
             suites: "sam-file validator bai sbi build-index"
           - group: oracle-backed
             index: "6/17"
-            slug: "textual-index-interval-list-vcf-header-vcf-header-parse-vcf-header-lines"
-            suites: "textual-index interval-list vcf-header vcf-header-parse vcf-header-lines"
+            slug: "samfiles-textual-index-interval-list-vcf-header-vcf-header-parse"
+            suites: "samfiles textual-index interval-list vcf-header vcf-header-parse"
           - group: oracle-backed
             index: "7/17"
-            slug: "vcf-record-vcf-file-vcf-record-parse-vcf-genotype-parse-vcf-read"
-            suites: "vcf-record vcf-file vcf-record-parse vcf-genotype-parse vcf-read"
+            slug: "vcf-header-lines-vcf-record-vcf-file-vcf-record-parse-vcf-genotype-parse"
+            suites: "vcf-header-lines vcf-record vcf-file vcf-record-parse vcf-genotype-parse"
           - group: oracle-backed
             index: "8/17"
-            slug: "vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type-vcf-attribute-type"
-            suites: "vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type vcf-attribute-type"
+            slug: "vcf-read-vcf-index-on-the-fly-vcf-genotype-likelihoods-vcf-chromosome-counts-vcf-genotype-type"
+            suites: "vcf-read vcf-index-on-the-fly vcf-genotype-likelihoods vcf-chromosome-counts vcf-genotype-type"
           - group: oracle-backed
             index: "9/17"
-            slug: "rg-checksum-cigar-clip-cigar-clip-3prime-mateinfo-format"
-            suites: "rg-checksum cigar-clip cigar-clip-3prime mateinfo format"
+            slug: "vcf-attribute-type-rg-checksum-cigar-clip-cigar-clip-3prime-mateinfo"
+            suites: "vcf-attribute-type rg-checksum cigar-clip cigar-clip-3prime mateinfo"
           - group: oracle-backed
             index: "10/17"
-            slug: "percentile-fastmath-exp-gamma-erf-normal-saddle-point-binomial-inverse"
-            suites: "percentile fastmath-exp gamma-erf-normal saddle-point binomial-inverse"
+            slug: "format-percentile-fastmath-exp-gamma-erf-normal-saddle-point"
+            suites: "format percentile fastmath-exp gamma-erf-normal saddle-point"
           - group: oracle-backed
             index: "11/17"
-            slug: "variant-comparator-smart-merge-headers-tribble-index-tribble-index-write-cram-varint"
-            suites: "variant-comparator smart-merge-headers tribble-index tribble-index-write cram-varint"
+            slug: "binomial-inverse-variant-comparator-smart-merge-headers-tribble-index-tribble-index-write"
+            suites: "binomial-inverse variant-comparator smart-merge-headers tribble-index tribble-index-write"
           - group: oracle-backed
             index: "12/17"
-            slug: "cram-bit-stream-cram-core-codecs-cram-huffman-cram-external-codecs-cram-golomb"
-            suites: "cram-bit-stream cram-core-codecs cram-huffman cram-external-codecs cram-golomb"
+            slug: "cram-varint-cram-bit-stream-cram-core-codecs-cram-huffman-cram-external-codecs"
+            suites: "cram-varint cram-bit-stream cram-core-codecs cram-huffman cram-external-codecs"
           - group: oracle-backed
             index: "13/17"
-            slug: "cram-encoding-factory-cram-compression-header-cram-record-flags-cram-slice-blocks-cram-record-read"
-            suites: "cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks cram-record-read"
+            slug: "cram-golomb-cram-encoding-factory-cram-compression-header-cram-record-flags-cram-slice-blocks"
+            suites: "cram-golomb cram-encoding-factory cram-compression-header cram-record-flags cram-slice-blocks"
           - group: oracle-backed
             index: "14/17"
-            slug: "cram-record-write-cram-crai-cram-negotiation-cram-file-read-cram-container"
-            suites: "cram-record-write cram-crai cram-negotiation cram-file-read cram-container"
+            slug: "cram-record-read-cram-record-write-cram-crai-cram-negotiation-cram-file-read"
+            suites: "cram-record-read cram-record-write cram-crai cram-negotiation cram-file-read"
           - group: oracle-backed
             index: "15/17"
-            slug: "cram-block-cram-rans-cram-rans-order1-cram-preservation-map-cram-substitution-matrix"
-            suites: "cram-block cram-rans cram-rans-order1 cram-preservation-map cram-substitution-matrix"
+            slug: "cram-container-cram-block-cram-rans-cram-rans-order1-cram-preservation-map"
+            suites: "cram-container cram-block cram-rans cram-rans-order1 cram-preservation-map"
           - group: oracle-backed
             index: "16/17"
-            slug: "cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features-cram-record-cigar"
-            suites: "cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features cram-record-cigar"
+            slug: "cram-substitution-matrix-cram-encoding-map-cram-tag-encoding-map-cram-slice-header-cram-read-features"
+            suites: "cram-substitution-matrix cram-encoding-map cram-tag-encoding-map cram-slice-header cram-read-features"
           - group: oracle-backed
             index: "17/17"
-            slug: "cram-restore-bases-mersenne-twister"
-            suites: "cram-restore-bases mersenne-twister"
-          - group: golden-pending
-            index: "1/1"
-            slug: "samfiles"
-            suites: "samfiles"
+            slug: "cram-record-cigar-cram-restore-bases-mersenne-twister"
+            suites: "cram-record-cigar cram-restore-bases mersenne-twister"
     steps:
       - uses: actions/checkout@v7
 
