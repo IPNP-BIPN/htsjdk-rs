@@ -49,6 +49,12 @@ pub struct BgzfWriter<W: Write> {
     finished: bool,
     /// Byte offset of the block currently being filled, `mBlockAddress` in htsjdk.
     block_address: u64,
+    /// The deflated block, reused between blocks: `compressedBuffer` in htsjdk, allocated once in
+    /// the constructor rather than once per block.
+    compressed: Vec<u8>,
+    /// The zlib deflater, reused and reset between blocks, which is htsjdk's `deflater` field.
+    /// Built on first use because the GKL path never touches it.
+    deflater_state: Option<Compress>,
 }
 
 impl<W: Write> BgzfWriter<W> {
@@ -67,6 +73,8 @@ impl<W: Write> BgzfWriter<W> {
         Self {
             inner,
             buffer: Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE),
+            compressed: Vec::with_capacity(COMPRESSED_BUFFER_SIZE),
+            deflater_state: None,
             level,
             deflater,
             finished: false,
@@ -90,12 +98,22 @@ impl<W: Write> BgzfWriter<W> {
             return Ok(0);
         }
 
-        // Capacity is the bound, matching Java's fixed-size output array.
-        let mut compressed = Vec::with_capacity(COMPRESSED_BUFFER_SIZE);
+        // Capacity is the bound, matching Java's fixed-size output array. The vector itself is
+        // reused between blocks: `BlockCompressedOutputStream` allocates `compressedBuffer` once
+        // in its constructor, and a stream is a long run of blocks.
+        let mut compressed = std::mem::take(&mut self.compressed);
+        compressed.clear();
+        compressed.reserve(COMPRESSED_BUFFER_SIZE);
         let fits = match self.deflater {
             Deflater::Jdk => {
-                let mut c = Compress::new(Compression::new(self.level), false);
-                let status = c
+                // One deflater for the life of the stream, reset between blocks, which is what
+                // htsjdk's `deflater` field is. Constructing one per block allocates zlib's window
+                // and its hash tables every time -- a quarter of a megabyte at level 5.
+                let compressor = self
+                    .deflater_state
+                    .get_or_insert_with(|| Compress::new(Compression::new(self.level), false));
+                compressor.reset();
+                let status = compressor
                     .compress_vec(&self.buffer, &mut compressed, FlushCompress::Finish)
                     .map_err(io::Error::other)?;
                 status == Status::StreamEnd
@@ -140,6 +158,7 @@ impl<W: Write> BgzfWriter<W> {
         crc.update(&self.buffer);
 
         let total = self.write_gzip_block(&compressed, self.buffer.len(), crc.sum())?;
+        self.compressed = compressed;
         self.buffer.clear();
         self.block_address += total as u64;
         Ok(total)
