@@ -57,7 +57,17 @@ pub fn base_to_nibble(base: u8) -> Option<u8> {
 /// zero is `=` when read back, so it is not a neutral padding value; it is only invisible
 /// because the record's `l_seq` says to stop before it.
 pub fn bytes_to_compressed_bases(read_bases: &[u8]) -> Result<Vec<u8>, BadBase> {
-    let mut out = vec![0u8; read_bases.len().div_ceil(2)];
+    let mut out = Vec::with_capacity(read_bases.len().div_ceil(2));
+    write_compressed_bases(read_bases, &mut out)?;
+    Ok(out)
+}
+
+/// The same packing, appended to a buffer the caller owns.
+///
+/// An encoder writes these bytes into the record it is building and drops them immediately after,
+/// so the `Vec` above is a per-record allocation with no reader. This is the same loop without it,
+/// and the refusal is identical: the first base that is not one of the sixteen, with its index.
+pub fn write_compressed_bases(read_bases: &[u8], out: &mut Vec<u8>) -> Result<(), BadBase> {
     for (i, pair) in read_bases.chunks(2).enumerate() {
         let hi = base_to_nibble(pair[0]).ok_or(BadBase {
             base: pair[0],
@@ -70,9 +80,9 @@ pub fn bytes_to_compressed_bases(read_bases: &[u8]) -> Result<Vec<u8>, BadBase> 
             })?,
             None => 0,
         };
-        out[i] = (hi << 4) | lo;
+        out.push((hi << 4) | lo);
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `SAMUtils.compressedBasesToBytes`.

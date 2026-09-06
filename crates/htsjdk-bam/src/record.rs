@@ -169,7 +169,27 @@ impl BamRecord {
     /// Returns the record's on-disk bytes including its own leading `block_size` field, which
     /// is how records appear in a BAM stream.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
-        self.encode_inner(None)
+        let mut out = Vec::new();
+        self.encode_inner(None, &mut out)?;
+        Ok(out)
+    }
+
+    /// `encode`, appending to a buffer the caller owns.
+    ///
+    /// A writer encodes millions of records into one stream, and the `Vec` per record is pure
+    /// overhead there: this is the same bytes without it. `BAMRecordCodec` writes into the
+    /// stream's own buffer for the same reason.
+    pub fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        self.encode_inner(None, out)
+    }
+
+    /// [`Self::encode_with_bin`], appending to a buffer the caller owns.
+    pub fn encode_with_bin_into(
+        &self,
+        index_bin: i32,
+        out: &mut Vec<u8>,
+    ) -> Result<(), EncodeError> {
+        self.encode_inner(Some(index_bin), out)
     }
 
     /// `encode`, with the indexing bin forced rather than computed.
@@ -179,14 +199,20 @@ impl BamRecord {
     /// not carry, so the writer decides and passes the answer in. See
     /// [`crate::writer::BamWriter`].
     pub fn encode_with_bin(&self, index_bin: i32) -> Result<Vec<u8>, EncodeError> {
-        self.encode_inner(Some(index_bin))
+        let mut out = Vec::new();
+        self.encode_inner(Some(index_bin), &mut out)?;
+        Ok(out)
     }
 
-    fn encode_inner(&self, forced_bin: Option<i32>) -> Result<Vec<u8>, EncodeError> {
+    fn encode_inner(&self, forced_bin: Option<i32>, out: &mut Vec<u8>) -> Result<(), EncodeError> {
+        let start = out.len();
         let read_length = self.read_length();
 
         // If cigar is too long, put into CG tag and replace with sentinel value.
         let cigar_switcharoo = self.cigar.num_elements() > MAX_CIGAR_OPERATORS;
+        // Borrowed unless the CG switcharoo needs a rewritten pair. Cloning the tags per record
+        // was cloning every tag STRING of every record for the sake of a branch almost nothing
+        // takes: a long-cigar record is rare and a `Cow` costs it nothing.
         let (cigar_to_write, tags) = if cigar_switcharoo {
             let mut tags = self.tags.clone();
             let encoded: Vec<i32> = self.cigar.encode().into_iter().map(|v| v as i32).collect();
@@ -199,9 +225,15 @@ impl BamRecord {
                     unsigned: false,
                 },
             );
-            (make_sentinel_cigar(&self.cigar)?, tags)
+            (
+                std::borrow::Cow::Owned(make_sentinel_cigar(&self.cigar)?),
+                std::borrow::Cow::Owned(tags),
+            )
         } else {
-            (self.cigar.clone(), self.tags.clone())
+            (
+                std::borrow::Cow::Borrowed(&self.cigar),
+                std::borrow::Cow::Borrowed(&self.tags),
+            )
         };
 
         // `getReadNameLength()` is the character count; the +1 is the null terminator.
@@ -229,7 +261,7 @@ impl BamRecord {
             return Err(EncodeError::ReadNameTooLong(read_name_len));
         }
 
-        let mut out = Vec::with_capacity(4 + block_size);
+        out.reserve(4 + block_size);
         out.extend_from_slice(&(block_size as i32).to_le_bytes());
         out.extend_from_slice(&self.reference_index.to_le_bytes());
         // 0-based!!
@@ -253,26 +285,26 @@ impl BamRecord {
 
         out.extend(self.read_name.encode_utf16().map(|u| (u & 0xFF) as u8));
         out.push(0);
-        for element in cigar_to_write.encode() {
-            out.extend_from_slice(&element.to_le_bytes());
+        // Straight into the buffer: `encode()` and `bytes_to_compressed_bases` each allocated a
+        // `Vec` per record for bytes that are written and dropped in the same breath.
+        for element in cigar_to_write.elements.iter() {
+            out.extend_from_slice(&((element.length << 4) | element.op.to_binary()).to_le_bytes());
         }
-        out.extend_from_slice(
-            &bases::bytes_to_compressed_bases(&self.read_bases).map_err(EncodeError::BadBase)?,
-        );
+        bases::write_compressed_bases(&self.read_bases, out).map_err(EncodeError::BadBase)?;
         // An absent quality string becomes 0xFF repeated, which is how SAM's `*` is stored.
         if self.base_qualities.is_empty() {
             out.extend(std::iter::repeat_n(0xFFu8, read_length));
         } else {
             out.extend_from_slice(&self.base_qualities);
         }
-        tags.write(&mut out)?;
+        tags.write(out)?;
 
         debug_assert_eq!(
-            out.len(),
+            out.len() - start,
             4 + block_size,
             "block_size must describe the bytes actually written"
         );
-        Ok(out)
+        Ok(())
     }
 
     /// `BAMRecordCodec.decode`.
@@ -323,21 +355,35 @@ impl BamRecord {
         need(p, read_name_length)?;
         // The stored length includes the null terminator, which is not part of the name.
         let name_bytes = &input[p..p + read_name_length.saturating_sub(1)];
-        let read_name: String = name_bytes.iter().map(|&b| b as char).collect();
+        // htsjdk's `new String(bytes, 0, len)` under the default charset maps each byte to the
+        // char of that code point, so a byte above 127 becomes a two-byte UTF-8 sequence. Read
+        // names are ASCII in every file anyone has, and ASCII bytes ARE their own UTF-8: the fast
+        // path is the same string without the per-character encode.
+        let read_name: String = if name_bytes.is_ascii() {
+            // Checked immediately above, so this cannot fail; `from_utf8` would re-scan.
+            String::from_utf8(name_bytes.to_vec()).expect("ascii is utf-8")
+        } else {
+            name_bytes.iter().map(|&b| b as char).collect()
+        };
         p += read_name_length;
 
         need(p, cigar_len * CIGAR_SIZE_MULTIPLIER)?;
-        let mut binary_cigar = Vec::with_capacity(cigar_len);
+        // Decoded straight from the bytes: the intermediate `Vec<u32>` was one allocation per
+        // record for a list read once.
+        let mut elements = Vec::with_capacity(cigar_len);
         for i in 0..cigar_len {
             let o = p + i * 4;
-            binary_cigar.push(u32::from_le_bytes(input[o..o + 4].try_into().unwrap()));
+            let value = u32::from_le_bytes(input[o..o + 4].try_into().unwrap());
+            match Op::from_binary(value & 0x0F) {
+                Some(op) => elements.push(CigarElement {
+                    length: value >> 4,
+                    op,
+                }),
+                None => return Err(DecodeError::UnknownCigarOperator(value & 0x0F)),
+            }
         }
         p += cigar_len * CIGAR_SIZE_MULTIPLIER;
-        let cigar = Cigar::decode(&binary_cigar).ok_or_else(|| {
-            DecodeError::UnknownCigarOperator(
-                binary_cigar.iter().find(|v| *v & 0x0F > 8).unwrap() & 0x0F,
-            )
-        })?;
+        let cigar = Cigar::new(elements);
 
         let packed = read_len.div_ceil(2);
         need(p, packed)?;
