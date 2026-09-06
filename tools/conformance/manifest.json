@@ -205,9 +205,9 @@
     {
       "id": "indexed-fasta",
       "title": "Reading a FASTA through its .fai",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/bam-conformance",
-      "why": "A query is answered by SEEKING, not by scanning: the first base's byte offset is computed from the .fai's bases-per-line and bytes-per-line, and every line boundary the query crosses is a jump over a terminator whose length is the difference between those two columns. Nothing ever looks for a newline, so a reader that scans for one agrees with htsjdk on well-formed files and disagrees on the rest, and a CRLF file is read correctly only because the index says the terminator is two bytes. The bounds are htsjdk's own and one of them looks wrong: the malformed-query test is start > stop + 1, so an EMPTY query is legal and answers with no bases, while start > stop by two is refused. Past the end of a contig is refused by the INDEX rather than by the read, so it is the .fai's size column that decides, not the file's length. This suite exists because gatk-engine reached a FASTA through noodles-fasta, and what a GATK tool sees is htsjdk's reader.",
+      "why": "Re-derived in the pinned container on a real x86-64 runner, as the candidate artefact of run 34050428554, and identical to the local smoke run. A query is answered by SEEKING, not by scanning: the first base's byte offset is computed from the .fai's bases-per-line and bytes-per-line, and every line boundary the query crosses is a jump over a terminator whose length is the difference between those two columns. Nothing ever looks for a newline, so a reader that scans for one agrees with htsjdk on well-formed files and disagrees on the rest, and a CRLF file is read correctly only because the index says the terminator is two bytes. The bounds are htsjdk's own and one of them looks wrong: the malformed-query test is start > stop + 1, so an EMPTY query is legal and answers with no bases, while start > stop by two is refused. Past the end of a contig is refused by the INDEX rather than by the read, so it is the .fai's size column that decides, not the file's length. This suite exists because gatk-engine reached a FASTA through noodles-fasta, and what a GATK tool sees is htsjdk's reader.",
       "compare": {
         "mode": "lines"
       },
@@ -632,9 +632,9 @@
     {
       "id": "vcf-lazy-genotypes",
       "title": "What the genotype columns are written from, and what changes it",
-      "status": "golden-pending",
+      "status": "oracle-backed",
       "harness": "tools/vcf-conformance",
-      "why": "VCFCodec never parses a line's genotype columns: it hands the substring to a LazyGenotypesContext, and VCFEncoder writes that text back VERBATIM -- the FORMAT column with it -- for any record nothing has looked at. So a copied record keeps the FILE's key order while a touched one gets the computed one, GT first and the rest sorted, and the two differ on any file whose FORMAT is not already in that order. What makes it a trap rather than a detail is that a READ is enough: decode() ends with unparsedGenotypeData = null, and every accessor that reaches a genotype runs it, so looking at a genotype changes the bytes of the next write. size() and isEmpty() are the exceptions, answered from the unparsed count. The suite measures all three states -- copied, read, rebuilt -- on a record whose FORMAT is out of order, on one that is already in order, on one with a trailing missing field the recomputed path trims, and on one whose FORMAT is a single key.",
+      "why": "Re-derived in the pinned container on a real x86-64 runner, as the candidate artefact of run 34050428554, and identical to the local smoke run. VCFCodec never parses a line's genotype columns: it hands the substring to a LazyGenotypesContext, and VCFEncoder writes that text back VERBATIM -- the FORMAT column with it -- for any record nothing has looked at. So a copied record keeps the FILE's key order while a touched one gets the computed one, GT first and the rest sorted, and the two differ on any file whose FORMAT is not already in that order. What makes it a trap rather than a detail is that a READ is enough: decode() ends with unparsedGenotypeData = null, and every accessor that reaches a genotype runs it, so looking at a genotype changes the bytes of the next write. size() and isEmpty() are the exceptions, answered from the unparsed count. The suite measures all three states -- copied, read, rebuilt -- on a record whose FORMAT is out of order, on one that is already in order, on one with a trailing missing field the recomputed path trims, and on one whose FORMAT is a single key.",
       "compare": {
         "mode": "lines"
       },
