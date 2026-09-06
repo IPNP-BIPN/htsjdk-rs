@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-bgzf"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "flate2",
  "gkl-deflate",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-diff"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "htsjdk-bgzf",
 ]
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "jmath"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "flate2",
 ]
