@@ -18,8 +18,14 @@ OUT="$PWD/target/benchmark"
 mkdir -p "$OUT"
 
 echo "== cross-building the port for linux/amd64"
+# One `-p` per binary, and not one build of all three: selecting binaries across the workspace
+# unifies FEATURES across it too, which pulled `gkl-deflate/isal` into a build with no assembler
+# and failed in `isal-sys`'s configure. Each package builds with the features it declares.
 docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
-  bash -c 'cargo build --release --bin bgzf-bench --bin record-bench --bin vcf-bench --target-dir /out/amd64 2>&1 | tail -1'
+  bash -c 'set -e
+    cargo build --release -p htsjdk-bgzf --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-bam --bin record-bench --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-vcf --bin vcf-bench --target-dir /out/amd64 2>&1 | tail -1'
 
 echo "== htsjdk, in the pinned container"
 docker run --rm --platform linux/amd64 \
