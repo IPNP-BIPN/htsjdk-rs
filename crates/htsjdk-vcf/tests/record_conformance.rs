@@ -237,7 +237,7 @@ fn cases() -> Vec<(String, String)> {
 
     let mut with_gts = |name: &str, gs: Vec<Genotype>| {
         let mut vc = base(&["A", "T"]);
-        vc.genotypes = gs;
+        vc.genotypes = gs.into();
         out.push((name.to_string(), enc.encode(&vc).expect(name)));
     };
 

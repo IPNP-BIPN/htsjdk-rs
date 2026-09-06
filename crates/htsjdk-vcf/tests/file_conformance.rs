@@ -115,7 +115,7 @@ fn cases() -> Vec<(String, String)> {
     g1.gq = Some(30);
     let mut g2 = Genotype::new("s2", vec![allele("A", true), allele("A", true)]);
     g2.gq = Some(40);
-    genotyped.genotypes = vec![g1, g2];
+    genotyped.genotypes = vec![g1, g2].into();
     push("genotyped", &header(true), &[genotyped]);
 
     let mut with_format = VcfHeader::new();

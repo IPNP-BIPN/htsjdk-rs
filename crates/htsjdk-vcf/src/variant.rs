@@ -13,6 +13,7 @@
 use std::collections::BTreeSet;
 
 use crate::allele::Allele;
+use crate::genotypes_context::GenotypesContext;
 use crate::jformat::{format_fixed, format_scientific};
 
 /// `CommonInfo.NO_LOG10_PERROR`, the sentinel for "no QUAL".
@@ -174,7 +175,7 @@ pub struct VariantContext {
     /// Insertion-ordered. The encoder sorts, so this order is not observable in the output; it
     /// is kept so that a divergence can be traced back to what the caller set.
     pub attributes: Vec<(String, Value)>,
-    pub genotypes: Vec<Genotype>,
+    pub genotypes: GenotypesContext,
 }
 
 impl VariantContext {
@@ -188,7 +189,7 @@ impl VariantContext {
             log10_p_error: NO_LOG10_PERROR,
             filters: None,
             attributes: Vec::new(),
-            genotypes: Vec::new(),
+            genotypes: GenotypesContext::default(),
         }
     }
 
@@ -250,7 +251,7 @@ impl VariantContext {
     pub fn calc_vcf_genotype_keys(&self, header_has_genotyping_data: bool) -> Vec<String> {
         let mut keys: BTreeSet<String> = BTreeSet::new();
         let mut saw_good_gt = false;
-        for g in &self.genotypes {
+        for g in self.genotypes.peek() {
             for (k, _) in &g.extended {
                 keys.insert(k.clone());
             }

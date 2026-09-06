@@ -163,6 +163,16 @@ impl<'a> VcfEncoder<'a> {
         self.write_info_string(&info, out);
 
         // FORMAT and the sample columns.
+        //
+        // A record read from a file and never looked at is written from the file's own text, FORMAT
+        // column included, so its key order is the INPUT's rather than the recomputed one. That is
+        // `isLazyWithData()` in the reference, and it is the difference between
+        // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222).
+        if let Some(unparsed) = vc.genotypes.unparsed() {
+            out.push('\t');
+            out.push_str(unparsed);
+            return Ok(());
+        }
         let keys = vc.calc_vcf_genotype_keys(!self.header.samples.is_empty());
         if !keys.is_empty() {
             for key in &keys {
