@@ -168,7 +168,7 @@ impl<'a> VcfEncoder<'a> {
         // column included, so its key order is the INPUT's rather than the recomputed one. That is
         // `isLazyWithData()` in the reference, and it is the difference between
         // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222).
-        if let Some(unparsed) = vc.genotypes.unparsed() {
+        if let Some(unparsed) = vc.genotypes.unparsed_for(&self.header.samples) {
             out.push('\t');
             out.push_str(unparsed);
             return Ok(());

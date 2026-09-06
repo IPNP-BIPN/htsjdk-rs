@@ -46,6 +46,7 @@
 //! is written identically either way.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::variant::Genotype;
 
@@ -59,6 +60,15 @@ pub struct GenotypesContext {
     /// `unparsedGenotypeData`, which is the FORMAT column and every sample column after it, tab
     /// separated, exactly as the line carried them.
     unparsed: Option<String>,
+    /// The sample columns that text is in the order of, which is the header of the file it came
+    /// from. Shared between every record of one file, so it costs one allocation per file.
+    ///
+    /// The text is only an answer for a writer whose header has the SAME samples in the SAME
+    /// order. htsjdk gets that for free: a writer with a different sample list reaches
+    /// `vc.getGenotype(sample)` by name, and that decodes. Here the check is explicit, because the
+    /// encoder would otherwise copy one file's columns under another file's header -- which is
+    /// exactly what `MergeVcfs` does with two inputs whose sample columns are ordered differently.
+    samples: Option<Arc<[String]>>,
     /// `loaded`. Once set, the text is no longer the record's answer.
     decoded: AtomicBool,
 }
@@ -69,15 +79,18 @@ impl GenotypesContext {
         Self {
             genotypes,
             unparsed: None,
+            samples: None,
             decoded: AtomicBool::new(true),
         }
     }
 
-    /// A context read from a file: the parsed genotypes and the text they were parsed from.
-    pub fn lazy(genotypes: Vec<Genotype>, unparsed: String) -> Self {
+    /// A context read from a file: the parsed genotypes, the text they were parsed from, and the
+    /// sample order that text is in.
+    pub fn lazy(genotypes: Vec<Genotype>, unparsed: String, samples: Arc<[String]>) -> Self {
         Self {
             genotypes,
             unparsed: Some(unparsed),
+            samples: Some(samples),
             decoded: AtomicBool::new(false),
         }
     }
@@ -88,6 +101,21 @@ impl GenotypesContext {
             None
         } else {
             self.unparsed.as_deref()
+        }
+    }
+
+    /// The text, but only for a writer whose samples are the ones it was written under.
+    ///
+    /// A record read from one file and written under another file's header has columns in the
+    /// wrong order, and copying them would put one sample's genotype in another's column. That is
+    /// not a hypothetical: `MergeVcfs` accepts inputs whose sample columns are ordered differently
+    /// and writes them under the SORTED order, and the reference reorders every column while a
+    /// verbatim copy does not.
+    pub fn unparsed_for(&self, samples: &[String]) -> Option<&str> {
+        let text = self.unparsed()?;
+        match &self.samples {
+            Some(own) if own.as_ref() == samples => Some(text),
+            _ => None,
         }
     }
 
@@ -170,6 +198,7 @@ impl Clone for GenotypesContext {
         Self {
             genotypes: self.genotypes.clone(),
             unparsed: self.unparsed.clone(),
+            samples: self.samples.clone(),
             decoded: AtomicBool::new(self.decoded.load(Ordering::Relaxed)),
         }
     }
@@ -205,6 +234,10 @@ impl<'a> IntoIterator for &'a GenotypesContext {
 mod tests {
     use super::*;
 
+    fn samples() -> Arc<[String]> {
+        Arc::from(vec!["s0".to_string()])
+    }
+
     fn genotypes() -> Vec<Genotype> {
         vec![Genotype::new("s0", Vec::new())]
     }
@@ -217,7 +250,7 @@ mod tests {
 
     #[test]
     fn a_read_context_answers_with_its_text_until_something_looks() {
-        let context = GenotypesContext::lazy(genotypes(), "GT\t0/1".to_string());
+        let context = GenotypesContext::lazy(genotypes(), "GT\t0/1".to_string(), samples());
         assert_eq!(context.unparsed(), Some("GT\t0/1"));
         // `size()` does not decode, which is the optimisation htsjdk keeps for exactly this.
         assert_eq!(context.len(), 1);
@@ -226,6 +259,20 @@ mod tests {
         // Reading the list does.
         let _ = context.first();
         assert_eq!(context.unparsed(), None);
+    }
+
+    /// The text is not an answer for a writer whose columns are in a different order.
+    #[test]
+    fn the_text_is_only_the_answer_under_its_own_sample_order() {
+        let context = GenotypesContext::lazy(genotypes(), "GT\t0/1".to_string(), samples());
+        assert_eq!(context.unparsed_for(&["s0".to_string()]), Some("GT\t0/1"));
+        assert_eq!(context.unparsed_for(&["s1".to_string()]), None);
+        assert_eq!(
+            context.unparsed_for(&["s0".to_string(), "s1".to_string()]),
+            None
+        );
+        // And asking did not decode it: the question is about the header, not the genotypes.
+        assert_eq!(context.unparsed(), Some("GT\t0/1"));
     }
 
     #[test]
@@ -237,7 +284,7 @@ mod tests {
 
     #[test]
     fn a_clone_carries_the_state_it_was_cloned_in() {
-        let context = GenotypesContext::lazy(genotypes(), "GT\t0/1".to_string());
+        let context = GenotypesContext::lazy(genotypes(), "GT\t0/1".to_string(), samples());
         let before = context.clone();
         assert_eq!(before.unparsed(), Some("GT\t0/1"));
         let _ = context.iter();
