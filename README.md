@@ -64,6 +64,40 @@ tools/benchmark/run.sh 64 3
 The figures come from the `benchmark` job, which runs it on a real x86-64 runner; a run on a
 developer machine goes through an emulated container and measures the emulator.
 
+Measured on an AMD EPYC 7763, 64 MB payloads, median of three, **after** the run asserted that
+every framed stream the two sides wrote was byte-identical on all ten keys:
+
+| operation | payload | level | htsjdk | port | ratio |
+|---|---|---:|---:|---:|---:|
+| deflate | text | 1 | 990 MB/s | 983 MB/s | 0.99x |
+| deflate | text | 5 | 332 MB/s | 389 MB/s | 1.17x |
+| deflate | random | 5 | 43.9 MB/s | 44.5 MB/s | 1.01x |
+| inflate | text | 1 | 1677 MB/s | 5292 MB/s | 3.16x |
+| inflate | text | 5 | 1685 MB/s | 2391 MB/s | 1.42x |
+| inflate | random | 5 | 310 MB/s | 334 MB/s | 1.08x |
+
+Deflate is zlib on both sides at levels above two, so the ratios near 1.0 are the honest answer:
+the port is not compressing faster, it is calling the same library with less overhead around it.
+Inflate is where the port's own code sits between the caller and zlib, and 3.16x on the
+compressible payload is what removing a per-block allocation and a per-block inflater is worth
+(#226).
+
+The two paths above BGZF, which have no htsjdk column because htsjdk's codecs write into a stream
+rather than answering with bytes:
+
+| path | throughput |
+|---|---:|
+| BAM record decode | 877 MB/s, 2,875,000 records/s |
+| BAM record encode | 197 MB/s, 646,000 records/s |
+| VCF read | 58 MB/s, 498,000 records/s |
+| VCF write, records copied through | 164 MB/s, 1,404,000 records/s |
+| VCF write, genotypes read first | 61 MB/s, 519,000 records/s |
+
+The last two rows are one number and its absence: a record nothing looked at is written from the
+file's own text, and a record whose genotypes were read is rebuilt column by column. That is
+htsjdk's `LazyGenotypesContext`, and reproducing it made copying records through 2.7x faster as a
+side effect of making it correct.
+
 ## Bit-identity contract
 
 Output is compared byte-for-byte against goldens produced by the pinned reference running in
