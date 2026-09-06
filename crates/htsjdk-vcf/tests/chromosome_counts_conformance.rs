@@ -69,7 +69,7 @@ fn filtered(mut genotype: Genotype, filter: &str) -> Genotype {
 fn build(alleles: &[Allele], genotypes: Vec<Genotype>) -> VariantContext {
     let mut vc = VariantContext::new("chr1", 100, alleles.to_vec());
     vc.stop = 100;
-    vc.genotypes = genotypes;
+    vc.genotypes = genotypes.into();
     vc
 }
 

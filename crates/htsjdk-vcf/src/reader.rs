@@ -42,6 +42,7 @@
 //! [`VcfFile::skipped`] is a field rather than a filter.
 
 use crate::genotype_parse::{parse_genotypes, GenotypeContext};
+use crate::genotypes_context::GenotypesContext;
 use crate::header::{HeaderLine, VcfHeader};
 use crate::header_lines::{parse_meta_line, HeaderLineError};
 use crate::header_parse::{read_header_frame, InvalidHeader, VcfVersion};
@@ -282,7 +283,13 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
                 line_number,
             };
             match parse_genotypes(&block, &variant.alleles, &context) {
-                Ok(genotypes) => variant.genotypes = genotypes,
+                // The parsed genotypes AND the text they came from: an untouched record is
+                // written from the text, which is `LazyGenotypesContext` (#222). Parsing here
+                // rather than on first access keeps the refusal a malformed genotype produces at
+                // the read, where every caller of this function already expects it.
+                Ok(genotypes) => {
+                    variant.genotypes = GenotypesContext::lazy(genotypes, block.clone())
+                }
                 Err(error) => {
                     return Err(ReadFailure {
                         error: ReadError::Record(error),

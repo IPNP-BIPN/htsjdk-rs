@@ -102,7 +102,8 @@ mod tests {
                 Allele::from_str("A", true).unwrap(),
                 Allele::from_str("T", false).unwrap(),
             ],
-        )];
+        )]
+        .into();
         vc
     }
 
