@@ -19,7 +19,7 @@ mkdir -p "$OUT"
 
 echo "== cross-building the port for linux/amd64"
 docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
-  bash -c 'cargo build --release --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1'
+  bash -c 'cargo build --release --bin bgzf-bench --bin record-bench --target-dir /out/amd64 2>&1 | tail -1'
 
 echo "== htsjdk, in the pinned container"
 docker run --rm --platform linux/amd64 \
@@ -30,6 +30,15 @@ docker run --rm --platform linux/amd64 \
 echo "== the port, in the same container"
 docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
   "/out/amd64/release/bgzf-bench $MB $REPS" | tee "$OUT/rust.txt"
+
+# The record codec, which #78 names as the second path under everything: every read filter and
+# every walker pays it per record. There is no htsjdk column for it -- htsjdk's codec writes into a
+# stream rather than answering with bytes, so the two would not be the same measurement -- and it
+# prints the digest of the corpus it encoded, which is what makes a speed change reviewable: an
+# optimisation that moves a byte says so here rather than in a suite an hour later.
+echo "== the record codec, in the same container"
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+  "/out/amd64/release/record-bench 400000 $REPS" | tee "$OUT/records.txt"
 
 echo "== bytes first"
 python3 - "$OUT" <<'PY'
@@ -81,3 +90,23 @@ for key in sorted(rates):
     r = statistics.median(row["port"])
     print(f"{key[0]:10} {key[1]:8} {key[2]:>5} {j:>9.1f} {r:>9.1f} {r / j:>6.2f}x")
 PY
+
+echo "== the record codec, MB/s and records/s, median of $REPS"
+python3 - "$OUT" <<'REC'
+import sys, re, pathlib, statistics
+
+out = pathlib.Path(sys.argv[1])
+rows = {}
+for line in (out / "records.txt").read_text().splitlines():
+    m = re.match(r"rust_record_(decode|encode)_run\d+_mbps=([\d.]+) recs_per_sec=(\d+)", line)
+    if m:
+        rows.setdefault(m.group(1), []).append((float(m.group(2)), int(m.group(3))))
+    m = re.match(r"records=(\d+) encoded_bytes=(\d+) md5=([0-9a-f]{32})", line)
+    if m:
+        print(f"corpus: {m.group(1)} records, {m.group(2)} bytes, md5={m.group(3)}")
+for name in ("decode", "encode"):
+    if name in rows:
+        mbps = statistics.median(r[0] for r in rows[name])
+        recs = statistics.median(r[1] for r in rows[name])
+        print(f"{name:8} {mbps:>9.1f} MB/s {recs:>12,.0f} records/s")
+REC
