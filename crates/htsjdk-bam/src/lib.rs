@@ -25,6 +25,7 @@ pub mod coordinate;
 pub mod downsampling;
 pub mod duplicate_scoring;
 pub mod fasta;
+pub mod fasta_index;
 pub mod fasta_writer;
 pub mod fastq;
 pub mod filter;

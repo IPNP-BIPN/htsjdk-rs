@@ -203,6 +203,22 @@
       ]
     },
     {
+      "id": "indexed-fasta",
+      "title": "Reading a FASTA through its .fai",
+      "status": "golden-pending",
+      "harness": "tools/bam-conformance",
+      "why": "A query is answered by SEEKING, not by scanning: the first base's byte offset is computed from the .fai's bases-per-line and bytes-per-line, and every line boundary the query crosses is a jump over a terminator whose length is the difference between those two columns. Nothing ever looks for a newline, so a reader that scans for one agrees with htsjdk on well-formed files and disagrees on the rest, and a CRLF file is read correctly only because the index says the terminator is two bytes. The bounds are htsjdk's own and one of them looks wrong: the malformed-query test is start > stop + 1, so an EMPTY query is legal and answers with no bases, while start > stop by two is refused. Past the end of a contig is refused by the INDEX rather than by the read, so it is the .fai's size column that decides, not the file's length. This suite exists because gatk-engine reached a FASTA through noodles-fasta, and what a GATK tool sees is htsjdk's reader.",
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "IndexedFastaDump",
+          "golden": "crates/htsjdk-bam/tests/data/indexed_fasta.txt.gz"
+        }
+      ]
+    },
+    {
       "id": "bam-reheader",
       "title": "BAM reheader",
       "status": "oracle-backed",
