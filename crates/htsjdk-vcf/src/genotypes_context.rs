@@ -148,6 +148,23 @@ impl From<Vec<Genotype>> for GenotypesContext {
     }
 }
 
+impl FromIterator<Genotype> for GenotypesContext {
+    /// A context collected from genotypes a caller built, which is never lazy: there is no file
+    /// text behind it. `GenotypesContext.create(ArrayList<Genotype>)` is the same constructor.
+    fn from_iter<I: IntoIterator<Item = Genotype>>(iter: I) -> Self {
+        Self::new(iter.into_iter().collect())
+    }
+}
+
+impl IntoIterator for GenotypesContext {
+    type Item = Genotype;
+    type IntoIter = std::vec::IntoIter<Genotype>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.genotypes.into_iter()
+    }
+}
+
 impl Clone for GenotypesContext {
     fn clone(&self) -> Self {
         Self {
@@ -209,6 +226,13 @@ mod tests {
         // Reading the list does.
         let _ = context.first();
         assert_eq!(context.unparsed(), None);
+    }
+
+    #[test]
+    fn a_collected_context_is_never_lazy() {
+        let context: GenotypesContext = genotypes().into_iter().collect();
+        assert_eq!(context.unparsed(), None);
+        assert_eq!(context.len(), 1);
     }
 
     #[test]
