@@ -32,6 +32,12 @@ pub struct BamWriter<W: Write> {
     reference_lengths: Vec<i32>,
     /// Present when an index is being built alongside the file.
     indexer: Option<BamIndexer>,
+    /// One buffer for every record, cleared between them.
+    ///
+    /// A file of ten million reads allocated ten million `Vec`s here, each one written to the
+    /// stream and dropped immediately. `BAMRecordCodec` encodes into the stream's own buffer for
+    /// the same reason.
+    scratch: Vec<u8>,
 }
 
 /// `BAMFileWriter.writeHeader(BinaryCodec, SAMFileHeader)`: the BAM header binary content, written
@@ -137,6 +143,7 @@ impl<W: Write> BamWriter<W> {
             bgzf,
             reference_lengths: header.sequences.iter().map(|s| s.length).collect(),
             indexer: None,
+            scratch: Vec::new(),
         })
     }
 
@@ -166,18 +173,27 @@ impl<W: Write> BamWriter<W> {
     /// `BAMFileWriter.writeAlignment`.
     pub fn write(&mut self, record: &BamRecord) -> Result<(), WriteError> {
         let forced_bin = self.reference_too_large_for_bin(record.reference_index);
-        let bytes = if forced_bin {
-            record.encode_with_bin(0)
+        let mut bytes = std::mem::take(&mut self.scratch);
+        bytes.clear();
+        let encoded = if forced_bin {
+            record.encode_with_bin_into(0, &mut bytes)
         } else {
-            record.encode()
+            record.encode_into(&mut bytes)
+        };
+        // The buffer goes back whether the encode succeeded or not, so a refused record does not
+        // cost the next one its capacity.
+        if let Err(error) = encoded {
+            self.scratch = bytes;
+            return Err(WriteError::Encode(error));
         }
-        .map_err(WriteError::Encode)?;
 
         // htsjdk takes the pointer *before* encoding and again after, so the chunk spans
         // exactly this record's bytes. Taking it after the write for the start, or including
         // the next record, shifts every chunk in the index.
         let start_offset = self.bgzf.file_pointer();
-        self.bgzf.write_all(&bytes).map_err(WriteError::Io)?;
+        let written = self.bgzf.write_all(&bytes).map_err(WriteError::Io);
+        self.scratch = bytes;
+        written?;
         let stop_offset = self.bgzf.file_pointer();
 
         if let Some(indexer) = &mut self.indexer {

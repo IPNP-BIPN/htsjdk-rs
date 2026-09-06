@@ -16,7 +16,7 @@ use std::io::Read;
 use htsjdk_vcf::genotype_parse::{parse_genotypes, GenotypeContext};
 use htsjdk_vcf::header_lines::parse_meta_line;
 use htsjdk_vcf::header_parse::{read_header_frame, VcfVersion};
-use htsjdk_vcf::record_parse::{decode_line, split_condensed};
+use htsjdk_vcf::record_parse::decode_line;
 use htsjdk_vcf::variant::Genotype;
 use htsjdk_vcf::{HeaderLine, VcfHeader};
 
@@ -184,12 +184,11 @@ fn every_genotype_decodes_as_the_reference_decodes_it() {
 
         let outcome = decode_line(&line, &header, line_no, version).and_then(|decoded| {
             let record = decoded.expect("a data line");
-            let site_parts = split_condensed(&line, '\t', 9, true);
             parse_genotypes(
                 record.genotype_block.as_deref().unwrap_or(""),
                 &record.variant.alleles,
                 &GenotypeContext {
-                    site_parts: &site_parts,
+                    line: &line,
                     header: &header,
                     version,
                     contig: &record.variant.contig,

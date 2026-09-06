@@ -41,11 +41,11 @@ const PHASING_TOKENS: [char; 3] = ['/', '|', '\\'];
 
 /// Everything the genotype layer needs from the record around it.
 ///
-/// `site_parts` is there for one reason: the "too many keys" message quotes the **site** columns
+/// `line` is there for one reason: the "too many keys" message quotes the **site** columns
 /// rather than the genotype ones, so reproducing it needs the record's own tokens.
 #[derive(Clone, Copy)]
 pub struct GenotypeContext<'a> {
-    pub site_parts: &'a [String],
+    pub line: &'a str,
     pub header: &'a VcfHeader,
     pub version: VcfVersion,
     pub contig: &'a str,
@@ -63,7 +63,7 @@ pub fn parse_genotypes(
     context: &GenotypeContext<'_>,
 ) -> Result<Vec<Genotype>, RecordError> {
     let GenotypeContext {
-        site_parts,
+        line,
         header,
         version,
         contig,
@@ -110,7 +110,15 @@ pub fn parse_genotypes(
             // `parts[genotypeOffset]` over the **site** columns, not over the genotype ones, so
             // the first sample's failure quotes the record's POS. `keys` is `parts[8]`, the whole
             // genotype block rather than the FORMAT column.
-            let quoted_values = site_parts.get(offset + 1).cloned().unwrap_or_default();
+            // The line is split HERE and not on the way in: every record paid for this split
+            // and its `String` per column so that one refusal could quote them.
+            let site_parts = crate::record_parse::split_condensed_borrowed(
+                line,
+                '\t',
+                NUM_STANDARD_FIELDS + 1,
+                true,
+            );
+            let quoted_values = site_parts.get(offset + 1).copied().unwrap_or_default();
             return Err(malformed(
                 line_number,
                 &format!(
@@ -118,7 +126,7 @@ pub fn parse_genotypes(
                      {quoted_values}",
                     site_parts
                         .get(NUM_STANDARD_FIELDS)
-                        .cloned()
+                        .copied()
                         .unwrap_or_default()
                 ),
             ));

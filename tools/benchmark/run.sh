@@ -19,7 +19,7 @@ mkdir -p "$OUT"
 
 echo "== cross-building the port for linux/amd64"
 docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
-  bash -c 'cargo build --release --bin bgzf-bench --bin record-bench --target-dir /out/amd64 2>&1 | tail -1'
+  bash -c 'cargo build --release --bin bgzf-bench --bin record-bench --bin vcf-bench --target-dir /out/amd64 2>&1 | tail -1'
 
 echo "== htsjdk, in the pinned container"
 docker run --rm --platform linux/amd64 \
@@ -39,6 +39,14 @@ docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4
 echo "== the record codec, in the same container"
 docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
   "/out/amd64/release/record-bench 400000 $REPS" | tee "$OUT/records.txt"
+
+# The VCF codec, #78's third path. The two encode rows are the two the library has rather than two
+# implementations of one: a record nothing looked at is written from the file's own text, and a
+# record whose genotypes were read is rebuilt column by column. Every tool that copies records pays
+# the first and every tool that inspects them pays the second.
+echo "== the VCF codec, in the same container"
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+  "/out/amd64/release/vcf-bench 200000 $REPS 4" | tee "$OUT/vcf.txt"
 
 echo "== bytes first"
 python3 - "$OUT" <<'PY'
@@ -110,3 +118,22 @@ for name in ("decode", "encode"):
         recs = statistics.median(r[1] for r in rows[name])
         print(f"{name:8} {mbps:>9.1f} MB/s {recs:>12,.0f} records/s")
 REC
+
+echo "== the VCF codec, MB/s, median of $REPS"
+python3 - "$OUT" <<'VCF'
+import sys, re, pathlib, statistics
+
+out = pathlib.Path(sys.argv[1])
+rows = {}
+for line in (out / "vcf.txt").read_text().splitlines():
+    m = re.match(r"rust_vcf_read_run\d+_mbps=([\d.]+) recs_per_sec=(\d+)", line)
+    if m:
+        rows.setdefault("read", []).append((float(m.group(1)), int(m.group(2))))
+    m = re.match(r"rust_vcf_encode_(\w+)_run\d+_mbps=([\d.]+) recs_per_sec=(\d+)", line)
+    if m:
+        rows.setdefault(f"encode {m.group(1)}", []).append((float(m.group(2)), int(m.group(3))))
+for name, values in rows.items():
+    mbps = statistics.median(v[0] for v in values)
+    recs = statistics.median(v[1] for v in values)
+    print(f"{name:16} {mbps:>9.1f} MB/s {recs:>12,.0f} records/s")
+VCF

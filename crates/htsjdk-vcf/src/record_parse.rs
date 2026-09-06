@@ -106,12 +106,42 @@ pub fn split_condensed(
     max_tokens: usize,
     condense: bool,
 ) -> Vec<String> {
-    let bytes: Vec<char> = text.chars().collect();
+    split_condensed_borrowed(text, delimiter, max_tokens, condense)
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+/// The same splitter, answering with slices of the input.
+///
+/// The caller that keeps the tokens takes [`split_condensed`]; the one that reads them and drops
+/// them takes this. Every VCF line went through the first, and every line therefore allocated a
+/// `String` per column plus a `Vec<char>` of the whole line -- four bytes per character of a file
+/// that is being read once.
+///
+/// Splitting on bytes rather than characters is safe for the reason it is fast: the delimiters
+/// here are `\t`, `;` and `,`, and a multi-byte UTF-8 character never contains an ASCII byte, so
+/// the token boundaries are the same ones the character walk found.
+pub fn split_condensed_borrowed(
+    text: &str,
+    delimiter: char,
+    max_tokens: usize,
+    condense: bool,
+) -> Vec<&str> {
+    debug_assert!(
+        delimiter.is_ascii(),
+        "the byte scan below assumes an ASCII delimiter"
+    );
+    let bytes = text.as_bytes();
+    let needle = delimiter as u8;
     let index_of = |from: usize| -> Option<usize> {
-        (from..bytes.len()).find(|&position| bytes[position] == delimiter)
+        bytes[from..]
+            .iter()
+            .position(|&b| b == needle)
+            .map(|p| p + from)
     };
 
-    let mut tokens: Vec<String> = Vec::new();
+    let mut tokens: Vec<&str> = Vec::with_capacity(max_tokens.min(16));
     let mut start = 0usize;
     let mut end = index_of(0);
 
@@ -126,7 +156,7 @@ pub fn split_condensed(
         }
     }
 
-    let take = |from: usize, to: usize| bytes[from..to].iter().collect::<String>();
+    let take = |from: usize, to: usize| &text[from..to];
 
     let Some(mut end) = end else {
         tokens.push(take(start, bytes.len()));
@@ -144,9 +174,11 @@ pub fn split_condensed(
     }
 
     if condense && tokens.len() == max_tokens {
-        let tail = take(start, bytes.len());
+        // The condensed last token is the delimiter's own span: from where the last token began to
+        // the end of the line, which is exactly what joining them back with the delimiter produced.
         let last = tokens.len() - 1;
-        tokens[last] = format!("{}{delimiter}{tail}", tokens[last]);
+        let last_start = start - 1 - tokens[last].len();
+        tokens[last] = take(last_start, bytes.len());
     } else if tokens.len() < max_tokens {
         tokens.push(take(start, bytes.len()));
     }
