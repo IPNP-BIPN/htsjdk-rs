@@ -22,7 +22,10 @@ cross-check oracle.
 
 ## Reference version
 
-Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`.
+Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`. GATK 4.7.0.0
+pins htsjdk 5.0.0, and the target stays here until the tool ports are done: all three
+repositories name one set of pins, and moving one alone reproduces a combination nobody ships
+([decision 0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md)).
 
 ## Scope
 
@@ -146,6 +149,7 @@ compiler will never catch any of them.
 | [0025](docs/decisions/0025-fdlibm-is-portable-and-is-the-worse-stand-in-for-the-intrinsic.md) | FDLIBM is portable, and it is the *worse* stand-in for `Math.exp` |
 | [0040](docs/decisions/0040-the-format-corpus-came-back-green.md) | The format corpus came back green, so the 99.73% is the oracle's number (closes 0022) |
 | [0041](docs/decisions/0041-a-patch-sent-upstream-is-not-a-dependency-removed.md) | A patch sent upstream is not a dependency removed: Milestone U closed from this side |
+| [0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md) | The reference version is pinned by the consumers: 4.2.0 until the tool ports are done |
 
 ## What "finished" means
 
