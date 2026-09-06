@@ -253,6 +253,8 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
     // The body is every line after the `#CHROM` one. `read_header_frame` stops there without
     // saying where, so the count of header lines is what locates it, and that count is the same
     // number the codec left in `lineNo`.
+    // One allocation for the file's sample order, shared by every record's lazy context.
+    let samples: std::sync::Arc<[String]> = std::sync::Arc::from(header.samples.clone());
     for line in text.lines().skip(line_number) {
         let decoded = match decode_line(line, &header, line_number, codec_version) {
             Ok(Some(decoded)) => decoded,
@@ -288,7 +290,8 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
                 // rather than on first access keeps the refusal a malformed genotype produces at
                 // the read, where every caller of this function already expects it.
                 Ok(genotypes) => {
-                    variant.genotypes = GenotypesContext::lazy(genotypes, block.clone())
+                    variant.genotypes =
+                        GenotypesContext::lazy(genotypes, block.clone(), samples.clone())
                 }
                 Err(error) => {
                     return Err(ReadFailure {
