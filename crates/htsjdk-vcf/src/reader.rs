@@ -275,7 +275,7 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
         let mut variant = decoded.variant;
         if let Some(block) = decoded.genotype_block {
             let context = GenotypeContext {
-                site_parts: &split_site_parts(line),
+                line,
                 header: &header,
                 version: codec_version,
                 contig: &variant.contig,
@@ -312,15 +312,6 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
 
 /// The site columns as the splitter left them, which the genotype layer needs only because one of
 /// its messages quotes them.
-fn split_site_parts(line: &str) -> Vec<String> {
-    crate::record_parse::split_condensed(
-        line,
-        '\t',
-        crate::record_parse::NUM_STANDARD_FIELDS + 1,
-        true,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
