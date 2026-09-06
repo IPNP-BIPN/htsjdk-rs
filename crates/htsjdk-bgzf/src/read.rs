@@ -91,6 +91,16 @@ pub struct BgzfReader<R: Read> {
     block_address: u64,
     check_crcs: bool,
     eof: bool,
+    /// The compressed block, reused between blocks.
+    ///
+    /// A BGZF stream is a long run of blocks of at most 64 KiB, and allocating -- and ZEROING --
+    /// one buffer per block is a megabyte of `memset` for every sixteen blocks. htsjdk allocates
+    /// `compressedBuffer` once in `BlockCompressedInputStream`'s constructor for the same reason.
+    scratch: Vec<u8>,
+    /// The inflater, reused between blocks. `BlockGunzipper` holds one `Inflater` for the life of
+    /// the stream and calls `reset()`; constructing one per block allocates zlib's window each
+    /// time.
+    inflater: Decompress,
 }
 
 impl<R: Read> BgzfReader<R> {
@@ -103,6 +113,8 @@ impl<R: Read> BgzfReader<R> {
             block_address: 0,
             check_crcs: false, // matches BlockGunzipper's default
             eof: false,
+            scratch: Vec::new(),
+            inflater: Decompress::new(false),
         }
     }
 
@@ -156,8 +168,14 @@ impl<R: Read> BgzfReader<R> {
         }
 
         let remaining = block_length - BLOCK_HEADER_LENGTH;
-        let mut rest = vec![0u8; remaining];
-        let got = read_up_to(&mut self.inner, &mut rest).map_err(|_| BgzfError::PrematureEnd)?;
+        let mut rest = std::mem::take(&mut self.scratch);
+        rest.clear();
+        rest.resize(remaining, 0);
+        let got = read_up_to(&mut self.inner, &mut rest).map_err(|error| {
+            self.scratch = std::mem::take(&mut rest);
+            let _ = error;
+            BgzfError::PrematureEnd
+        })?;
         self.stream_offset += got as u64;
         if got != remaining {
             return Err(BgzfError::PrematureEnd);
@@ -171,9 +189,15 @@ impl<R: Read> BgzfReader<R> {
 
         let deflated = &rest[..remaining - BLOCK_FOOTER_LENGTH];
         let mut data = Vec::with_capacity(uncompressed_len);
-        let mut d = Decompress::new(false);
-        d.decompress_vec(deflated, &mut data, FlushDecompress::Finish)
-            .map_err(|e| BgzfError::Inflate(e.to_string()))?;
+        self.inflater.reset(false);
+        let inflated = self
+            .inflater
+            .decompress_vec(deflated, &mut data, FlushDecompress::Finish)
+            .map_err(|e| BgzfError::Inflate(e.to_string()));
+        // The buffer goes back before any refusal is returned, so a stream that fails mid-way does
+        // not leave the reader without one.
+        self.scratch = rest;
+        inflated?;
 
         if data.len() != uncompressed_len {
             return Err(BgzfError::BlockSizeDisagreement {
