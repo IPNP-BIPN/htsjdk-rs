@@ -145,6 +145,10 @@ public class FastaReferenceWriterDump {
             writer.startSequence("chr1");
             writer.close();
         });
+        // And closing a writer that never started one at all, which is a DIFFERENT refusal from the
+        // one above it: `close()` checks the empty name list after closing whatever sequence was
+        // open, so an empty reference is refused where an empty sequence is refused first.
+        error("close-with-no-sequences", 60, FastaReferenceWriter::close);
     }
 
     interface Body {

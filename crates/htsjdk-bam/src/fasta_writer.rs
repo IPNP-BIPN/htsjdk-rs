@@ -63,6 +63,9 @@ pub enum FastaWriterError {
     NoSequenceStarted,
     /// A line width of zero or less.
     BasesPerLineNotPositive,
+    /// `close` with no sequence ever completed. Thrown INSIDE the try whose finally closes the
+    /// three streams, so the caller is refused and the three files exist all the same.
+    NoSequences,
 }
 
 impl FastaWriterError {
@@ -77,6 +80,7 @@ impl FastaWriterError {
             | FastaWriterError::BasesPerLineNotPositive => "java.lang.IllegalArgumentException",
             FastaWriterError::NoBaseAdded
             | FastaWriterError::DuplicateName(_)
+            | FastaWriterError::NoSequences
             | FastaWriterError::NoSequenceStarted => "java.lang.IllegalStateException",
         }
     }
@@ -108,6 +112,7 @@ impl FastaWriterError {
             FastaWriterError::BasesPerLineNotPositive => {
                 "bases per line must be 1 or greater".to_string()
             }
+            FastaWriterError::NoSequences => "no sequences were added to the reference".to_string(),
         }
     }
 }
@@ -328,7 +333,28 @@ impl FastaReferenceWriter {
     }
 
     /// `close`: closes the open sequence, if any, and hands back the three outputs.
+    ///
+    /// A writer that completed no sequence is refused here rather than answering with three empty
+    /// files: `close()` checks `sequenceNames.isEmpty()` after closing the open sequence, and the
+    /// exception is an `IllegalStateException` and not an argument's. It is raised inside the try
+    /// whose finally closes the streams, which is why [`close_streams`](Self::close_streams)
+    /// exists: a caller that has already refused for its own reason still leaves the three files
+    /// behind, empty.
     pub fn close(mut self) -> Result<FastaOutputs, FastaWriterError> {
+        self.close_sequence()?;
+        if self.names.is_empty() {
+            return Err(FastaWriterError::NoSequences);
+        }
+        Ok(self.outputs)
+    }
+
+    /// `close()`'s finally block on its own: the streams are closed and whatever was written comes
+    /// back, without the empty-reference refusal.
+    ///
+    /// It is not a convenience. The reference throws while the files are already open, and the
+    /// finally clause closes them whatever happened, so the three files a refused run leaves behind
+    /// are the ones this returns. A caller that wants the exception wants [`close`](Self::close).
+    pub fn close_streams(mut self) -> Result<FastaOutputs, FastaWriterError> {
         self.close_sequence()?;
         Ok(self.outputs)
     }

@@ -198,7 +198,7 @@
         {
           "dump": "FastaReferenceWriterDump",
           "golden": "crates/htsjdk-bam/tests/data/fasta_reference_writer.txt.gz",
-          "why": "38 rows, no files: eight writers run to completion and eleven run into a refusal, each printing its FASTA, its .fai and its .dict as escaped text. The eight cover the default width, a width that divides the length, a sequence shorter than one line, two sequences at different widths in one file, the same sequence appended in three unaligned chunks, mixed case with IUPAC codes, and the md5 over lower and upper case. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 32272833549, and byte for byte what this laptop produced."
+          "why": "Re-measured with the empty-reference refusal among the cases, in the pinned container on a real x86-64 runner, as the candidate artefact of run 34413512878: `close()` with no sequence started at all throws `IllegalStateException: no sequences were added to the reference`, which gatk-rs's `ShiftFasta` covering array found by shifting no contig. 38 rows, no files: eight writers run to completion and eleven run into a refusal, each printing its FASTA, its .fai and its .dict as escaped text. The eight cover the default width, a width that divides the length, a sequence shorter than one line, two sequences at different widths in one file, the same sequence appended in three unaligned chunks, mixed case with IUPAC codes, and the md5 over lower and upper case. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 32272833549, and byte for byte what this laptop produced."
         }
       ]
     },
