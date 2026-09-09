@@ -199,6 +199,30 @@ fn every_refusal_matches_the_golden() {
         format!("{}:{}", error.java_class(), escape(&error.message())),
         expected
     );
+
+    // Closing a writer that never started a sequence at all, which is a DIFFERENT refusal: the
+    // empty-name-list check runs after whatever sequence was open has been closed.
+    let writer = FastaReferenceWriter::new(60, false).expect("a writer");
+    let error = writer.close().expect_err("no sequences were added");
+    let expected = row(&text, "error", "close-with-no-sequences");
+    assert_eq!(
+        format!("{}:{}", error.java_class(), escape(&error.message())),
+        expected
+    );
+}
+
+/// The three files a refused run leaves behind, which is what `close_streams` hands back.
+///
+/// The reference throws inside the try whose finally closes the streams, so the FASTA, the index and
+/// the dictionary all exist: empty, empty, and one `@HD` line. A caller that has refused for its own
+/// reason writes those, and gatk-rs's `FastaReferenceMaker` runner is measured on exactly that.
+#[test]
+fn closing_the_streams_of_an_empty_reference_still_yields_three_files() {
+    let writer = FastaReferenceWriter::new(60, false).expect("a writer");
+    let outputs = writer.close_streams().expect("the streams close");
+    assert_eq!(outputs.fasta, Vec::<u8>::new());
+    assert_eq!(outputs.index, "");
+    assert_eq!(outputs.dictionary, "@HD\tVN:1.6\n");
 }
 
 /// A tab is the one control character a description may hold, and the golden carries the file it
