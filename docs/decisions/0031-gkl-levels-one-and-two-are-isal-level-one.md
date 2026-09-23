@@ -1,6 +1,6 @@
 # 0031. GKL's levels 1 and 2 are ISA-L level 1, and the buffer size is part of the answer
 
-**Status:** accepted
+**Status:** corrected by [0043](0043-gkl-passes-levels-one-and-two-through.md)
 **Date:** 2026-08-05
 **Follows:** [0029](0029-only-levels-one-and-two-are-igzip.md), [0030](0030-gkls-default-bam-bytes-depend-on-sse42.md)
 

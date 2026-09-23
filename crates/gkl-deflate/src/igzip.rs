@@ -11,15 +11,20 @@
 //!
 //! ## The configuration is not a guess
 //!
-//! Decision 0031 found it by trying, because the disassembly is misleading here:
+//! Decision 0031 found it by trying, because the disassembly is misleading here, and decision 0043
+//! corrected the level:
 //!
 //! ```text
-//! level           1                       (2 gives 19141 where GKL gives 19044)
-//! level_buf_size  ISAL_DEF_LVL1_DEFAULT   (the 0x141D0 in the disassembly gives 63373, not 63311)
+//! level           the Java level, 1 or 2
+//! level_buf_size  ISAL_DEF_LVL1_DEFAULT at 1, ISAL_DEF_LVL2_DEFAULT at 2
+//!                 (the 0x141D0 in the disassembly gives 63373, not 63311)
 //! end_of_stream   1
 //! ```
 //!
-//! Java levels 1 and 2 both land here, because GKL does not pass the level through to ISA-L.
+//! 0031 read "Java levels 1 and 2 produce identical bytes" off four fixtures and concluded that GKL
+//! does not pass the level through. It does: those four compress identically at ISA-L levels 1 and
+//! 2, and a 15 KB VCF header does not, where `IntelDeflater` at level 2 is ISA-L level 2 byte for
+//! byte and level 1 is 18 bytes longer.
 //!
 //! ## What guards it
 //!
@@ -50,10 +55,10 @@ use crate::igzip_canary;
 /// from a failing byte comparison three layers downstream.
 pub fn usable() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE.get_or_init(|| deflate_unchecked(&igzip_canary::INPUT) == igzip_canary::EXPECTED)
+    *USABLE.get_or_init(|| deflate_unchecked(&igzip_canary::INPUT, 1) == igzip_canary::EXPECTED)
 }
 
-/// Compress `data` exactly as `IntelDeflater` does at Java levels 1 and 2.
+/// Compress `data` exactly as `IntelDeflater` does at Java level `level`, which is 1 or 2.
 ///
 /// # Panics
 ///
@@ -61,7 +66,7 @@ pub fn usable() -> bool {
 /// output buffer is too small to hold even a stored block; the buffer here is sized from ISA-L's
 /// own worst case, so a refusal means an assumption broke rather than that the caller was unlucky,
 /// and it should be loud.
-pub fn deflate(data: &[u8]) -> Vec<u8> {
+pub fn deflate(data: &[u8], level: usize) -> Vec<u8> {
     assert!(
         usable(),
         "this build of ISA-L does not reproduce GKL's igzip. It falls back to its readable C when \
@@ -69,10 +74,10 @@ pub fn deflate(data: &[u8]) -> Vec<u8> {
          that C finds different matches (decision 0034). Levels 1 and 2 refuse rather than return \
          valid deflate that is not GKL's."
     );
-    deflate_unchecked(data)
+    deflate_unchecked(data, level)
 }
 
-fn deflate_unchecked(data: &[u8]) -> Vec<u8> {
+fn deflate_unchecked(data: &[u8], level: usize) -> Vec<u8> {
     // ISA-L's own stored-block worst case: a 5-byte header per 65535-byte block, plus the data.
     // Sized from the rule rather than from a guess, so a large incompressible input cannot quietly
     // land in the overflow path.
@@ -82,7 +87,14 @@ fn deflate_unchecked(data: &[u8]) -> Vec<u8> {
         data.len() + TYPE0_BLK_HDR_LEN * (data.len().div_ceil(TYPE0_MAX_BLK_LEN) + 1) + 64;
 
     let mut out = vec![0u8; worst_case];
-    let mut level_buf = vec![0u8; isal::ISAL_DEF_LVL1_DEFAULT as usize];
+    // GKL passes the Java level through: 1 is ISA-L level 1 and 2 is ISA-L level 2, each with its
+    // own default token buffer (decision 0043, which corrects 0031).
+    let buffer = if level == 2 {
+        isal::ISAL_DEF_LVL2_DEFAULT
+    } else {
+        isal::ISAL_DEF_LVL1_DEFAULT
+    };
+    let mut level_buf = vec![0u8; buffer as usize];
     // `next_in` is `*mut u8` in the binding although ISA-L only reads it, so the input is copied
     // rather than cast away from a shared reference.
     let mut input = data.to_vec();
@@ -90,7 +102,7 @@ fn deflate_unchecked(data: &[u8]) -> Vec<u8> {
     let written = unsafe {
         let mut stream: isal::isal_zstream = std::mem::zeroed();
         isal::isal_deflate_stateless_init(&mut stream);
-        stream.level = 1;
+        stream.level = level as u32;
         stream.level_buf = level_buf.as_mut_ptr();
         stream.level_buf_size = level_buf.len() as u32;
         stream.next_in = input.as_mut_ptr();

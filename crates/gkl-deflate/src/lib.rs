@@ -103,10 +103,10 @@ pub fn deflate_gkl(data: &[u8], level: usize) -> Vec<u8> {
     if level == 1 || level == 2 {
         #[cfg(feature = "isal")]
         {
-            // Both Java levels land on ISA-L level 1: GKL does not pass the level through, which
-            // is why its levels 1 and 2 produce identical bytes (decision 0031). The call refuses
+            // GKL passes the level through to ISA-L (decision 0043, correcting 0031, whose four
+            // fixtures happen to compress identically at ISA-L levels 1 and 2). The call refuses
             // if this build cannot reproduce GKL; see `igzip::usable`.
-            return igzip::deflate(data);
+            return igzip::deflate(data, level);
         }
         #[cfg(not(feature = "isal"))]
         panic!(
