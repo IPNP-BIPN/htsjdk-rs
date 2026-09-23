@@ -224,8 +224,17 @@ impl VariantContext {
         self.filters.is_some()
     }
 
+    /// `getGenotype(sample)`: the LAST genotype carrying the name.
+    ///
+    /// `GenotypesContext` answers through `sampleNameToOffset`, which `buildCache` and `add` fill
+    /// with `put`, so a name added twice maps to its second offset. A context holds a name twice
+    /// when a merge concatenates records of one sample, as `CombineGVCFs` does with a block left
+    /// open on the previous contig, and the writer then prints the later one.
     pub fn genotype(&self, sample: &str) -> Option<&Genotype> {
-        self.genotypes.iter().find(|g| g.sample_name == sample)
+        self.genotypes
+            .iter()
+            .rev()
+            .find(|g| g.sample_name == sample)
     }
 
     /// `getMaxPloidy(defaultPloidy)`.
@@ -326,6 +335,20 @@ mod tests {
             vec![allele("A", true), allele("A", true)],
         ));
         assert_eq!(v.calc_vcf_genotype_keys(true), ["GT", "DP"]);
+    }
+
+    /// A name held twice answers with its later genotype, as `sampleNameToOffset` does.
+    #[test]
+    fn a_sample_held_twice_is_looked_up_as_its_last_genotype() {
+        let mut v = vc();
+        let mut first = Genotype::new("S1", vec![allele("A", true), allele("A", true)]);
+        first.gq = Some(33);
+        let mut second = Genotype::new("S1", vec![allele("A", true), allele("A", true)]);
+        second.gq = Some(25);
+        v.genotypes.push(first);
+        v.genotypes.push(second);
+        assert_eq!(v.genotype("S1").and_then(|g| g.gq), Some(25));
+        assert!(v.genotype("S2").is_none());
     }
 
     #[test]
