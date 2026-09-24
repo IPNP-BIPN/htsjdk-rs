@@ -37,6 +37,7 @@ pub mod percentile;
 pub mod poisson;
 pub mod saddle_point;
 pub mod strict_exp;
+pub mod strict_log;
 pub mod strict_pow;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
@@ -139,6 +140,15 @@ pub mod strict_math {
     #[inline]
     pub fn exp(x: f64) -> f64 {
         crate::strict_exp::exp(x)
+    }
+
+    /// `StrictMath.log`, exact over every point of the conformance corpus.
+    ///
+    /// Not [`crate::math::log`]: `Math.log` is correctly rounded and FDLIBM's is not, and the two
+    /// differ on 186 of the corpus's points. See [`crate::strict_log`].
+    #[inline]
+    pub fn log(x: f64) -> f64 {
+        crate::strict_log::log(x)
     }
 
     /// `StrictMath.pow`, exact over every point of the conformance corpus.
