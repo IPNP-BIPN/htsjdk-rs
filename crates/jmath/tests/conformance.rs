@@ -184,6 +184,46 @@ fn strict_exp_is_strictmath() {
     );
 }
 
+/// `strict_log` is `java.lang.StrictMath.log`, on every point of the corpus, and it is NOT
+/// `Math.log`: the two differ on points where FDLIBM is one ulp from the correctly rounded answer,
+/// and the test asserts that such points exist so that the claim cannot pass by the port simply
+/// calling the correctly rounded `log`.
+#[test]
+fn strict_log_is_strictmath() {
+    let mut ok = 0u64;
+    let mut total = 0u64;
+    let mut differs_from_math = 0u64;
+    for line in corpus().lines() {
+        let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.first() != Some(&"log") {
+            continue;
+        }
+        let (Some(inp), Some(mb), Some(sb)) = (fields.get(1), fields.get(2), fields.get(3)) else {
+            continue;
+        };
+        total += 1;
+        if !same(bits(mb), bits(sb)) {
+            differs_from_math += 1;
+        }
+        if same(jmath::strict_math::log(bits(inp)), bits(sb)) {
+            ok += 1;
+        }
+    }
+    assert!(total > 40_000, "the log corpus shrank to {total} points");
+    assert!(
+        differs_from_math > 0,
+        "StrictMath.log and Math.log agree everywhere, so this test measures nothing"
+    );
+    assert_eq!(
+        ok, total,
+        "`strict_log` must match java.lang.StrictMath on all {total} points, got {ok}"
+    );
+}
+
 /// `strict_pow` is `java.lang.StrictMath.pow`, on every point of the corpus.
 ///
 /// The same claim as [`strict_exp_is_strictmath`] and made the same way. `StrictMath` is specified
