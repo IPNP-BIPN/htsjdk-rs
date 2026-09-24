@@ -212,8 +212,12 @@ impl VariantContext {
     }
 
     /// `getPhredScaledQual()`: `log10PError * -10`.
+    /// `getPhredScaledQual()`: `(getLog10PError() * -10) + 0.0`.
+    ///
+    /// The `+ 0.0` turns the -0.0 a log10 error of exactly zero gives into 0.0, and the encoder
+    /// prints -0.0 as `-0`, so a QUAL of zero is written `0` only because of it.
     pub fn phred_scaled_qual(&self) -> f64 {
-        self.log10_p_error * -10.0
+        (self.log10_p_error * -10.0) + 0.0
     }
 
     pub fn is_filtered(&self) -> bool {
@@ -335,6 +339,18 @@ mod tests {
             vec![allele("A", true), allele("A", true)],
         ));
         assert_eq!(v.calc_vcf_genotype_keys(true), ["GT", "DP"]);
+    }
+
+    /// A log10 error of zero is a QUAL of positive zero, which the encoder writes as `0`.
+    #[test]
+    fn a_log10_error_of_zero_is_a_qual_of_positive_zero() {
+        let mut v = vc();
+        v.log10_p_error = 0.0;
+        assert_eq!(v.phred_scaled_qual().to_bits(), 0.0f64.to_bits());
+        assert_eq!(
+            crate::encoder::format_qual_value(v.phred_scaled_qual()),
+            "0"
+        );
     }
 
     /// A name held twice answers with its later genotype, as `sampleNameToOffset` does.
