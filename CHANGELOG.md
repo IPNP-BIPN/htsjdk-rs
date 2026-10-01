@@ -6,7 +6,46 @@ here moves together, because they are one port of one library and a consumer pin
 The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project does not yet
 follow semantic versioning, because 0.x is what an unreleased port is.
 
-## [0.1.0] — unreleased
+## [0.2.0] - 2026-10-01
+
+Fixes found by gatk-rs's covering arrays, which run whole tools against the reference and so reach
+corners of the library its own suites did not. Each one is a byte the reference writes and this
+port did not.
+
+### The claim
+
+- **86 conformance suites, all oracle-backed**, unchanged in number: the fixes below are each
+  pinned by a unit test or a frozen refusal rather than a new suite.
+
+### Added
+
+- `jmath::strict_log::log`: `StrictMath.log`, transcribed from FDLIBM 5.3's `e_log.c` in the C
+  function's operation order. It is not `Math.log`, which is correctly rounded: the two differ on
+  186 of the corpus's 44,996 points, and the test asserts both that this port matches the
+  `StrictMath` column on all of them and that the two columns differ somewhere. gatk-rs needs it
+  for `Random.nextGaussian`, which `QualByDepth` uses to jitter every QD above 35 (decision 0044).
+
+### Fixed
+
+- **GKL levels 1 and 2 reach ISA-L as themselves.** Decision 0031 had sent both to ISA-L level 1,
+  read off four fixtures that happen to compress identically at both levels. A 15 KB VCF header
+  written at GATKConfig's level 2 does not: `IntelDeflater` gives 5303 bytes, which is ISA-L level
+  2, where level 1 gives 5321. Decision 0043 records the correction.
+- **A sample held twice in one record answers with its later genotype**, as htsjdk's
+  `sampleNameToOffset` does. CombineGVCFs produces that shape when a block left open on one contig
+  is merged with the same sample's block on the next.
+- **A QUAL of zero is written as `0`, not `-0`.** `getPhredScaledQual` adds `0.0` to the product,
+  which turns `-0.0` into `0.0`; the port returned the negative zero and the encoder wrote it.
+- **A FASTA reference closed with no sequence in it is refused** with htsjdk's
+  `IllegalStateException`, after the three files are written, as `FastaReferenceWriter.close()`
+  does. The port answered three empty files and success.
+
+### Changed
+
+- `noodles-bam` 0.95.0, `noodles-sam` 0.90.0 and `noodles-vcf` 0.93.0, used by the test oracles
+  only.
+
+## [0.1.0] - 2026-09-06
 
 The first version worth naming: every format the consumers reach is ported, and every claim about
 those bytes is re-derived by CI in a pinned container on a real x86-64 runner.
@@ -30,7 +69,7 @@ those bytes is re-derived by CI in a pinned container on a real x86-64 runner.
   nobody looked at is written from the file's own text, FORMAT column included. A *read* is what
   drops that text, which is the part a port gets wrong by assuming only a mutation matters.
 - `htsjdk_bam::fasta_index`: the `.fai` parser and the indexed FASTA reader, whose query arithmetic
-  is `getSubsequenceAt`'s — a seek computed from the index rather than a scan for newlines.
+  is `getSubsequenceAt`'s: a seek computed from the index rather than a scan for newlines.
 - `record-bench` and `vcf-bench` beside `bgzf-bench`: the I/O floor's three paths, each printing
   the digest of what it encoded so a speed change that moves a byte says so in the run.
 
