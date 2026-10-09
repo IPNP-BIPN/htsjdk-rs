@@ -255,6 +255,14 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
     // number the codec left in `lineNo`.
     // One allocation for the file's sample order, shared by every record's lazy context.
     let samples: std::sync::Arc<[String]> = std::sync::Arc::from(header.samples.clone());
+    // `VCFHeader.samplesWereAlreadySorted()`, `ParsingUtils.isSorted` over the sample names in
+    // `String.compareTo` order: `parseVCFLine` decodes every record of a file whose samples are
+    // not, so its genotypes are re-encoded on write (keys sorted after `GT`, trailing missing
+    // fields trimmed) rather than copied from the line.
+    let samples_were_already_sorted = header.samples.windows(2).all(|pair| {
+        crate::genotype_type::compare_sample_names(&pair[0], &pair[1])
+            != std::cmp::Ordering::Greater
+    });
     for line in text.lines().skip(line_number) {
         let decoded = match decode_line(line, &header, line_number, codec_version) {
             Ok(Some(decoded)) => decoded,
@@ -291,7 +299,10 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
                 // the read, where every caller of this function already expects it.
                 Ok(genotypes) => {
                     variant.genotypes =
-                        GenotypesContext::lazy(genotypes, block.clone(), samples.clone())
+                        GenotypesContext::lazy(genotypes, block.clone(), samples.clone());
+                    if !samples_were_already_sorted {
+                        variant.genotypes.decode();
+                    }
                 }
                 Err(error) => {
                     return Err(ReadFailure {
@@ -322,6 +333,46 @@ mod tests {
     const HEADER: &str = "##fileformat=VCFv4.2\n\
                           ##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n\
                           #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n";
+
+    /// A two-sample file with the samples in the given order, one record whose FORMAT keys are
+    /// not sorted after `GT`.
+    fn two_samples(first: &str, second: &str) -> String {
+        format!(
+            "##fileformat=VCFv4.2\n\
+             ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+             ##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n\
+             ##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths\">\n\
+             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{first}\t{second}\n\
+             chr1\t100\t.\tA\tT\t50\tPASS\t.\tGT:DP:AD\t0/1:10:5,5\t1/1:8:0,8\n"
+        )
+    }
+
+    #[test]
+    fn sorted_samples_keep_the_genotype_text() {
+        let file = read_vcf(&two_samples("alpha", "beta")).expect("the fixture reads");
+        assert_eq!(
+            file.records[0].genotypes.unparsed(),
+            Some("GT:DP:AD\t0/1:10:5,5\t1/1:8:0,8")
+        );
+    }
+
+    #[test]
+    fn unsorted_samples_decode_every_record_as_the_codec_does() {
+        // `parseVCFLine`: `if (!header.samplesWereAlreadySorted()) lazy.decode();`, so the
+        // writer re-encodes the block instead of copying it.
+        let file = read_vcf(&two_samples("beta", "alpha")).expect("the fixture reads");
+        assert_eq!(file.records[0].genotypes.unparsed(), None);
+    }
+
+    #[test]
+    fn sample_order_is_string_compare_to_and_not_byte_order() {
+        // U+FF61 is one UTF-16 unit, U+1F600 two surrogates starting at 0xD83D: Java orders the
+        // surrogate first, UTF-8 bytes (0xEF.. against 0xF0..) the other way round.
+        let file = read_vcf(&two_samples("\u{1F600}", "\u{FF61}")).expect("the fixture reads");
+        assert!(file.records[0].genotypes.unparsed().is_some());
+        let file = read_vcf(&two_samples("\u{FF61}", "\u{1F600}")).expect("the fixture reads");
+        assert_eq!(file.records[0].genotypes.unparsed(), None);
+    }
 
     #[test]
     fn a_file_is_its_header_then_one_record_per_line() {
