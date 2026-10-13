@@ -322,6 +322,7 @@ name = "htsjdk-metrics"
 version = "0.2.0"
 dependencies = [
  "flate2",
+ "jmath",
 ]
 
 [[package]]

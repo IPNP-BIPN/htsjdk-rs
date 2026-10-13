@@ -196,6 +196,18 @@ jobs:
           JFORMAT_SWEEP=/tmp/jformat_sweep.txt \
             cargo test -p htsjdk-vcf --test record_conformance -- --ignored --nocapture
 
+      - name: "Decision 0046: does Java 17's toString still match?"
+        # 3.1 million Double.toString and Float.toString lines over the families decision 0046
+        # measured, generated rather than committed. Every line must match.
+        run: |
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD/tools/jmath-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            'cp /harness/ToStringSweep.java . && javac -d . ToStringSweep.java \
+             && java -cp . ToStringSweep' > /tmp/tostring_sweep.txt
+          wc -l /tmp/tostring_sweep.txt
+          TOSTRING_SWEEP=/tmp/tostring_sweep.txt \
+            cargo test --release -p jmath --test to_string_sweep -- --ignored --nocapture
+
   pow-portability:
     name: "Decision 0007: is Math.pow stable across silicon?"
     runs-on: ubuntu-latest

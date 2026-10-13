@@ -39,6 +39,7 @@ pub mod saddle_point;
 pub mod strict_exp;
 pub mod strict_log;
 pub mod strict_pow;
+pub mod to_string;
 
 /// `java.lang.Math`. Platform-specific HotSpot intrinsics; the target for most GATK call sites.
 pub mod math {
