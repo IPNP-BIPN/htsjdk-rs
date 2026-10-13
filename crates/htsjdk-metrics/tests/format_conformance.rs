@@ -3,59 +3,21 @@
 //! Goldens from `tools/metrics-conformance/FormatDump.java` in the pinned oracle container
 //! under `Locale.US`.
 //!
-//! **The port is not finished, and this file says so precisely rather than passing.** 41,612 of
-//! 41,678 values match, 99.84%. The remaining 66 are listed in
-//! `tests/data/known_divergences.tsv` by bit pattern, with the answer each side gives, so that
-//! neither an improvement nor a regression can happen silently.
+//! **Every value matches.** It took three steps, and the decision records carry each:
 //!
-//! Pinning the failures rather than trimming the corpus is the point. A conformance suite that
-//! contains only what already passes reports 100% and means nothing.
+//! - 0011 and 0013 found 112 divergences with two causes, `DigitList.shouldRoundUp` and the
+//!   pre-Schubfach `FloatingDecimal` digits, and blocked both on the JDK's GPL-2.0 licence.
+//! - 0026 showed the first cause never needed `FloatingDecimal`: whether a digit string is the
+//!   double's exact value is arithmetic on the double's own bits. That fixed 44 and left 66, every
+//!   one above 2^53.
+//! - 0046 reconstructed the Java 17 digits from the oracle's measured behaviour rather than from
+//!   its source, in `jmath::to_string`. That fixed the last 66 and introduced none.
 //!
-//! # It used to be 112, and 44 of those were never licence-blocked
-//!
-//! Decisions 0011 and 0013 diagnosed two causes and blocked both on the same licence:
-//! `DigitList.shouldRoundUp` consults whether the digit string is the double's exact value and
-//! whether it was already rounded up, and both were taken to require `FloatingDecimal`, which is
-//! GPL2 and cannot be transcribed into an MIT crate.
-//!
-//! The first of those two facts does not need `FloatingDecimal`. Every double **is** a finite
-//! decimal, and expanding it is arithmetic on its own bits — see decision 0026. Supplying that
-//! comparison fixed 44 values and introduced none.
-//!
-//! # What the remaining 66 are, and it is one cause
-//!
-//! **Every one is above 2^53**, where Java 17 stops printing the shortest decimal form. Below that
-//! line the port and the reference agree on every value in the corpus.
-//!
-//! Two of the earlier 68 were not Java's doing at all: they were exact ties between two
-//! equidistant shortest forms, which the reference resolves toward the even digit and Rust's
-//! formatter does not. Fixing that is implementing to the specification every modern
-//! shortest-representation algorithm follows, and it is in `format.rs` rather than here.
-//!
-//! What is left is the pre-Schubfach `FloatingDecimal` behaviour decision 0017 located and measured
-//! for `String.format`, arriving here by a different route. Not one remaining divergence is a
-//! rounding decision, and none is below 2^53.
+//! There is no list of declared divergences any more. A divergence that appears is a regression.
 
 use std::io::Read;
 
 use htsjdk_metrics::{format_double, format_long};
-
-const KNOWN: &str = include_str!("data/known_divergences.tsv");
-
-fn known() -> Vec<(&'static str, &'static str, &'static str)> {
-    KNOWN
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            let mut it = l.split('\t');
-            (
-                it.next().expect("bits"),
-                it.next().expect("ours"),
-                it.next().expect("htsjdk"),
-            )
-        })
-        .collect()
-}
 
 fn corpus() -> String {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/format.txt.gz");
@@ -77,16 +39,12 @@ fn ours_for(key: &str) -> String {
     }
 }
 
-/// The gate: every value matches htsjdk, except exactly the ones declared.
+/// The gate: every value matches htsjdk.
 #[test]
-fn the_only_divergences_are_the_declared_ones() {
+fn every_value_matches() {
     let text = corpus();
-    let declared: std::collections::HashSet<&str> = known().iter().map(|(b, _, _)| *b).collect();
-
     let mut checked = 0usize;
-    let mut undeclared = Vec::new();
-    let mut newly_fixed = Vec::new();
-
+    let mut diverging = Vec::new();
     for line in text.lines() {
         if line.starts_with('#') || line.trim().is_empty() {
             continue;
@@ -94,84 +52,15 @@ fn the_only_divergences_are_the_declared_ones() {
         let (key, expected) = line.split_once('\t').expect("bits TAB formatted");
         let ours = ours_for(key);
         checked += 1;
-
-        match (ours == expected, declared.contains(key)) {
-            (true, false) | (false, true) => {}
-            (false, false) => {
-                if undeclared.len() < 20 {
-                    undeclared.push(format!("{key}: ours={ours:?} htsjdk={expected:?}"));
-                }
-            }
-            (true, true) => newly_fixed.push(key.to_string()),
+        if ours != expected && diverging.len() < 20 {
+            diverging.push(format!("{key}: ours={ours:?} htsjdk={expected:?}"));
         }
     }
-
     assert_eq!(checked, 41_678, "corpus size changed");
     assert!(
-        undeclared.is_empty(),
-        "{} new divergences appeared, which is a regression:\n{}",
-        undeclared.len(),
-        undeclared.join("\n")
-    );
-    assert!(
-        newly_fixed.is_empty(),
-        "{} declared divergences now match, which is good news: remove them from \
-         tests/data/known_divergences.tsv and update decision 0011.\n{newly_fixed:?}",
-        newly_fixed.len()
-    );
-}
-
-/// Each declared divergence must still produce exactly the recorded wrong answer. One that
-/// drifted to a *different* wrong answer would otherwise pass unnoticed.
-#[test]
-fn each_declared_divergence_is_still_exactly_as_recorded() {
-    for (bits, ours_expected, _) in known() {
-        assert_eq!(
-            ours_for(bits),
-            ours_expected,
-            "the port's answer for {bits} changed without the declaration being updated"
-        );
-    }
-}
-
-/// Keeps the rate quoted in decisions 0011 and 0026 tied to the code.
-#[test]
-fn the_measured_agreement_rate_matches_the_decision_record() {
-    let total = 41_678usize;
-    let diverging = known().len();
-    assert_eq!(diverging, 66);
-    let rate = (total - diverging) as f64 / total as f64;
-    assert!(
-        (0.9983..0.9985).contains(&rate),
-        "decision 0026 states 99.84%, measured {:.4}%",
-        rate * 100.0
-    );
-}
-
-/// Every remaining divergence must be above 2^53, which is the one place Java 17 leaves the
-/// shortest decimal form.
-///
-/// This is the claim decision 0026 makes, and it is the one that would quietly stop being true: a
-/// future change to the rounding or the tie rule could reintroduce a divergence below the line, and
-/// the count alone would not say which kind it was.
-#[test]
-fn nothing_left_is_below_two_to_the_fifty_three() {
-    let mut below = Vec::new();
-    for (bits, ours, htsjdk) in known() {
-        if bits.starts_with('L') {
-            below.push(format!("{bits}: a long, which has no rounding at all"));
-            continue;
-        }
-        let value = f64::from_bits(u64::from_str_radix(bits, 16).expect("double bits"));
-        if value.abs() < 9_007_199_254_740_992.0 {
-            below.push(format!("{bits}: ours={ours} htsjdk={htsjdk}"));
-        }
-    }
-    assert!(
-        below.is_empty(),
-        "{} divergence(s) sit below 2^53, so decision 0026's claim no longer holds:\n{}",
-        below.len(),
-        below.join("\n")
+        diverging.is_empty(),
+        "divergences appeared, which is a regression:\n{}",
+        diverging.join("\n")
     );
 }
 

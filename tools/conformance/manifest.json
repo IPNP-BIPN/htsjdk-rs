@@ -810,7 +810,7 @@
       "title": "FormatUtil number formatting",
       "status": "oracle-backed",
       "harness": "tools/metrics-conformance",
-      "why": "41,678 formatted doubles over 41,612 distinct bit patterns, and the corpus the README's 99.73% rests on. It was the one golden no CI step had ever regenerated (decision 0022); it has since been re-derived in the pinned container on real x86-64 on every push and agrees, so the rate is a property of the oracle rather than of the machine that first wrote the file (decision 0040). Decision 0011 is why that distinction matters: the formatting is locale-dependent, and the container pins en_US where a developer machine pins nothing.",
+      "why": "41,678 formatted doubles over 41,612 distinct bit patterns, and the corpus the README's 100% rests on. It was the one golden no CI step had ever regenerated (decision 0022); it has since been re-derived in the pinned container on real x86-64 on every push and agrees, so the rate is a property of the oracle rather than of the machine that first wrote the file (decision 0040). Decision 0011 is why that distinction matters: the formatting is locale-dependent, and the container pins en_US where a developer machine pins nothing.",
       "compare": {
         "mode": "named"
       },

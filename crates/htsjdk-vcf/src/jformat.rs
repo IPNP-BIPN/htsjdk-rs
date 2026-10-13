@@ -13,12 +13,11 @@
 //! > then rounds *that digit string* half-up (away from zero) at the requested precision,
 //! > padding with zeros when the request outruns the digits.
 //!
-//! Rust's `{:e}` produces a shortest round-tripping representation too, so the two agree
-//! wherever the JVM's own shortest representation is genuinely shortest. It is not always:
-//! decision 0011 measured that Java 17's `FloatingDecimal` predates the Schubfach rewrite that
-//! landed in JDK 19 and emits a non-shortest digit string for a small fraction of doubles. That
-//! fraction is this module's divergence, it is measured rather than assumed, and it is the same
-//! residue already quarantined in decision 0013.
+//! "Shortest" is the JVM's word, not the truth: Java 17's `FloatingDecimal` predates the
+//! Schubfach rewrite that landed in JDK 19 and emits a non-shortest digit string for a small
+//! fraction of doubles (decision 0011). The digits come from `jmath::to_string`, which reproduces
+//! the Java 17 ones from measured behaviour (decision 0046), so that residue is closed rather than
+//! quarantined.
 //!
 //! The consequence is worth stating plainly, because it is not what a reader expects. Rust's
 //! `format!("{:.2}", d)` rounds the **exact binary value**; the JVM rounds a **short decimal
@@ -36,13 +35,12 @@ struct Shortest {
 }
 
 fn shortest(magnitude: f64) -> Shortest {
-    // `{:e}` renders `d.dddde±X`, shortest round-trip, which is exactly the pair we need.
-    let s = format!("{:e}", magnitude);
-    let (mantissa, exp) = s.split_once('e').expect("{:e} always has an exponent");
-    let digits: Vec<u8> = mantissa.bytes().filter(|b| b.is_ascii_digit()).collect();
+    // Java 17's digits, which are not always the shortest that round-trips (decision 0046).
+    // `jmath` returns them as `0.<digits> * 10^k`; this module counts from the first digit.
+    let (digits, k) = jmath::to_string::double_digits(magnitude);
     Shortest {
-        digits,
-        exp10: exp.parse().expect("{:e} exponent is an integer"),
+        digits: digits.iter().map(|d| b'0' + d).collect(),
+        exp10: k - 1,
     }
 }
 

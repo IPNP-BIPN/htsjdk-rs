@@ -115,38 +115,17 @@ pub fn encode_tag(tag: Tag, value: &TagValue) -> Option<String> {
     })
 }
 
-/// `Float.toString`, which differs from Rust's `{}` in two visible ways.
+/// `Float.toString`, as the pinned Java 17 runtime prints it.
 ///
-/// Java always shows a decimal point (`1.0`, not `1`) and switches to scientific notation
-/// outside `[1e-3, 1e7)`, with the exponent written as `E7` rather than `e7`.
+/// It differs from Rust's `{}` in layout (Java always shows a decimal point, switches to scientific
+/// notation outside `[1e-3, 1e7)` and writes `E7` rather than `e7`) and, for some values, in the
+/// digits themselves: Java 17 does not always print the shortest decimal, so `Float.MIN_VALUE` is
+/// `1.4E-45` rather than `1.0E-45`. `jmath::to_string` reproduces both (decision 0046).
 ///
 /// Public because a conformance golden that records a float records `Float.toString`'s rendering
-/// of it, and a test comparing against `{}` would differ on `-0.0` alone.
+/// of it.
 pub fn java_float_to_string(f: f32) -> String {
-    if f.is_nan() {
-        return "NaN".to_string();
-    }
-    if f.is_infinite() {
-        return if f < 0.0 { "-Infinity" } else { "Infinity" }.to_string();
-    }
-    let a = f.abs();
-    if a != 0.0 && !(1e-3..1e7).contains(&a) {
-        // Java's form is `d.dddEn`, with at least one fractional digit.
-        let s = format!("{:e}", f);
-        let (mantissa, exp) = s.split_once('e').unwrap();
-        let mantissa = if mantissa.contains('.') {
-            mantissa.to_string()
-        } else {
-            format!("{mantissa}.0")
-        };
-        return format!("{mantissa}E{exp}");
-    }
-    let s = format!("{f}");
-    if s.contains('.') || s.contains('e') {
-        s
-    } else {
-        format!("{s}.0")
-    }
+    jmath::to_string::float_to_string(f)
 }
 
 /// `SAMTextWriter.writeAlignment`, without the trailing newline.

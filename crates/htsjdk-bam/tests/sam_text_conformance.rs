@@ -7,11 +7,9 @@
 //! promotion ladder computes. The corpus contains the whole ladder so that is checked rather
 //! than asserted.
 //!
-//! **One case is declared as diverging**, and it is the same cause decision 0011 recorded for
-//! doubles, now confirmed for floats: Java 17's `Float.toString` is not the shortest
-//! round-trip decimal. `Float.MIN_VALUE` renders as `1.4E-45` there and `1.0E-45` here, and
-//! both parse back to the same subnormal. Closing it needs the `FloatingDecimal` port that
-//! decision 0011 already lists as outstanding, so it is pinned here rather than patched.
+//! Every record matches. `float_1` used to be declared as diverging: Java 17's `Float.toString`
+//! renders `Float.MIN_VALUE` as `1.4E-45`, not the shortest `1.0E-45`. `jmath::to_string`
+//! reproduces the Java 17 digits from measurement (decision 0046), and the case now passes.
 
 // `3.14159f32` below is the literal the Java harness wrote, and the golden holds the bits of
 // exactly that literal. Substituting `std::f32::consts::PI`, as clippy suggests, is a different
@@ -285,11 +283,6 @@ fn cases() -> Vec<Case> {
     out
 }
 
-/// Cases where the port knowingly differs, with the cause.
-///
-/// Pinned rather than excluded: a suite trimmed to what passes reports 100% and means nothing.
-const KNOWN_DIVERGENCES: &[(&str, &str, &str)] = &[("float_1", "XF:f:1.0E-45", "XF:f:1.4E-45")];
-
 /// The gate: every record renders to exactly htsjdk's line.
 #[test]
 fn every_record_renders_to_htsjdks_sam_line() {
@@ -298,7 +291,6 @@ fn every_record_renders_to_htsjdks_sam_line() {
     assert_eq!(cases.len(), goldens.len(), "case lists have drifted");
 
     let mut failures = Vec::new();
-    let mut declared = 0usize;
     for (case, (golden_name, expected)) in cases.iter().zip(&goldens) {
         assert_eq!(&case.name, golden_name, "case lists out of step");
         let ours = write_alignment(
@@ -308,32 +300,13 @@ fn every_record_renders_to_htsjdks_sam_line() {
         );
         match ours {
             None => failures.push(format!("{}: refused to render", case.name)),
-            Some(line) if &line != expected => {
-                match KNOWN_DIVERGENCES.iter().find(|(n, _, _)| *n == case.name) {
-                    Some((_, ours_expected, theirs_expected)) => {
-                        // A declared divergence must still be exactly the recorded one; drifting
-                        // to a different wrong answer would otherwise pass unnoticed.
-                        assert!(
-                            line.ends_with(ours_expected) && expected.ends_with(theirs_expected),
-                            "{} drifted: {line}",
-                            case.name
-                        );
-                        declared += 1;
-                    }
-                    None => failures.push(format!(
-                        "{}:\n  ours:   {line}\n  htsjdk: {expected}",
-                        case.name
-                    )),
-                }
-            }
+            Some(line) if &line != expected => failures.push(format!(
+                "{}:\n  ours:   {line}\n  htsjdk: {expected}",
+                case.name
+            )),
             Some(_) => {}
         }
     }
-    assert_eq!(
-        declared,
-        KNOWN_DIVERGENCES.len(),
-        "a declared divergence now matches; remove it and update decision 0011"
-    );
     assert!(
         failures.is_empty(),
         "{} of {} lines diverge:\n{}",

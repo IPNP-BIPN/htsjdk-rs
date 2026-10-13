@@ -36,17 +36,17 @@ repositories name one set of pins, and moving one alone reproduces a combination
 | SAM text header (`SAMTextHeaderCodec.encode`) | **byte-identical**, 9 goldens |
 | BAM file writer (header + dictionary + framing) | **byte-identical**, 4 whole files |
 | BAM file reader (header parse + records) | reads htsjdk-produced files |
-| SAM text record writer | **byte-identical**, 66 of 67 (one licence-blocked, decision 0013) |
+| SAM text record writer | **byte-identical**, 67 of 67, decision 0046 |
 | SAM text record parser | BAM → SAM → BAM byte-identical |
 | Whole SAM text files | **byte-identical**, 5 goldens; BAM → SAM matches htsjdk |
 | `Histogram` (20 of 44 metrics tools) | **byte-identical**, 338 statistics |
-| Metrics number formatting (`FormatUtil`) | **99.73%** over 41,678 doubles re-derived by the oracle on every run; the last 112 are **licence-blocked**, decisions 0013 and 0040 |
+| Metrics number formatting (`FormatUtil`) | **100%** over 41,678 doubles re-derived by the oracle on every run; Java 17's digits reconstructed from behaviour, decisions 0040 and 0046 |
 | `MetricsFile` layout | ported (`htsjdk-metrics::file`); no suite of its own, exercised end to end by every picard-rs metrics golden |
 | BAM index (`.bai`) | **byte-identical**, 9 goldens |
 | Interval lists (`IntervalList`, `.interval_list`) | **byte-identical**, 11 goldens |
 | VCF header | **byte-identical**, 7 goldens, decision 0016 |
 | VCF records (`VCFEncoder`, `Allele`, genotypes) | **byte-identical**, 54 records + 29 double cases, decisions 0017, 0018 |
-| JVM `%f` / `%e` number formatting | **99.85%** over 127,803 doubles; **100%** for `%.3e` and below 6.9e14, decision 0017 |
+| JVM `%f` / `%e` number formatting | **100%** over 127,803 doubles, decisions 0017 and 0046 |
 | Whole VCF files (`VariantContextWriter`) | **byte-identical**, 7 goldens, decision 0019 |
 | Tribble index | **byte-identical**, both layouts, read and written: 5 suites (`tribble-index`, `tribble-index-write`, `tribble-bed`, `tribble-interval-list`, `tribble-vcf-candecode`) |
 | Tabix index (`.tbi`) | **byte-identical**, written: 19 feature streams as body and as block-compressed file (`tabix-index`) |

@@ -6,6 +6,20 @@ here moves together, because they are one port of one library and a consumer pin
 The format is [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project does not yet
 follow semantic versioning, because 0.x is what an unreleased port is.
 
+## [Unreleased]
+
+### Added
+
+- `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
+  where they are not the shortest decimal. Reconstructed from the oracle's measured behaviour, not
+  from the JDK's GPL-2.0 source (decision 0046).
+
+### Fixed
+
+- `FormatUtil` formatting now matches on all 41,678 corpus values (was 99.84%, 66 quarantined),
+  the SAM text writer on all 67 records (`Float.MIN_VALUE` is `1.4E-45`), and `%f` / `%e` on all
+  127,803 swept doubles (was 99.85%). Nothing formatting-related is licence-blocked any more.
+
 ## [0.2.0] - 2026-10-01
 
 Fixes found by gatk-rs's covering arrays, which run whole tools against the reference and so reach
