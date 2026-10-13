@@ -339,13 +339,18 @@ impl<'a> VcfEncoder<'a> {
     }
 }
 
+/// `VCFConstants.MAX_GENOTYPE_QUAL`.
+const MAX_GENOTYPE_QUAL: i32 = 99;
+
 /// The four fields `IntGenotypeFieldAccessors` handles, which bypass `formatVCFField` entirely.
 ///
 /// The outer `Option` says whether this is one of those fields at all; the inner one says
 /// whether the sample has a value, since an accessor returning null prints `.`.
 fn int_field(g: &Genotype, field: &str) -> Option<Option<Vec<i32>>> {
     match field {
-        "GQ" => Some(g.gq.map(|v| vec![v])),
+        // `GQAccessor`: `Math.min(g.getGQ(), VCFConstants.MAX_GENOTYPE_QUAL)`. The genotype keeps
+        // its real GQ, which annotations such as `GQ_MEAN` read; only the written text is capped.
+        "GQ" => Some(g.gq.map(|v| vec![v.min(MAX_GENOTYPE_QUAL)])),
         "DP" => Some(g.dp.map(|v| vec![v])),
         "AD" => Some(g.ad.clone()),
         "PL" => Some(g.pl.clone()),
@@ -505,5 +510,40 @@ mod filter_line_tests {
         let file = read_vcf(FILE).expect("the file reads");
         let written = write_vcf(&file.header, &file.records).expect("the record encodes");
         assert_eq!(written, FILE, "the round trip is the file it read");
+    }
+}
+
+#[cfg(test)]
+mod genotype_quality_tests {
+    use crate::reader::read_vcf;
+    use crate::vcf_file::write_vcf;
+
+    const HEADER: &str = "##fileformat=VCFv4.2\n\
+                          ##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"Genotype Quality\">\n\
+                          ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+                          ##contig=<ID=chr1,length=240>\n\
+                          #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA12878\n";
+
+    /// `GQAccessor` writes `min(GQ, 99)`, while the genotype itself keeps the larger value.
+    #[test]
+    fn a_genotype_quality_past_ninety_nine_is_written_as_ninety_nine() {
+        let file = read_vcf(&format!(
+            "{HEADER}chr1\t20\t.\tT\tG\t.\t.\t.\tGT:GQ\t0/1:7\n"
+        ))
+        .expect("the file reads");
+        let mut records = file.records.clone();
+        let genotypes: Vec<_> = records[0]
+            .genotypes
+            .iter()
+            .map(|g| {
+                let mut g = g.clone();
+                g.gq = Some(342);
+                g
+            })
+            .collect();
+        records[0].genotypes = crate::genotypes_context::GenotypesContext::new(genotypes);
+        assert_eq!(records[0].genotypes.iter().next().unwrap().gq, Some(342));
+        let written = write_vcf(&file.header, &records).expect("the record encodes");
+        assert!(written.ends_with("GT:GQ\t0/1:99\n"), "{written}");
     }
 }
