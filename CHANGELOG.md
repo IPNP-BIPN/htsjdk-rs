@@ -8,6 +8,11 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-14
+
+Java's number printing, reconstructed from behaviour, closes the last formatting gap; the rest are
+VCF bytes and a speed bound that gatk-rs's tools reached.
+
 ### Added
 
 - `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
@@ -19,6 +24,19 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 - `FormatUtil` formatting now matches on all 41,678 corpus values (was 99.84%, 66 quarantined),
   the SAM text writer on all 67 records (`Float.MIN_VALUE` is `1.4E-45`), and `%f` / `%e` on all
   127,803 swept doubles (was 99.85%). Nothing formatting-related is licence-blocked any more.
+- **A written GQ is capped at 99**, as `VCFEncoder` does through `GQAccessor`. The genotype keeps
+  its real GQ, which GATK's `GQ_MEAN` reads; only the text is capped.
+- **A file whose sample columns are not sorted has every record decoded**, as
+  `AbstractVCFCodec.parseVCFLine` does when `samplesWereAlreadySorted()` is false, so it is written
+  back re-encoded rather than copied verbatim. The order is `String.compareTo`'s (#242).
+
+### Changed
+
+- `jmath` `log` and `log10` answer from a table, an exact reduction and a short polynomial whenever
+  twice the error bound rounds to one double, and fall back to the double-double series otherwise:
+  277 ns per call becomes 11.6, with 200 million inputs checked and none differing (decision 0045).
+- `noodles-bam` 0.96.0, `noodles-sam` 0.91.0, `noodles-vcf` 0.94.0 and `noodles-core` 0.21.0, used
+  by the test oracles only.
 
 ## [0.2.0] - 2026-10-01
 
