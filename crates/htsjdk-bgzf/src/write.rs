@@ -10,7 +10,8 @@
 //!
 //! Ported from htsjdk 4.2.0
 //! `src/main/java/htsjdk/samtools/util/BlockCompressedOutputStream.java`
-//! (`deflateBlock`, `writeGzipBlock`, `flush`, `close`).
+//! (`deflateBlock`, `writeGzipBlock`, `flush`, `close`), with [`Deflater::Libdeflate`] from htsjdk
+//! 5.0.0's `LibdeflateDeflater` and jlibdeflate 0.1.0's native `deflateCompress`.
 
 use std::io::{self, Write};
 
@@ -38,6 +39,55 @@ pub enum Deflater {
     /// is `gkl-deflate`'s own behaviour and the reason the feature is off by default: BGZF's level
     /// is 5, so nothing here pays a C toolchain for a pair of levels it never asks for.
     Gkl,
+    /// libdeflate v1.25, which htsjdk 5.0.0's own `DeflaterFactory` returns whenever its native
+    /// library loads (`samjdk.use_libdeflate`, true by default). So it is what Picard 3.5.0 writes
+    /// with `USE_JDK_DEFLATER=true`, despite the name: that argument only stops Picard installing
+    /// GKL, and the factory left in place is htsjdk's.
+    Libdeflate,
+}
+
+/// A libdeflate compressor at one level: `LibdeflateCompressor` in jlibdeflate, which
+/// `LibdeflateDeflater` keeps for the life of the stream.
+struct LibdeflateState(std::ptr::NonNull<libdeflate_sys::libdeflate_compressor>);
+
+// The compressor is plain heap state that libdeflate never shares; it may move between threads,
+// it is just never used from two at once, which `&mut self` already rules out.
+unsafe impl Send for LibdeflateState {}
+
+impl LibdeflateState {
+    fn new(level: u32) -> io::Result<Self> {
+        // SAFETY: any level 0..=12 is valid, and `with_deflater` has already bounded it to 0..=9.
+        let raw = unsafe { libdeflate_sys::libdeflate_alloc_compressor(level as std::ffi::c_int) };
+        std::ptr::NonNull::new(raw)
+            .map(LibdeflateState)
+            .ok_or_else(|| io::Error::other("libdeflate could not allocate a compressor"))
+    }
+
+    /// `libdeflate_deflate_compress` into exactly `avail` bytes: the length written, or `None` when
+    /// it does not fit, which is jlibdeflate's -1 and leaves `LibdeflateDeflater.finished()` false.
+    fn compress(&mut self, input: &[u8], out: &mut Vec<u8>, avail: usize) -> Option<usize> {
+        out.clear();
+        out.resize(avail, 0);
+        // SAFETY: both pointers are valid for the lengths passed, and the compressor is ours.
+        let written = unsafe {
+            libdeflate_sys::libdeflate_deflate_compress(
+                self.0.as_ptr(),
+                input.as_ptr().cast(),
+                input.len(),
+                out.as_mut_ptr().cast(),
+                avail,
+            )
+        };
+        out.truncate(written);
+        (written != 0).then_some(written)
+    }
+}
+
+impl Drop for LibdeflateState {
+    fn drop(&mut self) {
+        // SAFETY: allocated by `libdeflate_alloc_compressor` and freed exactly once, here.
+        unsafe { libdeflate_sys::libdeflate_free_compressor(self.0.as_ptr()) }
+    }
 }
 
 /// Writes a BGZF stream whose bytes match `BlockCompressedOutputStream`.
@@ -55,6 +105,8 @@ pub struct BgzfWriter<W: Write> {
     /// The zlib deflater, reused and reset between blocks, which is htsjdk's `deflater` field.
     /// Built on first use because the GKL path never touches it.
     deflater_state: Option<Compress>,
+    /// The libdeflate compressor, likewise built on first use.
+    libdeflate_state: Option<LibdeflateState>,
 }
 
 impl<W: Write> BgzfWriter<W> {
@@ -75,6 +127,7 @@ impl<W: Write> BgzfWriter<W> {
             buffer: Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE),
             compressed: Vec::with_capacity(COMPRESSED_BUFFER_SIZE),
             deflater_state: None,
+            libdeflate_state: None,
             level,
             deflater,
             finished: false,
@@ -137,6 +190,20 @@ impl<W: Write> BgzfWriter<W> {
                 // that array is output the JDK path could not have declared finished, EQUAL length
                 // included, which is the boundary the comment below is about.
                 compressed.len() < COMPRESSED_BUFFER_SIZE
+            }
+            Deflater::Libdeflate => {
+                // One call deflates the whole block, into an output array of exactly
+                // `COMPRESSED_BUFFER_SIZE` bytes. Unlike zlib's, libdeflate's answer at that
+                // boundary is not ambiguous: output that fills the array exactly was written whole.
+                let state = match self.libdeflate_state.as_mut() {
+                    Some(state) => state,
+                    None => self
+                        .libdeflate_state
+                        .insert(LibdeflateState::new(self.level)?),
+                };
+                state
+                    .compress(&self.buffer, &mut compressed, COMPRESSED_BUFFER_SIZE)
+                    .is_some()
             }
         };
 
@@ -362,5 +429,45 @@ mod tests {
         assert_eq!(&gkl[framed..], &EMPTY_GZIP_BLOCK[..]);
         // Both files end with the terminator, and only the middle differs.
         assert!(jdk.ends_with(&EMPTY_GZIP_BLOCK));
+    }
+
+    /// libdeflate writes its own bytes, which decompress to the input at every level BGZF accepts,
+    /// for text and for incompressible data alike. Whether they are htsjdk 5.0.0's is measured
+    /// against Picard 3.5.0 by picard-rs, whose `USE_JDK_DEFLATER=true` reaches this deflater.
+    #[test]
+    fn the_libdeflate_deflater_round_trips_at_every_level() {
+        let text: Vec<u8> = std::iter::repeat_n(&b"chr1\t100\t.\tA\tC\t.\t.\t.\n"[..], 4000)
+            .flatten()
+            .copied()
+            .collect();
+        // A linear congruential generator: incompressible enough to reach libdeflate's stored
+        // blocks, and the same bytes on every run.
+        let mut state = 0x2545_f491_u32;
+        let noise: Vec<u8> = (0..200_000)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (state >> 24) as u8
+            })
+            .collect();
+        for payload in [&text, &noise] {
+            for level in 0..=9 {
+                let mut writer = BgzfWriter::with_deflater(Vec::new(), level, Deflater::Libdeflate);
+                writer.write_all(payload).unwrap();
+                let written = writer.into_inner().unwrap();
+                assert_eq!(&decompress_all(&written).unwrap(), payload, "level {level}");
+                assert!(written.ends_with(&EMPTY_GZIP_BLOCK));
+            }
+        }
+
+        let mut jdk = BgzfWriter::new(Vec::new());
+        jdk.write_all(&text).unwrap();
+        let mut libdeflate =
+            BgzfWriter::with_deflater(Vec::new(), DEFAULT_COMPRESSION_LEVEL, Deflater::Libdeflate);
+        libdeflate.write_all(&text).unwrap();
+        assert_ne!(
+            jdk.into_inner().unwrap(),
+            libdeflate.into_inner().unwrap(),
+            "libdeflate and zlib do not agree on this payload"
+        );
     }
 }
