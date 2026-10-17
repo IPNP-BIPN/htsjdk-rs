@@ -297,13 +297,23 @@ impl BamRecord {
         } else {
             out.extend_from_slice(&self.base_qualities);
         }
-        tags.write(out)?;
-
-        debug_assert_eq!(
-            out.len() - start,
-            4 + block_size,
-            "block_size must describe the bytes actually written"
-        );
+        // `getVariableBinaryRepresentation`: a record nothing was set on goes out as it came in.
+        let prefix = &out[start + 4 + FIXED_BLOCK_SIZE..];
+        match tags.raw_for(crate::tag::prefix_hash(prefix)) {
+            Some(raw) => {
+                out.extend_from_slice(raw);
+                let written = (out.len() - start - 4) as i32;
+                out[start..start + 4].copy_from_slice(&written.to_le_bytes());
+            }
+            None => {
+                tags.write(out)?;
+                debug_assert_eq!(
+                    out.len() - start,
+                    4 + block_size,
+                    "block_size must describe the bytes actually written"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -400,7 +410,12 @@ impl BamRecord {
         };
         p += read_len;
 
-        let tags = read_tags(&input[p..total])?;
+        let (mut tags, canonical) = Tags::read_checked(&input[p..total])
+            .map_err(|error| DecodeError::MalformedTags(error.to_string()))?;
+        if !canonical {
+            let prefix = &input[4 + FIXED_BLOCK_SIZE..p];
+            tags.keep_raw(&input[p..total], crate::tag::prefix_hash(prefix));
+        }
 
         Ok(Some((
             BamRecord {
@@ -434,6 +449,77 @@ pub fn read_tags(buf: &[u8]) -> Result<Tags, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A record as samtools writes it: tags in insertion order, MQ as an unsigned byte, and an H.
+    fn samtools_record() -> Vec<u8> {
+        let mut rec = mapped_read();
+        rec.tags.insert(Tag::new(b"NM"), TagValue::Int(1));
+        let canonical = rec.encode().unwrap();
+        // Rebuild the tag block by hand: MQ:C:58, then NM:c:1, then XH:H:0A1F.
+        let fixed_and_prefix = canonical.len() - 4; // NM:c:1 is four bytes
+        let mut bytes = canonical[..fixed_and_prefix].to_vec();
+        bytes.extend_from_slice(b"MQC\x3a");
+        bytes.extend_from_slice(b"NMc\x01");
+        bytes.extend_from_slice(b"XHH0A1F\0");
+        let block = (bytes.len() - 4) as i32;
+        bytes[..4].copy_from_slice(&block.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn an_untouched_record_is_written_from_the_bytes_it_was_read_from() {
+        let bytes = samtools_record();
+        let (rec, used) = BamRecord::decode(&bytes).unwrap().unwrap();
+        assert_eq!(used, bytes.len());
+        assert_eq!(rec.encode().unwrap(), bytes);
+        // The fixed fields are not part of it: a flag set on the record still keeps the tags.
+        let mut flagged = rec.clone();
+        flagged.flags |= 0x400;
+        let written = flagged.encode().unwrap();
+        assert_eq!(written[36..], bytes[36..]);
+        assert_ne!(written, bytes);
+    }
+
+    #[test]
+    fn setting_anything_variable_writes_the_record_canonically() {
+        let bytes = samtools_record();
+        let (rec, _) = BamRecord::decode(&bytes).unwrap().unwrap();
+        // The same value set again is still a set, as `setAttribute` makes the record stale.
+        let mut set = rec.clone();
+        set.tags.insert(Tag::new(b"NM"), TagValue::Int(1));
+        let mut cigar = rec.clone();
+        cigar.cigar = Cigar::new(vec![
+            CigarElement {
+                length: 2,
+                op: Op::M,
+            },
+            CigarElement {
+                length: 2,
+                op: Op::S,
+            },
+        ]);
+        let mut eager = rec.clone();
+        eager.tags.forget_raw();
+        for changed in [set, cigar, eager] {
+            let written = changed.encode().unwrap();
+            assert_ne!(written, bytes);
+            // Canonical: sorted, MQ as a signed byte, XH as a B array.
+            let (again, _) = BamRecord::decode(&written).unwrap().unwrap();
+            assert_eq!(again.tags, changed.tags);
+            assert_eq!(again.encode().unwrap(), written);
+        }
+    }
+
+    #[test]
+    fn a_canonical_block_is_not_kept() {
+        let mut rec = mapped_read();
+        rec.tags.insert(Tag::new(b"MQ"), TagValue::Int(58));
+        rec.tags.insert(Tag::new(b"NM"), TagValue::Int(1));
+        let bytes = rec.encode().unwrap();
+        let (back, _) = BamRecord::decode(&bytes).unwrap().unwrap();
+        assert!(!back.tags.holds_raw());
+        assert_eq!(back.encode().unwrap(), bytes);
+    }
 
     fn mapped_read() -> BamRecord {
         BamRecord {
