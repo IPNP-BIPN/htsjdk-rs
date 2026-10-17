@@ -301,12 +301,8 @@ pub fn decompress(
     match method {
         CompressionMethod::Raw => Ok(content.to_vec()),
         CompressionMethod::Gzip => {
-            use std::io::Read;
-            let mut out = Vec::with_capacity(uncompressed_size.max(0) as usize);
-            flate2::read::GzDecoder::new(content)
-                .read_to_end(&mut out)
-                .map_err(|_| FileError::Corrupt)?;
-            Ok(out)
+            let _ = uncompressed_size;
+            crate::gzip::decompress(content).map_err(FileError::Codec)
         }
         CompressionMethod::Rans => rans::uncompress(content).map_err(|_| FileError::Corrupt),
         CompressionMethod::RansNx16 => {

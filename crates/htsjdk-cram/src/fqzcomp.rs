@@ -394,3 +394,372 @@ fn new_record(
     state.read_ordinal += 1;
     Ok(())
 }
+
+// ---- Encoding: `FQZCompEncode` ----
+
+const CTX_SIZE: usize = 1 << 16;
+const BAM_FREVERSE: i32 = 0x10;
+
+/// htslib's approximate square root, which maps the running delta to its context bits.
+const DSQR: [u32; 64] = [
+    0, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 5, 5, 5, 5, 5, 5,
+    5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+];
+
+/// `EncoderParams`.
+struct EncoderParams {
+    max_symbol: usize,
+    qbits: u32,
+    qshift: u32,
+    qmask: u32,
+    qloc: u32,
+    sloc: u32,
+    ploc: u32,
+    dloc: u32,
+    qmap: [u32; 256],
+    reverse_qmap: Vec<u32>,
+    qtab: [u32; 256],
+    ptab: Option<Vec<u32>>,
+    dtab: Option<Vec<u32>>,
+    fixed_len: bool,
+    do_dedup: bool,
+    do_reverse: bool,
+    pflags: u8,
+    gflags: u8,
+}
+
+/// `FQZCompEncode.compress`: `lengths` are the records' quality lengths, none of them zero, and
+/// `bam_flags` their flags when the caller has them, which turns on the reversal of reverse-strand
+/// reads.
+pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<u8> {
+    if data.is_empty() {
+        return Vec::new();
+    }
+    let params = build_parameters(data, lengths, bam_flags);
+    let mut out = Vec::new();
+    crate::rans_nx16::write_uint7(data.len() as i32, &mut out);
+    write_parameters(&mut out, &params);
+
+    let ptab: Option<Vec<u32>> = params
+        .ptab
+        .as_ref()
+        .map(|t| t.iter().map(|&v| v << params.ploc).collect());
+    let dtab: Option<Vec<u32>> = params
+        .dtab
+        .as_ref()
+        .map(|t| t.iter().map(|&v| v << params.dloc).collect());
+
+    let mut quality = data.to_vec();
+    if params.do_reverse {
+        reverse_in_place(&mut quality, lengths, bam_flags);
+    }
+    let mut models: Vec<Option<ByteModel>> = (0..CTX_SIZE).map(|_| None).collect();
+    let symbols = params.max_symbol + 1;
+    let mut length_models = vec![ByteModel::new(256); 4];
+    let mut reverse_model = ByteModel::new(2);
+    let mut dup_model = ByteModel::new(2);
+    let mut coder = RangeCoder::new();
+
+    let mut last = 0usize;
+    let mut qctx: u32 = 0;
+    let mut delta: u32 = 0;
+    let mut previous: u32 = 0;
+    let mut record = 0usize;
+    let mut remaining: i32 = 0;
+    let mut first_length = true;
+    let mut last_length: i32 = 0;
+    let mut i = 0usize;
+    while i < quality.len() {
+        if remaining == 0 {
+            let length = lengths[record];
+            if !params.fixed_len || first_length {
+                for (k, model) in length_models.iter_mut().enumerate() {
+                    model.encode(&mut coder, ((length >> (8 * k)) & 0xFF) as u32);
+                }
+                first_length = false;
+            }
+            if params.do_reverse {
+                let reverse = bam_flags.is_some_and(|f| f[record] & BAM_FREVERSE != 0);
+                reverse_model.encode(&mut coder, u32::from(reverse));
+            }
+            if params.do_dedup {
+                let n = length.max(0) as usize;
+                let duplicate = i > 0
+                    && length == last_length
+                    && quality[i - last_length as usize..i - last_length as usize + n]
+                        == quality[i..i + n];
+                dup_model.encode(&mut coder, u32::from(duplicate));
+                if duplicate {
+                    last_length = length;
+                    i += n;
+                    record += 1;
+                    remaining = 0;
+                    continue;
+                }
+            }
+            last_length = length;
+            remaining = length;
+            last = 0;
+            qctx = 0;
+            delta = 0;
+            previous = 0;
+            record += 1;
+        }
+        let q = params.qmap[quality[i] as usize];
+        models[last]
+            .get_or_insert_with(|| ByteModel::new(symbols))
+            .encode(&mut coder, q);
+        qctx = (qctx << params.qshift).wrapping_add(params.qtab[q as usize]);
+        let mut context = (qctx & params.qmask) << params.qloc;
+        if let Some(t) = &ptab {
+            context = context.wrapping_add(t[remaining.clamp(0, 1023) as usize]);
+        }
+        if let Some(t) = &dtab {
+            context = context.wrapping_add(t[delta.min(255) as usize]);
+            if previous != q {
+                delta += 1;
+            }
+            previous = q;
+        }
+        last = (context as usize) & (CTX_SIZE - 1);
+        remaining -= 1;
+        i += 1;
+    }
+    coder.encode_end();
+    out.extend_from_slice(&coder.out);
+    out
+}
+
+fn build_parameters(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> EncoderParams {
+    let mut histogram = [0u32; 256];
+    let mut max_symbol = 0usize;
+    for &q in data {
+        histogram[q as usize] += 1;
+        max_symbol = max_symbol.max(q as usize);
+    }
+    let symbols = histogram[..=max_symbol].iter().filter(|&&h| h > 0).count();
+
+    let (mut qbits, mut qshift, mut pbits, mut dbits, dshift) = (10u32, 5u32, 4u32, 2u32, 1u32);
+    let (qloc, sloc, ploc, dloc) = (0u32, 14u32, 10u32, 14u32);
+    let mut pshift: i32 = -1;
+    let size = data.len();
+    if symbols <= 4 {
+        qshift = 2;
+        if size < 5_000_000 {
+            pbits = 2;
+            pshift = 5;
+        }
+    } else if symbols <= 8 {
+        qbits = qbits.min(9);
+        qshift = 3;
+        if size < 5_000_000 {
+            qbits = 6;
+        }
+    }
+    if size < 300_000 {
+        qbits = qshift;
+        dbits = 2;
+    }
+    if pshift < 0 {
+        pshift = match lengths.first() {
+            Some(&first) => {
+                let ratio = f64::from(first) / f64::from(1u32 << pbits);
+                let value = jmath::math::log(ratio) / jmath::math::log(2.0) + 0.5;
+                // `(int)` truncates toward zero and saturates; `Math.max(0, ...)` then floors it.
+                (value as i32).max(0)
+            }
+            None => 0,
+        };
+    }
+
+    let store_qmap = symbols <= 8 && symbols * 2 < max_symbol;
+    let mut qmap = [0u32; 256];
+    let mut reverse_qmap = Vec::new();
+    let coded_max = if store_qmap {
+        let mut j = 0u32;
+        for (i, &h) in histogram.iter().enumerate() {
+            if h > 0 {
+                qmap[i] = j;
+                reverse_qmap.push(i as u32);
+                j += 1;
+            }
+        }
+        symbols
+    } else {
+        for (i, slot) in qmap.iter_mut().enumerate() {
+            *slot = i as u32;
+        }
+        max_symbol
+    };
+    let qtab: [u32; 256] = std::array::from_fn(|i| i as u32);
+    let ptab = (pbits > 0).then(|| {
+        (0..1024u32)
+            .map(|i| ((1u32 << pbits) - 1).min(i >> pshift as u32))
+            .collect::<Vec<_>>()
+    });
+    let dtab = (dbits > 0).then(|| {
+        let cap = (1u32 << dbits) - 1;
+        let dsqr: Vec<u32> = DSQR.iter().map(|&d| d.min(cap)).collect();
+        (0..256u32)
+            .map(|i| dsqr[((i >> dshift) as usize).min(dsqr.len() - 1)])
+            .collect::<Vec<_>>()
+    });
+    let fixed_len = lengths.iter().all(|&l| l == lengths[0]);
+
+    let mut do_dedup = false;
+    if bam_flags.is_some() {
+        let mut duplicates = 0usize;
+        let mut offset = 0usize;
+        let mut previous = 0i32;
+        for (record, &length) in lengths.iter().enumerate() {
+            let n = length.max(0) as usize;
+            if record > 0
+                && length == previous
+                && offset >= previous as usize
+                && data[offset - previous as usize..offset - previous as usize + n]
+                    == data[offset..offset + n]
+            {
+                duplicates += 1;
+            }
+            offset += n;
+            previous = length;
+        }
+        do_dedup = (lengths.len() + 1) / (duplicates + 1) < 500;
+    }
+    let do_reverse = bam_flags.is_some();
+    let pflags = if ptab.is_some() { PTAB_FLAG_MASK } else { 0 }
+        | if dtab.is_some() { DTAB_FLAG_MASK } else { 0 }
+        | if fixed_len { FIXED_LEN_FLAG_MASK } else { 0 }
+        | if do_dedup { DEDUP_FLAG_MASK } else { 0 }
+        | if store_qmap { QMAP_FLAG_MASK } else { 0 };
+    EncoderParams {
+        max_symbol: coded_max,
+        qbits,
+        qshift,
+        qmask: (1u32 << qbits) - 1,
+        qloc,
+        sloc,
+        ploc,
+        dloc,
+        qmap,
+        reverse_qmap,
+        qtab,
+        ptab,
+        dtab,
+        fixed_len,
+        do_dedup,
+        do_reverse,
+        pflags,
+        gflags: if do_reverse { DO_REVERSE_FLAG_MASK } else { 0 },
+    }
+}
+
+fn write_parameters(out: &mut Vec<u8>, params: &EncoderParams) {
+    out.push(SUPPORTED_VERSION);
+    out.push(params.gflags);
+    out.push(0);
+    out.push(0);
+    out.push(params.pflags);
+    out.push(params.max_symbol as u8);
+    out.push(((params.qbits << 4) | params.qshift) as u8);
+    out.push(((params.qloc << 4) | params.sloc) as u8);
+    out.push(((params.ploc << 4) | params.dloc) as u8);
+    if params.pflags & QMAP_FLAG_MASK != 0 {
+        for &q in params.reverse_qmap.iter().take(params.max_symbol) {
+            out.push(q as u8);
+        }
+    }
+    if let Some(t) = &params.ptab {
+        store_array(out, t, 1024);
+    }
+    if let Some(t) = &params.dtab {
+        store_array(out, t, 256);
+    }
+}
+
+/// `storeArray`: the inverse of [`read_array`].
+fn store_array(out: &mut Vec<u8>, array: &[u32], size: usize) {
+    let mut runs: Vec<u8> = Vec::new();
+    let mut i = 0usize;
+    let mut j = 0u32;
+    while i < size {
+        let start = i;
+        while i < size && array[i] == j {
+            i += 1;
+        }
+        let mut length = i - start;
+        loop {
+            let r = length.min(255);
+            runs.push(r as u8);
+            length -= r;
+            if r != 255 {
+                break;
+            }
+        }
+        j += 1;
+    }
+    let mut last: i32 = -1;
+    let mut i = 0;
+    while i < runs.len() {
+        out.push(runs[i]);
+        if i32::from(runs[i]) == last {
+            let mut n = i + 1;
+            while n < runs.len() && i32::from(runs[n]) == last {
+                n += 1;
+            }
+            out.push((n - i - 1) as u8);
+            i = n;
+        } else {
+            last = i32::from(runs[i]);
+            i += 1;
+        }
+    }
+}
+
+fn reverse_in_place(data: &mut [u8], lengths: &[i32], bam_flags: Option<&[i32]>) {
+    let Some(flags) = bam_flags else { return };
+    let mut offset = 0usize;
+    for (record, &length) in lengths.iter().enumerate() {
+        let n = length.max(0) as usize;
+        if flags[record] & BAM_FREVERSE != 0 {
+            data[offset..offset + n].reverse();
+        }
+        offset += n;
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    #[test]
+    fn records_round_trip_with_and_without_flags() {
+        let mut data = Vec::new();
+        let mut lengths = Vec::new();
+        let mut flags = Vec::new();
+        for r in 0..300u32 {
+            let n = 30 + (r % 7) as usize;
+            for k in 0..n {
+                data.push(((r * 31 + k as u32 * 7) % 40) as u8 + 2);
+            }
+            if r % 50 == 0 {
+                let copy = data[data.len() - n..].to_vec();
+                data.extend_from_slice(&copy);
+                lengths.push(n as i32);
+                flags.push(0);
+            }
+            lengths.push(n as i32);
+            flags.push(if r % 3 == 0 { 0x10 } else { 0 });
+        }
+        for f in [None, Some(&flags[..])] {
+            let packed = compress(&data, &lengths, f);
+            assert_eq!(uncompress(&packed).unwrap(), data);
+        }
+        let binned: Vec<u8> = data
+            .iter()
+            .map(|q| [2, 12, 23, 37][(*q % 4) as usize])
+            .collect();
+        let packed = compress(&binned, &lengths, Some(&flags));
+        assert_eq!(uncompress(&packed).unwrap(), binned);
+    }
+}

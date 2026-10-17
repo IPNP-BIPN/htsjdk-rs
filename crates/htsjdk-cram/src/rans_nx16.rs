@@ -533,3 +533,494 @@ fn decode_stripe(input: &mut Input<'_>, size: usize) -> Result<Vec<u8>, NxError>
     }
     Ok(out)
 }
+
+// ---- Encoding: `RANSNx16Encode` ----
+
+/// `RANSEncodingSymbol`, the reciprocal form the encoder divides by.
+#[derive(Clone, Copy, Default)]
+struct EncodingSymbol {
+    x_max: u64,
+    rcp_freq: u32,
+    bias: u32,
+    cmpl_freq: u32,
+    rcp_shift: u32,
+}
+
+impl EncodingSymbol {
+    fn set(start: u32, freq: u32, scale_bits: u32) -> Self {
+        let mut symbol = EncodingSymbol {
+            x_max: (1u64 << (31 - scale_bits)) * u64::from(freq),
+            cmpl_freq: (1u32 << scale_bits).wrapping_sub(freq),
+            ..Default::default()
+        };
+        if freq < 2 {
+            symbol.rcp_freq = u32::MAX;
+            symbol.rcp_shift = 0;
+            symbol.bias = start + (1 << scale_bits) - 1;
+        } else {
+            let mut shift = 0;
+            while u64::from(freq) > (1u64 << shift) {
+                shift += 1;
+            }
+            symbol.rcp_freq =
+                (((1u64 << (shift + 31)) + u64::from(freq) - 1) / u64::from(freq)) as u32;
+            symbol.rcp_shift = shift - 1;
+            symbol.bias = start;
+        }
+        symbol.rcp_shift += 32;
+        symbol
+    }
+
+    /// `putSymbolNx16`, writing backwards from `pos`.
+    #[inline]
+    fn put(&self, r: u64, out: &mut [u8], pos: &mut usize) -> u64 {
+        let mut x = r;
+        if x >= self.x_max {
+            *pos -= 1;
+            out[*pos] = (x >> 8) as u8;
+            *pos -= 1;
+            out[*pos] = x as u8;
+            x >>= 16;
+            if x >= self.x_max {
+                *pos -= 1;
+                out[*pos] = (x >> 8) as u8;
+                *pos -= 1;
+                out[*pos] = x as u8;
+                x >>= 16;
+            }
+        }
+        let q = (x.wrapping_mul(u64::from(self.rcp_freq))) >> self.rcp_shift;
+        x.wrapping_add(u64::from(self.bias))
+            .wrapping_add(q.wrapping_mul(u64::from(self.cmpl_freq)))
+    }
+}
+
+/// `Utils.normaliseFrequenciesOrder0`.
+fn normalise_order0(f: &mut [i32; NUMBER_OF_SYMBOLS], bits: u32) {
+    let total: i32 = f.iter().fold(0i32, |a, &b| a.wrapping_add(b));
+    let renorm = 1i32 << bits;
+    let mut m = 0;
+    let mut big = 0;
+    for (symbol, &freq) in f.iter().enumerate() {
+        if m < freq {
+            m = freq;
+            big = symbol;
+        }
+    }
+    let tr: i64 = if total > 0 {
+        ((i64::from(renorm) << 31) / i64::from(total)) + i64::from((1i32 << 30) / total)
+    } else {
+        0
+    };
+    let mut sum = 0i32;
+    for freq in f.iter_mut() {
+        if *freq == 0 {
+            continue;
+        }
+        *freq = ((i64::from(*freq) * tr) >> 31) as i32;
+        if *freq == 0 {
+            *freq = 1;
+        }
+        sum += *freq;
+    }
+    if sum < renorm {
+        f[big] += renorm - sum;
+    } else if sum > renorm {
+        f[big] -= sum - renorm;
+    }
+}
+
+/// `Utils.normaliseFrequenciesOrder0Shift`, on signed counts.
+fn normalise_shift_i32(f: &mut [i32; NUMBER_OF_SYMBOLS], bits: u32) {
+    let mut total: i64 = f.iter().map(|&x| i64::from(x)).sum();
+    if total == 0 || total == 1 << bits {
+        return;
+    }
+    let mut shift = 0;
+    while total < 1 << bits {
+        total *= 2;
+        shift += 1;
+    }
+    for freq in f.iter_mut() {
+        if *freq != 0 {
+            *freq <<= shift;
+        }
+    }
+}
+
+fn build_symbols(f: &[i32; NUMBER_OF_SYMBOLS]) -> [EncodingSymbol; NUMBER_OF_SYMBOLS] {
+    let mut symbols = [EncodingSymbol::default(); NUMBER_OF_SYMBOLS];
+    let mut cumulative = 0u32;
+    for (s, &freq) in f.iter().enumerate() {
+        if freq != 0 {
+            symbols[s] = EncodingSymbol::set(cumulative, freq as u32, TOTAL_FREQ_SHIFT);
+            cumulative += freq as u32;
+        }
+    }
+    symbols
+}
+
+/// `writeAlphabet`.
+fn write_alphabet(out: &mut Vec<u8>, f: &[i32; NUMBER_OF_SYMBOLS]) {
+    let mut rle = 0usize;
+    for j in 0..NUMBER_OF_SYMBOLS {
+        if f[j] != 0 {
+            if rle != 0 {
+                rle -= 1;
+            } else {
+                out.push(j as u8);
+                if j != 0 && f[j - 1] != 0 {
+                    let mut k = j + 1;
+                    while k < NUMBER_OF_SYMBOLS && f[k] != 0 {
+                        k += 1;
+                    }
+                    rle = k - (j + 1);
+                    out.push(rle as u8);
+                }
+            }
+        }
+    }
+    out.push(0);
+}
+
+/// `RANSNx16Encode.compress`.
+pub fn compress(input: &[u8], flags: u8) -> Vec<u8> {
+    if input.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![flags];
+    if flags & NOSZ_FLAG_MASK == 0 {
+        write_uint7(input.len() as i32, &mut out);
+    }
+    if flags & STRIPE_FLAG_MASK != 0 {
+        let sizes = crate::range::stripe_sizes(input.len());
+        let chunks = crate::range::stripe_transpose(input, &sizes);
+        let compressed: Vec<Vec<u8>> = chunks.iter().map(|c| compress(c, NOSZ_FLAG_MASK)).collect();
+        out.push(chunks.len() as u8);
+        for chunk in &compressed {
+            write_uint7(chunk.len() as i32, &mut out);
+        }
+        for chunk in &compressed {
+            out.extend_from_slice(chunk);
+        }
+        return out;
+    }
+
+    let mut data: Vec<u8> = input.to_vec();
+    if flags & PACK_FLAG_MASK != 0 {
+        let mut frequencies = [0u32; 256];
+        for &b in input {
+            frequencies[b as usize] += 1;
+        }
+        let symbols = frequencies.iter().filter(|&&f| f > 0).count();
+        // Unlike the arithmetic coder's, one symbol is not packed here.
+        if symbols > 1 && symbols <= 16 {
+            data = crate::range::encode_pack(input, &mut out).expect("2..=16 symbols pack");
+        } else {
+            out[0] &= !PACK_FLAG_MASK;
+        }
+    }
+    if flags & RLE_FLAG_MASK != 0 {
+        data = encode_rle(&data, &mut out, flags);
+    }
+    if flags & CAT_FLAG_MASK != 0 {
+        out.extend_from_slice(&data);
+        return out;
+    }
+    let ways = if out[0] & N32_FLAG_MASK != 0 { 32 } else { 4 };
+    let mut order1 = out[0] & ORDER_FLAG_MASK != 0;
+    if data.len() < ways && order1 {
+        out[0] &= !ORDER_FLAG_MASK;
+        order1 = false;
+        if data.is_empty() {
+            return out;
+        }
+    }
+    let encoded = if order1 {
+        compress_order1(&data, ways)
+    } else {
+        compress_order0(&data, ways)
+    };
+    out.extend_from_slice(&encoded);
+    out
+}
+
+/// `compressOrder0WayN`: the frequency table, then the states and the stream.
+fn compress_order0(input: &[u8], ways: usize) -> Vec<u8> {
+    let size = input.len();
+    let mut bit_size = if size <= 1 {
+        0
+    } else {
+        32 - ((size - 1) as u32).leading_zeros()
+    };
+    if bit_size > TOTAL_FREQ_SHIFT {
+        bit_size = TOTAL_FREQ_SHIFT;
+    }
+    let mut f = [0i32; NUMBER_OF_SYMBOLS];
+    for &b in input {
+        f[b as usize] += 1;
+    }
+    normalise_order0(&mut f, bit_size);
+    let mut table = Vec::new();
+    write_alphabet(&mut table, &f);
+    for &freq in f.iter() {
+        if freq != 0 {
+            if freq < 128 {
+                table.push((freq & 0x7f) as u8);
+            } else {
+                table.push((128 | (freq >> 7)) as u8);
+                table.push((freq & 0x7f) as u8);
+            }
+        }
+    }
+    if bit_size != TOTAL_FREQ_SHIFT {
+        normalise_shift_i32(&mut f, TOTAL_FREQ_SHIFT);
+    }
+    let symbols = build_symbols(&f);
+
+    let interleave = if ways == 4 { size >> 2 } else { size >> 5 };
+    let mut remaining = size - interleave * ways;
+    let mut rans = vec![LOWER_BOUND; ways];
+    let capacity = size + size / 4 + ways * 4 + 64;
+    let mut buffer = vec![0u8; capacity];
+    let mut pos = capacity;
+
+    let mut reverse = 1;
+    while remaining > 0 {
+        let symbol = &symbols[input[size - reverse] as usize];
+        rans[remaining - 1] = symbol.put(rans[remaining - 1], &mut buffer, &mut pos);
+        remaining -= 1;
+        reverse += 1;
+    }
+    let mut i = interleave * ways;
+    while i > 0 {
+        for r in (0..ways).rev() {
+            let symbol = &symbols[input[i - (ways - r)] as usize];
+            rans[r] = symbol.put(rans[r], &mut buffer, &mut pos);
+        }
+        i -= ways;
+    }
+    for r in (0..ways).rev() {
+        let state = rans[r] as u32;
+        for shift in [24, 16, 8, 0] {
+            pos -= 1;
+            buffer[pos] = (state >> shift) as u8;
+        }
+    }
+    table.extend_from_slice(&buffer[pos..]);
+    table
+}
+
+/// `compressOrder1WayN`.
+fn compress_order1(input: &[u8], ways: usize) -> Vec<u8> {
+    let size = input.len();
+    // Row 256 is the context totals.
+    let mut f = vec![[0i32; NUMBER_OF_SYMBOLS]; NUMBER_OF_SYMBOLS + 1];
+    let mut context = 0usize;
+    for &b in input {
+        f[NUMBER_OF_SYMBOLS][context] += 1;
+        f[context][b as usize] += 1;
+        context = b as usize;
+    }
+    f[NUMBER_OF_SYMBOLS][context] += 1;
+    for n in 1..ways {
+        let at = if ways == 4 {
+            n * (size >> 2)
+        } else {
+            n * (size >> 5)
+        };
+        f[0][input[at] as usize] += 1;
+    }
+    f[NUMBER_OF_SYMBOLS][0] += ways as i32 - 1;
+
+    // `normaliseFrequenciesOrder1`, whose bit size comes from `Math.log`.
+    for j in 0..NUMBER_OF_SYMBOLS {
+        let total = f[NUMBER_OF_SYMBOLS][j];
+        if total == 0 {
+            continue;
+        }
+        let ratio = jmath::math::log(f64::from(total)) / jmath::math::log(2.0);
+        let mut bit_size = ratio.ceil() as i32;
+        if bit_size > TOTAL_FREQ_SHIFT as i32 {
+            bit_size = TOTAL_FREQ_SHIFT as i32;
+        }
+        if bit_size == 0 {
+            bit_size = 1;
+        }
+        normalise_order0(&mut f[j], bit_size as u32);
+    }
+
+    let mut table = Vec::new();
+    let totals = f[NUMBER_OF_SYMBOLS];
+    write_alphabet(&mut table, &totals);
+    for i in 0..NUMBER_OF_SYMBOLS {
+        if totals[i] == 0 {
+            continue;
+        }
+        let mut run = 0;
+        for j in 0..NUMBER_OF_SYMBOLS {
+            if totals[j] == 0 {
+                continue;
+            }
+            if run > 0 {
+                run -= 1;
+                continue;
+            }
+            write_uint7(f[i][j], &mut table);
+            if f[i][j] == 0 {
+                for k in j + 1..NUMBER_OF_SYMBOLS {
+                    if totals[k] == 0 {
+                        continue;
+                    }
+                    if f[i][k] == 0 {
+                        run += 1;
+                    } else {
+                        break;
+                    }
+                }
+                table.push(run as u8);
+            }
+        }
+    }
+
+    // `~(ORDER | N32)`: order 0, four ways.
+    let compressed_table = compress_order0(&table, 4);
+    let mut out = Vec::new();
+    if compressed_table.len() < table.len() {
+        out.push((1 | TOTAL_FREQ_SHIFT << 4) as u8);
+        write_uint7(table.len() as i32, &mut out);
+        write_uint7(compressed_table.len() as i32, &mut out);
+        out.extend_from_slice(&compressed_table);
+    } else {
+        out.push((TOTAL_FREQ_SHIFT << 4) as u8);
+        out.extend_from_slice(&table);
+    }
+
+    for i in 0..NUMBER_OF_SYMBOLS {
+        if f[NUMBER_OF_SYMBOLS][i] != 0 {
+            normalise_shift_i32(&mut f[i], TOTAL_FREQ_SHIFT);
+        }
+    }
+    let symbols: Vec<[EncodingSymbol; NUMBER_OF_SYMBOLS]> = (0..NUMBER_OF_SYMBOLS)
+        .map(|i| build_symbols(&f[i]))
+        .collect();
+
+    let mut rans = vec![LOWER_BOUND; ways];
+    let interleave = if ways == 4 { size >> 2 } else { size >> 5 };
+    let mut index = vec![0i64; ways];
+    let mut symbol = vec![0u8; ways];
+    for r in 0..ways {
+        index[r] = ((r + 1) * interleave) as i64 - 2;
+        if index[r] + 1 >= 0 && r != ways - 1 {
+            symbol[r] = input[(index[r] + 1) as usize];
+        }
+        if r == ways - 1 {
+            symbol[r] = input[size - 1];
+        }
+    }
+    let capacity = size + size / 4 + ways * 4 + 64;
+    let mut buffer = vec![0u8; capacity];
+    let mut pos = capacity;
+    let last = ways - 1;
+
+    index[last] = size as i64 - 2;
+    while index[last] > (ways * interleave) as i64 - 2 && index[last] >= 0 {
+        let context = input[index[last] as usize];
+        rans[last] =
+            symbols[context as usize][symbol[last] as usize].put(rans[last], &mut buffer, &mut pos);
+        symbol[last] = context;
+        index[last] -= 1;
+    }
+    while index[0] >= 0 {
+        for r in 0..ways {
+            let k = ways - 1 - r;
+            let context = input[index[k] as usize];
+            rans[k] =
+                symbols[context as usize][symbol[k] as usize].put(rans[k], &mut buffer, &mut pos);
+            symbol[k] = context;
+        }
+        for i in index.iter_mut() {
+            *i -= 1;
+        }
+    }
+    for r in 0..ways {
+        let k = ways - 1 - r;
+        rans[k] = symbols[0][symbol[k] as usize].put(rans[k], &mut buffer, &mut pos);
+    }
+    for r in (0..ways).rev() {
+        let state = rans[r] as u32;
+        for shift in [24, 16, 8, 0] {
+            pos -= 1;
+            buffer[pos] = (state >> shift) as u8;
+        }
+    }
+    out.extend_from_slice(&buffer[pos..]);
+    out
+}
+
+/// `encodeRLE`: the literals, with the run metadata appended to `out`.
+fn encode_rle(input: &[u8], out: &mut Vec<u8>, flags: u8) -> Vec<u8> {
+    let mut run_counts = [0i32; NUMBER_OF_SYMBOLS];
+    let mut last: i32 = -1;
+    for &b in input {
+        let s = i32::from(b);
+        run_counts[b as usize] += if s == last { 1 } else { -1 };
+        last = s;
+    }
+    let mut count = run_counts.iter().filter(|&&c| c > 0).count();
+    if count == 0 {
+        count = 1;
+        run_counts[0] = 1;
+    }
+    let mut meta = vec![count as u8];
+    for (i, &c) in run_counts.iter().enumerate() {
+        if c > 0 {
+            meta.push(i as u8);
+        }
+    }
+    let mut literals = Vec::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        literals.push(input[i]);
+        if run_counts[input[i] as usize] > 0 {
+            let symbol = input[i];
+            let mut run = 0;
+            while i + run + 1 < input.len() && input[i + run + 1] == symbol {
+                run += 1;
+            }
+            write_uint7(run as i32, &mut meta);
+            i += run;
+        }
+        i += 1;
+    }
+    let ways = if flags & N32_FLAG_MASK != 0 { 32 } else { 4 };
+    let compressed_meta = compress_order0(&meta, ways);
+    write_uint7((meta.len() * 2) as i32, out);
+    write_uint7(literals.len() as i32, out);
+    write_uint7(compressed_meta.len() as i32, out);
+    out.extend_from_slice(&compressed_meta);
+    literals
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    #[test]
+    fn every_flag_combination_round_trips() {
+        let mut text =
+            b"AAAAAACCCCGGGTTTTTTTTTTNNNNACGTACGTAAAAAAAAAAAAAAAAAAAAAAAAACGT".repeat(40);
+        text.extend((0..3000u32).map(|i| (i * 7 % 13) as u8));
+        for flags in [
+            0u8, 1, 4, 5, 0x40, 0x41, 0x80, 0x81, 0xC0, 0xC1, 0x20, 0x08, 0x09,
+        ] {
+            let packed = compress(&text, flags);
+            assert_eq!(uncompress(&packed).unwrap(), text, "flags {flags:#x}");
+        }
+        for short in [&b"A"[..], b"AC", b"ACG", b"ACGTA"] {
+            for flags in [0u8, 1, 5] {
+                assert_eq!(uncompress(&compress(short, flags)).unwrap(), short);
+            }
+        }
+    }
+}

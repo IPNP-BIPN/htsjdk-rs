@@ -255,3 +255,366 @@ fn pad(value: Vec<u8>, width: usize) -> Vec<u8> {
     out.extend_from_slice(&value);
     out
 }
+
+// ---- Encoding: `NameTokenisationEncode` ----
+
+use crate::rans_nx16::{
+    write_uint7, CAT_FLAG_MASK, ORDER_FLAG_MASK, PACK_FLAG_MASK, RLE_FLAG_MASK, STRIPE_FLAG_MASK,
+};
+
+/// The rANS flag sets tried per token type, htslib's tok3 level -3; the smallest result wins.
+const RANS_FLAG_SETS: [&[u8]; TOTAL_TOKEN_TYPES] = [
+    &[PACK_FLAG_MASK | RLE_FLAG_MASK, 0],
+    &[PACK_FLAG_MASK | ORDER_FLAG_MASK, ORDER_FLAG_MASK, 0],
+    &[0],
+    &[PACK_FLAG_MASK | STRIPE_FLAG_MASK, 0],
+    &[0],
+    &[PACK_FLAG_MASK | RLE_FLAG_MASK | STRIPE_FLAG_MASK],
+    &[PACK_FLAG_MASK | STRIPE_FLAG_MASK],
+    &[PACK_FLAG_MASK | RLE_FLAG_MASK | STRIPE_FLAG_MASK],
+    &[0],
+    &[PACK_FLAG_MASK],
+    &[0],
+    &[0],
+    &[0],
+];
+
+/// `EncodeToken`: the type, the token's own text, and what is written for it.
+#[derive(Clone)]
+struct EncodeToken {
+    kind: u8,
+    actual: Vec<u8>,
+    /// The text written for a STRING or CHAR, or the number for the numeric types.
+    relative: Relative,
+}
+
+#[derive(Clone)]
+enum Relative {
+    None,
+    Text(Vec<u8>),
+    Int(i32),
+}
+
+impl EncodeToken {
+    fn relative_int(&self) -> i32 {
+        match &self.relative {
+            Relative::Int(v) => *v,
+            Relative::Text(t) => std::str::from_utf8(t)
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+            Relative::None => 0,
+        }
+    }
+
+    fn relative_text(&self) -> Vec<u8> {
+        match &self.relative {
+            Relative::Text(t) => t.clone(),
+            Relative::Int(v) => v.to_string().into_bytes(),
+            Relative::None => Vec::new(),
+        }
+    }
+}
+
+fn is_alphanumeric(c: u8) -> bool {
+    c.is_ascii_alphanumeric()
+}
+
+fn is_all_digits(s: &[u8]) -> bool {
+    !s.is_empty() && s.iter().all(u8::is_ascii_digit)
+}
+
+fn is_all_digits_leading_zero(s: &[u8]) -> bool {
+    !s.is_empty() && s[0] == b'0' && s[1..].iter().all(u8::is_ascii_digit)
+}
+
+fn parse_int(s: &[u8]) -> i32 {
+    std::str::from_utf8(s)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+/// `NameTokenisationEncode.compress`, with rANS rather than the arithmetic coder as htsjdk's
+/// external compressor asks: the names in `input`, each ended by `separator`.
+pub fn compress(input: &[u8], separator: u8) -> Result<Vec<u8>, NxError> {
+    let names: Vec<&[u8]> = {
+        let mut names = Vec::new();
+        let mut start = 0;
+        for (i, &b) in input.iter().enumerate() {
+            if b == separator {
+                names.push(&input[start..i]);
+                start = i + 1;
+            }
+        }
+        names
+    };
+    if names.is_empty() {
+        return Err(NxError::Cram(
+            "Name tokenizer input format requires a separator-delimited name list. No delimited names found in input."
+                .to_string(),
+        ));
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&(input.len() as i32).to_le_bytes());
+    out.extend_from_slice(&(names.len() as i32).to_le_bytes());
+    out.push(0);
+
+    let mut index: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
+    let mut frequencies = [0i32; 256];
+    let mut tokens: Vec<Vec<EncodeToken>> = Vec::with_capacity(names.len());
+    let mut max_positions = 0usize;
+    for (n, name) in names.iter().enumerate() {
+        let encoded = tokenise(name, n, &tokens, &mut index, &mut frequencies);
+        max_positions = max_positions.max(encoded.len());
+        tokens.push(encoded);
+    }
+
+    let mut registry: Vec<(Vec<u8>, usize, u8)> = Vec::new();
+    for position in 0..max_positions {
+        let streams = distribute(&tokens, position);
+        serialize(&streams, &mut out, position, &mut registry);
+    }
+    Ok(out)
+}
+
+fn tokenise<'a>(
+    name: &'a [u8],
+    n: usize,
+    previous: &[Vec<EncodeToken>],
+    index: &mut std::collections::HashMap<&'a [u8], usize>,
+    frequencies: &mut [i32; 256],
+) -> Vec<EncodeToken> {
+    if let Some(&first) = index.get(name) {
+        return vec![EncodeToken {
+            kind: TOKEN_DUP,
+            actual: Vec::new(),
+            relative: Relative::Int((n - first) as i32),
+        }];
+    }
+    let mut encoded = vec![EncodeToken {
+        kind: TOKEN_DIFF,
+        actual: Vec::new(),
+        relative: Relative::Int(if n == 0 { 0 } else { 1 }),
+    }];
+    index.insert(name, n);
+    let prev = n.checked_sub(1).map(|p| &previous[p]);
+
+    let mut pos = 0;
+    let mut i = 1usize;
+    while pos < name.len() {
+        let start = pos;
+        if is_alphanumeric(name[pos]) {
+            let limit = name.len().min(start + 9);
+            loop {
+                pos += 1;
+                if !(pos < limit && is_alphanumeric(name[pos])) {
+                    break;
+                }
+            }
+        } else {
+            loop {
+                pos += 1;
+                if !(pos < name.len() && !is_alphanumeric(name[pos])) {
+                    break;
+                }
+            }
+        }
+        let fragment = &name[start..pos];
+        let mut kind = TOKEN_STRING;
+        let mut relative = Relative::Text(fragment.to_vec());
+        if is_all_digits_leading_zero(fragment) {
+            kind = TOKEN_DIGITS0;
+        } else if is_all_digits(fragment) {
+            kind = TOKEN_DIGITS;
+        } else if fragment.len() == 1 {
+            kind = TOKEN_CHAR;
+        }
+        let prev_token = prev.filter(|p| p.len() > i + 1).map(|p| &p[i]);
+        if let Some(prev_token) = prev_token.filter(|t| t.kind != TOKEN_END) {
+            if prev_token.actual == fragment {
+                kind = TOKEN_MATCH;
+                relative = Relative::None;
+            } else if kind == TOKEN_DIGITS
+                && (prev_token.kind == TOKEN_DIGITS || prev_token.kind == TOKEN_DELTA)
+            {
+                let d = parse_int(fragment).wrapping_sub(parse_int(&prev_token.actual));
+                frequencies[i] += 1;
+                if (0..256).contains(&d) && frequencies[i] > (n / 2) as i32 {
+                    encoded.push(EncodeToken {
+                        kind: TOKEN_DELTA,
+                        actual: fragment.to_vec(),
+                        relative: Relative::Int(d),
+                    });
+                    i += 1;
+                    continue;
+                }
+            } else if kind == TOKEN_DIGITS0
+                && prev_token.actual.len() == fragment.len()
+                && (prev_token.kind == TOKEN_DIGITS0 || prev_token.kind == TOKEN_DELTA0)
+            {
+                let d = parse_int(fragment).wrapping_sub(parse_int(&prev_token.actual));
+                frequencies[i] += 1;
+                if (0..256).contains(&d) && frequencies[i] > (n / 2) as i32 {
+                    encoded.push(EncodeToken {
+                        kind: TOKEN_DELTA0,
+                        actual: fragment.to_vec(),
+                        relative: Relative::Int(d),
+                    });
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        encoded.push(EncodeToken {
+            kind,
+            actual: fragment.to_vec(),
+            relative,
+        });
+        i += 1;
+    }
+    encoded.push(EncodeToken {
+        kind: TOKEN_END,
+        actual: Vec::new(),
+        relative: Relative::None,
+    });
+    encoded
+}
+
+/// `distributeTokensForPosition`: one byte stream per token type, `None` where nothing was put.
+fn distribute(tokens: &[Vec<EncodeToken>], position: usize) -> Vec<Option<Vec<u8>>> {
+    let mut streams: Vec<Option<Vec<u8>>> = vec![None; TOTAL_TOKEN_TYPES];
+    streams[TOKEN_TYPE as usize] = Some(Vec::new());
+    for name in tokens {
+        if position > 0 && name[0].kind == TOKEN_DUP {
+            continue;
+        }
+        let Some(token) = name.get(position) else {
+            continue;
+        };
+        streams[TOKEN_TYPE as usize]
+            .as_mut()
+            .unwrap()
+            .push(token.kind);
+        let mut put = |kind: u8, bytes: &[u8]| {
+            streams[kind as usize]
+                .get_or_insert_with(Vec::new)
+                .extend_from_slice(bytes);
+        };
+        match token.kind {
+            TOKEN_DIFF | TOKEN_DUP | TOKEN_DIGITS => {
+                put(token.kind, &token.relative_int().to_le_bytes())
+            }
+            TOKEN_STRING => {
+                let mut text: Vec<u8> = token
+                    .relative_text()
+                    .iter()
+                    .map(|&b| if b.is_ascii() { b } else { b'?' })
+                    .collect();
+                text.push(0);
+                put(TOKEN_STRING, &text);
+            }
+            TOKEN_CHAR => put(TOKEN_CHAR, &token.relative_text()[..1]),
+            TOKEN_DIGITS0 => {
+                put(TOKEN_DIGITS0, &token.relative_int().to_le_bytes());
+                put(TOKEN_DZLEN, &[token.relative_text().len() as u8]);
+            }
+            TOKEN_DELTA | TOKEN_DELTA0 => put(token.kind, &[token.relative_int() as u8]),
+            _ => {}
+        }
+    }
+    streams
+}
+
+/// `tryCompress`.
+fn try_compress(stream: &[u8], kind: u8) -> Vec<u8> {
+    let mut best: Option<Vec<u8>> = None;
+    for &flags in RANS_FLAG_SETS[kind as usize] {
+        if flags & ORDER_FLAG_MASK != 0 && stream.len() < 100 {
+            continue;
+        }
+        if flags & STRIPE_FLAG_MASK != 0 && stream.len() % 4 != 0 {
+            continue;
+        }
+        let compressed = crate::rans_nx16::compress(stream, flags);
+        if best.as_ref().is_none_or(|b| b.len() > compressed.len()) {
+            best = Some(compressed);
+        }
+    }
+    match best {
+        Some(b) if b.len() <= stream.len() => b,
+        _ => crate::rans_nx16::compress(stream, CAT_FLAG_MASK),
+    }
+}
+
+/// `serializeTokenStreams`.
+fn serialize(
+    streams: &[Option<Vec<u8>>],
+    out: &mut Vec<u8>,
+    position: usize,
+    registry: &mut Vec<(Vec<u8>, usize, u8)>,
+) {
+    let mut omit_type = false;
+    if let Some(types) = &streams[TOKEN_TYPE as usize] {
+        if types.len() > 1 && types[1..].iter().all(|&t| t == TOKEN_MATCH) {
+            omit_type = (1..=TOKEN_END as usize)
+                .any(|t| streams[t].as_ref().is_some_and(|s| !s.is_empty()));
+        }
+    }
+    let mut first = true;
+    for kind in 0..=TOKEN_END {
+        if omit_type && kind == TOKEN_TYPE {
+            continue;
+        }
+        let Some(bytes) = streams[kind as usize].as_ref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let mut header = kind;
+        if first {
+            header |= NEW_POSITION_FLAG_MASK;
+            first = false;
+        }
+        let compressed = try_compress(bytes, kind);
+        let duplicate = (compressed.len() > 4)
+            .then(|| registry.iter().find(|(b, _, _)| *b == compressed))
+            .flatten();
+        if let Some((_, at, of)) = duplicate {
+            out.push(header | DUP_PREVIOUS_STREAM_FLAG_MASK);
+            out.push(*at as u8);
+            out.push(*of);
+        } else {
+            out.push(header);
+            write_uint7(compressed.len() as i32, out);
+            out.extend_from_slice(&compressed);
+            registry.push((compressed, position, kind));
+        }
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    #[test]
+    fn names_round_trip() {
+        let mut input = Vec::new();
+        for i in 0..500 {
+            let name = match i % 5 {
+                0 => format!("RUN1:frag{:02}", i / 3),
+                1 => format!("read{:04}", i),
+                2 => format!(
+                    "HWI-ST{}:8:1101:{}:{}#0/1",
+                    100 + i % 3,
+                    1000 + i * 7,
+                    2000 + i
+                ),
+                3 => "dup-name".to_string(),
+                _ => format!("x{}", i * 1234567),
+            };
+            input.extend_from_slice(name.as_bytes());
+            input.push(0);
+        }
+        let packed = compress(&input, 0).unwrap();
+        assert_eq!(uncompress(&packed, 0).unwrap(), input);
+    }
+}

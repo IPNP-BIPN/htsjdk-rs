@@ -17,6 +17,7 @@ pub mod external_codecs;
 pub mod file;
 pub mod fqzcomp;
 pub mod golomb;
+pub mod gzip;
 pub mod huffman;
 pub mod name_tokeniser;
 pub mod negotiation;

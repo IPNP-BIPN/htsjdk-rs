@@ -15,6 +15,12 @@ flate2.workspace = true
 htsjdk-bam = { path = "../htsjdk-bam" }
 # A slice header carries the MD5 of the reference bases it was compressed against.
 md-5 = "0.11"
+# `Math.log`, which the rANS Nx16 encoder sizes its order-1 tables with.
+jmath = { path = "../jmath" }
+# htsjdk 5.0.0 deflates a CRAM GZIP block through its default `DeflaterFactory`, which is jlibdeflate
+# 0.1.0, libdeflate v1.25. The version is pinned exactly because libdeflate's bytes change between
+# releases.
+libdeflate-sys = "=1.25.2"
 
 [dev-dependencies]
 flate2.workspace = true
