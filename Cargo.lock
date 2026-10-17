@@ -307,6 +307,9 @@ version = "0.2.0"
 dependencies = [
  "flate2",
  "htsjdk-bam",
+ "htsjdk-bgzf",
+ "jmath",
+ "libdeflate-sys",
  "md-5",
  "sha2",
 ]
@@ -450,6 +453,15 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libdeflate-sys"
+version = "1.25.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72753e0008ea87963d2f0770042d0df7abe51fafbb8dcaf618ac440f2f1fec0a"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "libz-rs-sys"

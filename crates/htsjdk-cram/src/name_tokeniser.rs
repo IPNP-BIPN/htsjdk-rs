@@ -533,7 +533,7 @@ fn try_compress(stream: &[u8], kind: u8) -> Vec<u8> {
         if flags & ORDER_FLAG_MASK != 0 && stream.len() < 100 {
             continue;
         }
-        if flags & STRIPE_FLAG_MASK != 0 && stream.len() % 4 != 0 {
+        if flags & STRIPE_FLAG_MASK != 0 && !stream.len().is_multiple_of(4) {
             continue;
         }
         let compressed = crate::rans_nx16::compress(stream, flags);

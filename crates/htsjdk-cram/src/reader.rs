@@ -533,7 +533,7 @@ fn normalize(
                 if let Some(md) = result.md {
                     let mut bytes = md.into_bytes();
                     bytes.push(0);
-                    record.tags.push(([b'M', b'D', b'Z'], bytes));
+                    record.tags.push((*b"MDZ", bytes));
                 }
             }
             if need_nm {

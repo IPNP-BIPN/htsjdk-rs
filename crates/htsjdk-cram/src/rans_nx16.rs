@@ -562,8 +562,7 @@ impl EncodingSymbol {
             while u64::from(freq) > (1u64 << shift) {
                 shift += 1;
             }
-            symbol.rcp_freq =
-                (((1u64 << (shift + 31)) + u64::from(freq) - 1) / u64::from(freq)) as u32;
+            symbol.rcp_freq = (1u64 << (shift + 31)).div_ceil(u64::from(freq)) as u32;
             symbol.rcp_shift = shift - 1;
             symbol.bias = start;
         }
@@ -834,8 +833,8 @@ fn compress_order1(input: &[u8], ways: usize) -> Vec<u8> {
     f[NUMBER_OF_SYMBOLS][0] += ways as i32 - 1;
 
     // `normaliseFrequenciesOrder1`, whose bit size comes from `Math.log`.
-    for j in 0..NUMBER_OF_SYMBOLS {
-        let total = f[NUMBER_OF_SYMBOLS][j];
+    let totals = f[NUMBER_OF_SYMBOLS];
+    for (j, &total) in totals.iter().enumerate() {
         if total == 0 {
             continue;
         }
@@ -896,9 +895,10 @@ fn compress_order1(input: &[u8], ways: usize) -> Vec<u8> {
         out.extend_from_slice(&table);
     }
 
-    for i in 0..NUMBER_OF_SYMBOLS {
-        if f[NUMBER_OF_SYMBOLS][i] != 0 {
-            normalise_shift_i32(&mut f[i], TOTAL_FREQ_SHIFT);
+    let totals = f[NUMBER_OF_SYMBOLS];
+    for (i, row) in f.iter_mut().take(NUMBER_OF_SYMBOLS).enumerate() {
+        if totals[i] != 0 {
+            normalise_shift_i32(row, TOTAL_FREQ_SHIFT);
         }
     }
     let symbols: Vec<[EncodingSymbol; NUMBER_OF_SYMBOLS]> = (0..NUMBER_OF_SYMBOLS)

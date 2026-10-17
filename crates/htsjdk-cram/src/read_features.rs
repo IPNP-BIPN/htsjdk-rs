@@ -1366,6 +1366,7 @@ pub struct DecodeResult {
     pub nm: Option<i32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 /// `CRAMRecordReadFeatures.restoreBasesAndTags` at htsjdk 5.0.0: the bases, the cigar and, when
 /// asked, `MD` and `NM`, in one walk over the features.
 ///
@@ -1448,11 +1449,11 @@ pub fn restore_bases_and_tags(
         for i in 0..copy {
             bases[i as usize] = reference_at(source + i)?;
         }
-        for i in 0..length {
-            let raw = bases[i];
-            bases[i] = bam_read_base(raw);
+        for (i, slot) in bases.iter_mut().enumerate() {
+            let raw = *slot;
+            *slot = bam_read_base(raw);
             if compute_md_nm && (i as i32) < copy {
-                if bases_equal(bases[i], raw) || bases[i] == 0 {
+                if bases_equal(*slot, raw) || *slot == 0 {
                     run += 1;
                 } else {
                     md.push_str(&run.to_string());

@@ -36,3 +36,4 @@ pub mod slice_header;
 pub mod substitution_matrix;
 pub mod tag_encoding_map;
 pub mod varint;
+pub mod writer;

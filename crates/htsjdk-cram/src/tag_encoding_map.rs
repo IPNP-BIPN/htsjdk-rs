@@ -132,6 +132,11 @@ impl TagEncodingMap {
         self.entries.insert(tag_id, descriptor);
     }
 
+    /// The tag ids, ascending, which is the order they are written in.
+    pub fn keys(&self) -> Vec<i32> {
+        self.entries.keys().copied().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
