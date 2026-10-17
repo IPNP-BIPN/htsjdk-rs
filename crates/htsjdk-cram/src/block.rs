@@ -42,7 +42,11 @@ pub enum CompressionMethod {
     Bzip2 = 2,
     Lzma = 3,
     Rans = 4,
-    Range = 5,
+    /// CRAM 3.1, from here down: htsjdk 5.0.0 numbers them so and Picard 3.5.0 writes them.
+    RansNx16 = 5,
+    AdaptiveArithmetic = 6,
+    Fqzcomp = 7,
+    NameTokeniser = 8,
 }
 
 impl CompressionMethod {
@@ -54,7 +58,10 @@ impl CompressionMethod {
             CompressionMethod::Bzip2 => "BZIP2",
             CompressionMethod::Lzma => "LZMA",
             CompressionMethod::Rans => "RANS",
-            CompressionMethod::Range => "RANGE",
+            CompressionMethod::RansNx16 => "RANSNx16",
+            CompressionMethod::AdaptiveArithmetic => "ADAPTIVE_ARITHMETIC",
+            CompressionMethod::Fqzcomp => "FQZCOMP",
+            CompressionMethod::NameTokeniser => "NAME_TOKENISER",
         }
     }
 
@@ -66,7 +73,10 @@ impl CompressionMethod {
             2 => CompressionMethod::Bzip2,
             3 => CompressionMethod::Lzma,
             4 => CompressionMethod::Rans,
-            5 => CompressionMethod::Range,
+            5 => CompressionMethod::RansNx16,
+            6 => CompressionMethod::AdaptiveArithmetic,
+            7 => CompressionMethod::Fqzcomp,
+            8 => CompressionMethod::NameTokeniser,
             _ => return None,
         })
     }
@@ -224,7 +234,12 @@ mod tests {
     fn the_ids_are_the_bytes_the_format_carries() {
         assert_eq!(CompressionMethod::from_id(0), Some(CompressionMethod::Raw));
         assert_eq!(CompressionMethod::from_id(4), Some(CompressionMethod::Rans));
-        assert_eq!(CompressionMethod::from_id(6), None);
+        // htsjdk 5.0.0 numbers the CRAM 3.1 codecs 5 to 8, and nothing past them.
+        assert_eq!(
+            CompressionMethod::from_id(8),
+            Some(CompressionMethod::NameTokeniser)
+        );
+        assert_eq!(CompressionMethod::from_id(9), None);
         assert_eq!(ContentType::from_id(4), Some(ContentType::External));
         assert_eq!(ContentType::from_id(6), None);
     }

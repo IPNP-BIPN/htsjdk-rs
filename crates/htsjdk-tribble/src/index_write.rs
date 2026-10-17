@@ -524,10 +524,11 @@ impl DynamicIndexCreator {
     }
 }
 
-/// `String.valueOf(double)`.
+/// `String.valueOf(double)`, which is Java 17's `Double.toString`: computerized scientific notation
+/// below 10^-3 and from 10^7 up, and digits that are not always the shortest. A variance under a
+/// thousandth is ordinary (any file of SNPs whose lengths barely vary), and Rust's `{}` writes it
+/// out in full where the reference writes `3.111081185151864E-4`.
 fn java_double(value: f64) -> String {
-    // `Double.toString`, whose exponent form starts below 1e-3: a feature variance of 3.1e-4 is
-    // `3.111081185151864E-4`, which a shortest round-trip rendering writes as `0.000311...`.
     jmath::to_string::double_to_string(value)
 }
 
@@ -699,6 +700,17 @@ mod tests {
         }
         creator.add_feature(&feature("chr2", 51, 60), 64);
         assert_eq!(creator.properties()[0].1, "364.0");
+    }
+
+    /// A variance under a thousandth is written the way `Double.toString` writes it, in
+    /// scientific notation: Picard 3.5.0's SortVcf index of 900,000 records, nearly all SNPs, says
+    /// `MEAN_FEATURE_VARIANCE` = `3.111081185151864E-4`, where `{}` wrote `0.0003111081185151864`.
+    #[test]
+    fn a_small_variance_is_written_in_scientific_notation() {
+        assert_eq!(java_double(0.0003111081185151864), "3.111081185151864E-4");
+        assert_eq!(java_double(364.0), "364.0");
+        assert_eq!(java_double(6.999942222222221), "6.999942222222221");
+        assert_eq!(java_double(1.0e7), "1.0E7");
     }
 
     /// One block means the optimizer's first test breaks before any merge.
