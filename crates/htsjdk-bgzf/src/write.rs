@@ -176,7 +176,7 @@ impl<W: Write> BgzfWriter<W> {
                 // is absent or unusable rather than answering with zlib's bytes. That refusal is
                 // the right one and a panic is the wrong way to deliver it: a writer is handed a
                 // level by a caller, and a caller can be told.
-                if self.level <= 2 && !gkl_deflate::igzip_available() {
+                if (1..=2).contains(&self.level) && !gkl_deflate::igzip_available() {
                     return Err(io::Error::other(format!(
                         "GKL routes level {} through ISA-L igzip, which this build cannot reach: \
                          rebuild with the `gkl-igzip` feature, on a host where it is usable",
@@ -364,6 +364,24 @@ mod tests {
     /// only pair GKL does not route through zlib, so answering them with zlib's bytes would be a
     /// wrong answer that looks like a right one. What is asserted here is that a caller is TOLD,
     /// rather than the process ending.
+    /// `COMPRESSION_LEVEL=0` under GKL is GKL's zlib storing: one final stored block per BGZF
+    /// block, which is what Picard 3.5.0 writes (measured on a 3,000-record SortSam, where GKL and
+    /// libdeflate agree byte for byte). Level 0 is not igzip's, so it never needs ISA-L.
+    #[test]
+    fn gkl_level_zero_stores_each_block_whole() {
+        let payload: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+        let mut w = BgzfWriter::with_deflater(Vec::new(), 0, Deflater::Gkl);
+        w.write_all(&payload).unwrap();
+        let file = w.into_inner().unwrap();
+        assert_eq!(decompress_all(&file).unwrap(), payload);
+        // The first block: a full 65,498 bytes behind a stored-block header.
+        let length = DEFAULT_UNCOMPRESSED_BLOCK_SIZE as u16;
+        assert_eq!(file[18], 0x01);
+        assert_eq!(&file[19..21], &length.to_le_bytes());
+        assert_eq!(&file[21..23], &(!length).to_le_bytes());
+        assert_eq!(&file[23..23 + 16], &payload[..16]);
+    }
+
     #[test]
     fn a_gkl_level_that_needs_igzip_refuses_when_it_is_out_of_reach() {
         if gkl_deflate::igzip_available() {
