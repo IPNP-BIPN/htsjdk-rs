@@ -13,8 +13,22 @@ flate2.workspace = true
 # CRAM is defined in terms of SAM records: the record model walks a cigar and compares read bases
 # against a reference, and both of those are already ported here.
 htsjdk-bam = { path = "../htsjdk-bam" }
+# A slice header carries the MD5 of the reference bases it was compressed against.
+md-5 = "0.11"
+# `Math.log`, which the rANS Nx16 encoder sizes its order-1 tables with.
+jmath = { path = "../jmath" }
+# htsjdk 5.0.0 deflates a CRAM GZIP block through its default `DeflaterFactory`, which is jlibdeflate
+# 0.1.0, libdeflate v1.25. The version is pinned exactly because libdeflate's bytes change between
+# releases.
+libdeflate-sys = "=1.25.2"
+# Reading a bzip2 block, which htsjdk's tag trial picks for SA and XA when it is smallest.
+# Decompression is deterministic, so any decoder reads it; writing one is commons-compress's
+# encoder, whose bytes are not libbzip2's, and is not ported.
+bzip2 = "0.6"
 
 [dev-dependencies]
+# The examples read BAMs to write as CRAMs.
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 flate2.workspace = true
 # Only to compare against the sha256 columns the oracle recorded for the inputs and for the three
 # streams too long to carry inline; nothing in the crate hashes.

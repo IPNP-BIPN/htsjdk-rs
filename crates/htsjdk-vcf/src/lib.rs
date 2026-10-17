@@ -5,6 +5,7 @@
 
 pub mod allele;
 pub mod attributes;
+pub mod bcf2;
 pub mod chromosome_counts;
 pub mod comparator;
 pub mod encoder;

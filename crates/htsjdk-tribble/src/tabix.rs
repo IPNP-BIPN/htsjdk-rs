@@ -366,11 +366,13 @@ impl TabixIndex {
 
     /// The same file with the deflater named. See [`htsjdk_bgzf::Deflater`].
     pub fn write_with(&self, deflater: Deflater) -> Vec<u8> {
-        let mut writer = htsjdk_bgzf::BgzfWriter::with_deflater(
-            Vec::new(),
-            htsjdk_bgzf::DEFAULT_COMPRESSION_LEVEL,
-            deflater,
-        );
+        self.write_with_level(htsjdk_bgzf::DEFAULT_COMPRESSION_LEVEL, deflater)
+    }
+
+    /// The same file at a named level too: the stream's level is the static default, which a
+    /// Picard command line sets from `COMPRESSION_LEVEL`.
+    pub fn write_with_level(&self, level: u32, deflater: Deflater) -> Vec<u8> {
+        let mut writer = htsjdk_bgzf::BgzfWriter::with_deflater(Vec::new(), level, deflater);
         std::io::Write::write_all(&mut writer, &self.write_body()).expect("a vector never fails");
         writer.into_inner().expect("a vector never fails")
     }

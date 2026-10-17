@@ -80,7 +80,18 @@ pub(crate) fn write_header_binary<W: Write>(
 /// **no** EOF terminator (htsjdk never closes that stream). This is the leading segment of a
 /// block-copy reheader; the copied data blocks and the terminator follow it.
 pub fn write_bam_header_block(header: &SamHeader) -> io::Result<Vec<u8>> {
-    let mut bgzf = BgzfWriter::new(Vec::new());
+    write_bam_header_block_with(header, DEFAULT_COMPRESSION_LEVEL, Deflater::Jdk)
+}
+
+/// [`write_bam_header_block`] with the BGZF compression named. That stream takes htsjdk's static
+/// default level and deflater factory, which a Picard or GATK command line replaces before any tool
+/// runs.
+pub fn write_bam_header_block_with(
+    header: &SamHeader,
+    level: u32,
+    deflater: Deflater,
+) -> io::Result<Vec<u8>> {
+    let mut bgzf = BgzfWriter::with_deflater(Vec::new(), level, deflater);
     // The reheader path is the one that passes true: it is copying an existing file's blocks, and
     // its whole purpose is to leave everything but the header alone.
     write_header_binary(&mut bgzf, header, true)?;

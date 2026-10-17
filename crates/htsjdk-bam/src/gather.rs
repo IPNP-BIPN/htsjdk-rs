@@ -14,19 +14,29 @@
 //! Byte-identity holds against Picard with `USE_JDK_DEFLATER=true`, transitively through
 //! [`block_copy`](crate::reheader::block_copy).
 
-use htsjdk_bgzf::EMPTY_GZIP_BLOCK;
+use htsjdk_bgzf::{Deflater, DEFAULT_COMPRESSION_LEVEL, EMPTY_GZIP_BLOCK};
 
-use crate::reheader::{block_copy, ReheaderError};
+use crate::reheader::{block_copy_with, ReheaderError};
 
 /// `gatherWithBlockCopying(inputs, output)`: the concatenated BAM as bytes. Each element of `bams`
 /// is a whole raw BAM file (BGZF-framed, terminator included). The first file's header is kept and
 /// the others' are dropped, as htsjdk does; callers that need the headers reconciled must do that
 /// upstream (Picard requires the inputs already share a header for this fast path to be correct).
 pub fn gather_bam_files(bams: &[&[u8]]) -> Result<Vec<u8>, ReheaderError> {
+    gather_bam_files_with(bams, DEFAULT_COMPRESSION_LEVEL, Deflater::Jdk)
+}
+
+/// [`gather_bam_files`] with the compression of the re-compressed blocks named: the first record
+/// block's tail of every file after the first.
+pub fn gather_bam_files_with(
+    bams: &[&[u8]],
+    level: u32,
+    deflater: Deflater,
+) -> Result<Vec<u8>, ReheaderError> {
     let mut out = Vec::new();
     for (i, bam) in bams.iter().enumerate() {
         let skip_header = i != 0;
-        out.extend_from_slice(&block_copy(bam, skip_header, true)?);
+        out.extend_from_slice(&block_copy_with(bam, skip_header, true, level, deflater)?);
     }
     // And lastly add the terminator block.
     out.extend_from_slice(&EMPTY_GZIP_BLOCK);
