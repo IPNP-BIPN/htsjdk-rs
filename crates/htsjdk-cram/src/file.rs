@@ -41,10 +41,24 @@ pub enum FileError {
     },
     /// A block that did not decompress.
     Corrupt,
+    /// A CRAM 3.1 codec refused its stream, with the reference's message when it has one.
+    Codec(String),
     Truncated,
 }
 
 impl FileError {
+    /// The class the reference throws for this refusal.
+    pub fn java_exception(&self) -> &'static str {
+        match self {
+            FileError::Container(_) => "htsjdk.samtools.cram.CRAMException",
+            FileError::CompressionHeader(error) => error.java_exception(),
+            FileError::UnsupportedCompression { .. } | FileError::Corrupt | FileError::Codec(_) => {
+                "htsjdk.samtools.cram.CRAMException"
+            }
+            FileError::Truncated => "htsjdk.samtools.util.RuntimeEOFException",
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             FileError::Container(error) => error.message(),
@@ -53,8 +67,15 @@ impl FileError {
                 format!("no decompressor for block compression method {method}")
             }
             FileError::Corrupt => "a block did not decompress".to_string(),
+            FileError::Codec(message) => message.clone(),
             FileError::Truncated => "null".to_string(),
         }
+    }
+}
+
+impl From<crate::rans_nx16::NxError> for FileError {
+    fn from(error: crate::rans_nx16::NxError) -> Self {
+        FileError::Codec(error.to_string())
     }
 }
 
@@ -131,80 +152,15 @@ pub struct FileWalk {
 
 /// Walk a file: the definition, the SAM header container, then every container until the EOF one.
 pub fn read_file(cram: &[u8]) -> Result<FileWalk, FileError> {
-    let definition = FileDefinition::read(cram)?;
-    let major = definition.major;
-    let mut at = FILE_DEFINITION_LENGTH;
-
-    // The SAM header container, whose one block is a FILE_HEADER rather than a compression header.
-    let header_container = ContainerHeader::read(&cram[at..], major)?;
-    let blocks_start = at + header_container.byte_length;
-    let sam_header = first_block_content(cram, blocks_start, major)?;
-    at = blocks_start + header_container.blocks_byte_size.max(0) as usize;
-
+    let (definition, sam_header, mut at) = read_preamble(cram)?;
     let mut containers = Vec::new();
     while at < cram.len() {
-        let offset = at;
-        let header = ContainerHeader::read(&cram[at..], major)?;
-        let blocks_start = at + header.byte_length;
-        let end = blocks_start + header.blocks_byte_size.max(0) as usize;
-
-        if header.is_eof() {
-            containers.push(ContainerWalk {
-                header,
-                offset,
-                compression_header: None,
-                slices: Vec::new(),
-            });
+        let (container, end) = read_container(cram, at, definition.major)?;
+        let eof = container.header.is_eof();
+        containers.push(container);
+        if eof {
             break;
         }
-
-        // The compression header block, then one slice header block and its blocks per slice.
-        let compression_header = CompressionHeader::read_block(&cram[blocks_start..end], major)?;
-        let mut cursor = blocks_start + block_length(cram, blocks_start, major)?;
-
-        let mut slices = Vec::new();
-        while cursor < end {
-            let slice_header_block = BlockHeader::read(&cram[cursor..])?;
-            let content_start = cursor + slice_header_block.byte_length;
-            let content_end = content_start + slice_header_block.compressed_size.max(0) as usize;
-            let slice_header = SliceHeader::read(
-                cram.get(content_start..content_end)
-                    .ok_or(FileError::Truncated)?,
-            )?;
-            cursor += slice_header_block.total_length(major);
-
-            let mut blocks = Vec::new();
-            // The header's block count is the core block plus the externals, and it does not
-            // count the slice header block itself.
-            for _ in 0..slice_header.block_count.max(0) {
-                let header = BlockHeader::read(cram.get(cursor..).ok_or(FileError::Truncated)?)?;
-                let start = cursor + header.byte_length;
-                let end = start + header.compressed_size.max(0) as usize;
-                let raw = cram.get(start..end).ok_or(FileError::Truncated)?;
-                let method = header.method().ok_or(FileError::UnsupportedCompression {
-                    method: header.method,
-                })?;
-                blocks.push(DecompressedBlock {
-                    content_type: header.content_type().unwrap_or(ContentType::External),
-                    method,
-                    content_id: header.content_id,
-                    content: decompress(method, raw, header.uncompressed_size)?,
-                });
-                cursor += header.total_length(major);
-            }
-
-            slices.push(SliceWalk {
-                header: slice_header,
-                blocks,
-            });
-        }
-
-        containers.push(ContainerWalk {
-            header,
-            offset,
-            compression_header: Some(compression_header),
-            slices,
-        });
         at = end;
     }
 
@@ -213,6 +169,105 @@ pub fn read_file(cram: &[u8]) -> Result<FileWalk, FileError> {
         sam_header,
         containers,
     })
+}
+
+/// The definition and the SAM header container: what `CramContainerIterator`'s constructor reads
+/// before the first record is asked for. Returns the header block's content and the offset of the
+/// first data container.
+pub fn read_preamble(cram: &[u8]) -> Result<(FileDefinition, Vec<u8>, usize), FileError> {
+    let definition = FileDefinition::read(cram)?;
+    let major = definition.major;
+    let at = FILE_DEFINITION_LENGTH;
+
+    // The SAM header container, whose one block is a FILE_HEADER rather than a compression header.
+    let header_container =
+        ContainerHeader::read(cram.get(at..).ok_or(FileError::Truncated)?, major)?;
+    let blocks_start = at + header_container.byte_length;
+    let sam_header = first_block_content(cram, blocks_start, major)?;
+    Ok((
+        definition,
+        sam_header,
+        blocks_start + header_container.blocks_byte_size.max(0) as usize,
+    ))
+}
+
+/// The container at `at`, its slices' blocks decompressed, and the offset just past it.
+pub fn read_container(
+    cram: &[u8],
+    at: usize,
+    major: u8,
+) -> Result<(ContainerWalk, usize), FileError> {
+    let offset = at;
+    let header = ContainerHeader::read(cram.get(at..).ok_or(FileError::Truncated)?, major)?;
+    let blocks_start = at + header.byte_length;
+    let end = blocks_start + header.blocks_byte_size.max(0) as usize;
+
+    if header.is_eof() {
+        return Ok((
+            ContainerWalk {
+                header,
+                offset,
+                compression_header: None,
+                slices: Vec::new(),
+            },
+            end,
+        ));
+    }
+
+    // The compression header block, then one slice header block and its blocks per slice.
+    let compression_header = CompressionHeader::read_block(
+        cram.get(blocks_start..end).ok_or(FileError::Truncated)?,
+        major,
+    )?;
+    let mut cursor = blocks_start + block_length(cram, blocks_start, major)?;
+
+    let mut slices = Vec::new();
+    while cursor < end {
+        let slice_header_block =
+            BlockHeader::read(cram.get(cursor..).ok_or(FileError::Truncated)?)?;
+        let content_start = cursor + slice_header_block.byte_length;
+        let content_end = content_start + slice_header_block.compressed_size.max(0) as usize;
+        let slice_header = SliceHeader::read(
+            cram.get(content_start..content_end)
+                .ok_or(FileError::Truncated)?,
+        )?;
+        cursor += slice_header_block.total_length(major);
+
+        let mut blocks = Vec::new();
+        // The header's block count is the core block plus the externals, and it does not
+        // count the slice header block itself.
+        for _ in 0..slice_header.block_count.max(0) {
+            let header = BlockHeader::read(cram.get(cursor..).ok_or(FileError::Truncated)?)?;
+            let start = cursor + header.byte_length;
+            let end = start + header.compressed_size.max(0) as usize;
+            let raw = cram.get(start..end).ok_or(FileError::Truncated)?;
+            let method = header.method().ok_or(FileError::UnsupportedCompression {
+                method: header.method,
+            })?;
+            blocks.push(DecompressedBlock {
+                content_type: header.content_type().unwrap_or(ContentType::External),
+                method,
+                content_id: header.content_id,
+                content: decompress(method, raw, header.uncompressed_size)?,
+            });
+            cursor += header.total_length(major);
+        }
+
+        slices.push(SliceWalk {
+            header: slice_header,
+            blocks,
+        });
+    }
+
+    Ok((
+        ContainerWalk {
+            header,
+            offset,
+            compression_header: Some(compression_header),
+            slices,
+        },
+        end,
+    ))
 }
 
 /// How many bytes the block at `at` occupies, header, content and checksum together.
@@ -254,6 +309,22 @@ pub fn decompress(
             Ok(out)
         }
         CompressionMethod::Rans => rans::uncompress(content).map_err(|_| FileError::Corrupt),
+        CompressionMethod::RansNx16 => {
+            crate::rans_nx16::uncompress(content).map_err(FileError::from)
+        }
+        CompressionMethod::AdaptiveArithmetic => {
+            crate::range::uncompress(content).map_err(FileError::from)
+        }
+        CompressionMethod::Fqzcomp => {
+            if content.is_empty() {
+                return Ok(Vec::new());
+            }
+            crate::fqzcomp::uncompress(content).map_err(FileError::from)
+        }
+        CompressionMethod::NameTokeniser => {
+            crate::name_tokeniser::uncompress(content, crate::name_tokeniser::NAME_SEPARATOR)
+                .map_err(FileError::from)
+        }
         other => Err(FileError::UnsupportedCompression {
             method: other as i32,
         }),

@@ -13,6 +13,8 @@ flate2.workspace = true
 # CRAM is defined in terms of SAM records: the record model walks a cigar and compares read bases
 # against a reference, and both of those are already ported here.
 htsjdk-bam = { path = "../htsjdk-bam" }
+# A slice header carries the MD5 of the reference bases it was compressed against.
+md-5 = "0.11"
 
 [dev-dependencies]
 flate2.workspace = true

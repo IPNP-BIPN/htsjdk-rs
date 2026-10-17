@@ -172,6 +172,15 @@ pub enum ReadFeatureError {
 }
 
 impl ReadFeatureError {
+    /// The class the reference throws for this refusal.
+    pub fn java_exception(&self) -> &'static str {
+        match self {
+            ReadFeatureError::IndexOutOfBounds { .. } => "java.lang.ArrayIndexOutOfBoundsException",
+            ReadFeatureError::UnsupportedCigarOperator(_) => "java.lang.IllegalArgumentException",
+            ReadFeatureError::Matrix(_) => "java.lang.IllegalArgumentException",
+        }
+    }
+
     pub fn message(&self) -> String {
         match self {
             ReadFeatureError::IndexOutOfBounds { index, length } => {
@@ -1297,4 +1306,419 @@ mod tests {
         let clipped = features("2S4M2S", b"TTACGTTT", 3);
         assert_eq!(alignment_end(&clipped, 3, 8), 6, "four bases clipped");
     }
+}
+
+/// `SequenceUtil.getBamReadBaseLookup`: any byte to its BAM read base, upper-cased, with anything
+/// outside `=ABCDGHKMNRSTVWY` (either case) becoming `N`. `]` is `=` lower-cased by the table's
+/// own arithmetic, so it maps to `=`.
+fn bam_read_base(byte: u8) -> u8 {
+    const SET: &[u8] = b"=ABCDGHKMNRSTVWY";
+    let b = byte & 0x7F;
+    for &base in SET {
+        if b == base || b == base + 32 {
+            return base;
+        }
+    }
+    b'N'
+}
+
+/// `SequenceUtil.bases`: the IUPAC bit mask of a code, zero for anything that is not one.
+fn iupac_mask(byte: u8) -> u8 {
+    let upper = if byte.is_ascii_lowercase() {
+        byte - 32
+    } else {
+        byte
+    };
+    match upper {
+        b'A' => 1,
+        b'C' => 2,
+        b'G' => 4,
+        b'T' => 8,
+        b'M' => 3,
+        b'R' => 5,
+        b'W' => 9,
+        b'S' => 6,
+        b'Y' => 10,
+        b'K' => 12,
+        b'V' => 7,
+        b'H' => 11,
+        b'D' => 13,
+        b'B' => 14,
+        b'N' => 15,
+        _ if byte == b'.' => 15,
+        _ => 0,
+    }
+}
+
+/// `SequenceUtil.basesEqual`: both inside the table, and the same mask.
+fn bases_equal(lhs: u8, rhs: u8) -> bool {
+    lhs < 127 && rhs < 127 && iupac_mask(lhs) == iupac_mask(rhs)
+}
+
+/// What [`restore_bases_and_tags`] produces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeResult {
+    /// Empty for `SEQ="*"`.
+    pub read_bases: Vec<u8>,
+    pub cigar: Cigar,
+    /// `None` when not asked for, or when the bases are unknown.
+    pub md: Option<String>,
+    pub nm: Option<i32>,
+}
+
+/// `CRAMRecordReadFeatures.restoreBasesAndTags` at htsjdk 5.0.0: the bases, the cigar and, when
+/// asked, `MD` and `NM`, in one walk over the features.
+///
+/// `reference` holds the region's bases and `region_start` is where it starts, zero-based. Once
+/// the read runs past the region the MD string is closed and stops growing, which is
+/// `calculateMdAndNm`'s break; the bases past it are `N`.
+pub fn restore_bases_and_tags(
+    features: &[ReadFeature],
+    unknown_bases: bool,
+    alignment_start: i32,
+    read_length: i32,
+    reference: Option<&[u8]>,
+    region_start: i32,
+    matrix: &SubstitutionMatrix,
+    compute_md_nm: bool,
+) -> Result<DecodeResult, ReadFeatureError> {
+    let whole = |length: i32| Cigar::new(vec![element(length, Op::M)]);
+    if read_length == 0 {
+        return Ok(DecodeResult {
+            read_bases: Vec::new(),
+            cigar: whole(0),
+            md: None,
+            nm: None,
+        });
+    }
+    let length = read_length.max(0) as usize;
+    let start = alignment_start - 1;
+    let offset = if unknown_bases { 0 } else { region_start };
+    let reference: &[u8] = if unknown_bases {
+        &[]
+    } else {
+        reference.unwrap_or(&[])
+    };
+    let do_bases = !unknown_bases;
+    let compute = compute_md_nm && do_bases;
+    let mut md = String::new();
+    let mut nm = 0i32;
+    let mut run = 0i32;
+    let mut md_active = compute;
+    let mut bases = vec![0u8; if do_bases { length } else { 0 }];
+
+    let reference_at = |at: i32| -> Result<u8, ReadFeatureError> {
+        if at >= reference.len() as i32 {
+            Ok(b'N')
+        } else if at < 0 {
+            Err(ReadFeatureError::IndexOutOfBounds {
+                index: i64::from(at),
+                length: reference.len(),
+            })
+        } else {
+            Ok(reference[at as usize])
+        }
+    };
+    let put = |bases: &mut Vec<u8>, at: i32, value: u8| -> Result<(), ReadFeatureError> {
+        let index = i64::from(at);
+        if index < 0 || index >= bases.len() as i64 {
+            return Err(ReadFeatureError::IndexOutOfBounds {
+                index,
+                length: bases.len(),
+            });
+        }
+        bases[index as usize] = value;
+        Ok(())
+    };
+
+    if features.is_empty() {
+        if unknown_bases {
+            return Ok(DecodeResult {
+                read_bases: Vec::new(),
+                cigar: whole(read_length),
+                md: None,
+                nm: None,
+            });
+        }
+        let source = start - offset;
+        let copy = read_length.min((reference.len() as i32 - source).max(0));
+        if copy < read_length {
+            bases.fill(b'N');
+        }
+        for i in 0..copy {
+            bases[i as usize] = reference_at(source + i)?;
+        }
+        for i in 0..length {
+            let raw = bases[i];
+            bases[i] = bam_read_base(raw);
+            if compute_md_nm && (i as i32) < copy {
+                if bases_equal(bases[i], raw) || bases[i] == 0 {
+                    run += 1;
+                } else {
+                    md.push_str(&run.to_string());
+                    md.push(raw as char);
+                    run = 0;
+                    nm += 1;
+                }
+            }
+        }
+        if md_active {
+            md.push_str(&run.to_string());
+        }
+        return Ok(DecodeResult {
+            read_bases: bases,
+            cigar: whole(read_length),
+            md: compute_md_nm.then_some(md),
+            nm: compute_md_nm.then_some(nm),
+        });
+    }
+
+    let mut elements: Vec<CigarElement> = Vec::new();
+    let mut last_op = Op::M;
+    let mut last_len = 0i32;
+    let mut last_pos = 1i32;
+    let mut in_read = 1i32;
+    let mut in_seq = 0i32;
+
+    for feature in features {
+        let position = feature.position();
+        if do_bases {
+            while in_read < position {
+                let at = start + in_seq - offset;
+                if at >= reference.len() as i32 {
+                    md_active = false;
+                }
+                let raw = reference_at(at)?;
+                let base = bam_read_base(raw);
+                put(&mut bases, in_read - 1, base)?;
+                if md_active {
+                    if bases_equal(base, raw) || base == 0 {
+                        run += 1;
+                    } else {
+                        md.push_str(&run.to_string());
+                        md.push(raw as char);
+                        run = 0;
+                        nm += 1;
+                    }
+                }
+                in_read += 1;
+                in_seq += 1;
+            }
+        } else {
+            in_seq += position - in_read;
+            in_read = position;
+        }
+
+        if md_active && start + in_seq - offset >= reference.len() as i32 {
+            md.push_str(&run.to_string());
+            run = 0;
+            md_active = false;
+        }
+
+        let gap = position - (last_pos + last_len);
+        if gap > 0 {
+            if last_op != Op::M {
+                elements.push(element(last_len, last_op));
+                last_pos += last_len;
+                last_len = gap;
+            } else {
+                last_len += gap;
+            }
+            last_op = Op::M;
+        }
+
+        let (op, op_len) = match feature {
+            ReadFeature::Substitution { code, .. } => {
+                if do_bases {
+                    let raw = reference_at(start + in_seq - offset)?;
+                    let normalized = normalize_base(raw);
+                    if *code < 0 {
+                        return Err(ReadFeatureError::IndexOutOfBounds {
+                            index: i64::from(*code),
+                            length: 128,
+                        });
+                    }
+                    let base = matrix
+                        .base(normalized, *code as u8)
+                        .map_err(ReadFeatureError::Matrix)?;
+                    put(&mut bases, in_read - 1, bam_read_base(base))?;
+                    if md_active {
+                        md.push_str(&run.to_string());
+                        md.push(raw as char);
+                        run = 0;
+                        nm += 1;
+                    }
+                }
+                in_read += 1;
+                in_seq += 1;
+                (Op::M, 1)
+            }
+            ReadFeature::ReadBase { base, .. } => {
+                if do_bases {
+                    let read_base = bam_read_base(*base);
+                    put(&mut bases, in_read - 1, read_base)?;
+                    if md_active {
+                        let raw = reference_at(start + in_seq - offset)?;
+                        if bases_equal(read_base, raw) {
+                            run += 1;
+                        } else {
+                            md.push_str(&run.to_string());
+                            md.push(raw as char);
+                            run = 0;
+                            nm += 1;
+                        }
+                    }
+                }
+                in_read += 1;
+                in_seq += 1;
+                (Op::M, 1)
+            }
+            ReadFeature::Bases { bases: source, .. } => {
+                if do_bases {
+                    for (i, b) in source.iter().enumerate() {
+                        let i = i as i32;
+                        let read_base = bam_read_base(*b);
+                        put(&mut bases, in_read - 1 + i, read_base)?;
+                        if md_active {
+                            let raw = reference_at(start + in_seq + i - offset)?;
+                            if bases_equal(read_base, raw) {
+                                run += 1;
+                            } else {
+                                md.push_str(&run.to_string());
+                                md.push(raw as char);
+                                run = 0;
+                                nm += 1;
+                            }
+                        }
+                    }
+                }
+                in_read += source.len() as i32;
+                in_seq += source.len() as i32;
+                continue;
+            }
+            ReadFeature::Insertion { sequence, .. } => {
+                if do_bases {
+                    for (i, b) in sequence.iter().enumerate() {
+                        put(&mut bases, in_read - 1 + i as i32, bam_read_base(*b))?;
+                    }
+                    if md_active {
+                        nm += sequence.len() as i32;
+                    }
+                }
+                in_read += sequence.len() as i32;
+                (Op::I, sequence.len() as i32)
+            }
+            ReadFeature::InsertBase { base, .. } => {
+                if do_bases {
+                    put(&mut bases, in_read - 1, bam_read_base(*base))?;
+                    if md_active {
+                        nm += 1;
+                    }
+                }
+                in_read += 1;
+                (Op::I, 1)
+            }
+            ReadFeature::SoftClip { sequence, .. } => {
+                if do_bases {
+                    for (i, b) in sequence.iter().enumerate() {
+                        put(&mut bases, in_read - 1 + i as i32, bam_read_base(*b))?;
+                    }
+                }
+                in_read += sequence.len() as i32;
+                (Op::S, sequence.len() as i32)
+            }
+            ReadFeature::Deletion { length, .. } => {
+                if md_active {
+                    md.push_str(&run.to_string());
+                    run = 0;
+                    md.push('^');
+                    for i in 0..*length {
+                        md.push(reference_at(start + in_seq + i - offset)? as char);
+                    }
+                    nm += length;
+                }
+                in_seq += length;
+                (Op::D, *length)
+            }
+            ReadFeature::RefSkip { length, .. } => {
+                in_seq += length;
+                (Op::N, *length)
+            }
+            ReadFeature::HardClip { length, .. } => (Op::H, *length),
+            ReadFeature::Padding { length, .. } => (Op::P, *length),
+            ReadFeature::Scores { .. } | ReadFeature::BaseQualityScore { .. } => continue,
+        };
+
+        if last_op != op {
+            if last_len > 0 {
+                elements.push(element(last_len, last_op));
+            }
+            last_op = op;
+            last_len = op_len;
+            last_pos = position;
+        } else {
+            last_len += op_len;
+        }
+        if !op.consumes_read_bases() {
+            last_pos -= op_len;
+        }
+    }
+
+    if do_bases {
+        while in_read <= read_length {
+            let at = start + in_seq - offset;
+            if at >= reference.len() as i32 {
+                if md_active {
+                    md.push_str(&run.to_string());
+                    run = 0;
+                    md_active = false;
+                }
+                while in_read <= read_length {
+                    put(&mut bases, in_read - 1, b'N')?;
+                    in_read += 1;
+                }
+                break;
+            }
+            let raw = reference_at(at)?;
+            let base = bam_read_base(raw);
+            put(&mut bases, in_read - 1, base)?;
+            if md_active {
+                if bases_equal(base, raw) || base == 0 {
+                    run += 1;
+                } else {
+                    md.push_str(&run.to_string());
+                    md.push(raw as char);
+                    run = 0;
+                    nm += 1;
+                }
+            }
+            in_read += 1;
+            in_seq += 1;
+        }
+    }
+
+    if last_op != Op::M {
+        if last_len > 0 {
+            elements.push(element(last_len, last_op));
+        }
+        if read_length >= last_pos + last_len {
+            elements.push(element(read_length - (last_len + last_pos) + 1, Op::M));
+        }
+    } else if read_length > last_pos - 1 {
+        elements.push(element(read_length - last_pos + 1, Op::M));
+    }
+    let cigar = if elements.is_empty() {
+        whole(read_length)
+    } else {
+        Cigar::new(elements)
+    };
+    if md_active {
+        md.push_str(&run.to_string());
+    }
+    Ok(DecodeResult {
+        read_bases: if unknown_bases { Vec::new() } else { bases },
+        cigar,
+        md: compute.then_some(md),
+        nm: compute.then_some(nm),
+    })
 }

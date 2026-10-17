@@ -307,6 +307,7 @@ version = "0.2.0"
 dependencies = [
  "flate2",
  "htsjdk-bam",
+ "md-5",
  "sha2",
 ]
 
