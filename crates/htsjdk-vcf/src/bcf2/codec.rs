@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use super::decode::meta_data_for_field;
+use super::decode::{meta_data_for_field, FieldIndex};
 use super::java_hash::Fill;
 use super::types::{decode_size, decode_type_id, Bcf2Type, Cursor, OVERFLOW_ELEMENT_MARKER};
 use super::{id_lines, make_dictionary, sample_names_in_order, Bcf2Error, LazyData, LazyHeader};
@@ -250,6 +250,7 @@ impl Bcf2ReadFailure {
 /// `BCF2Codec` after `readHeader`.
 struct Codec {
     header: VcfHeader,
+    fields: FieldIndex,
     codec_version: crate::header_parse::VcfVersion,
     header_version: Option<crate::header_parse::VcfVersion>,
     contig_names: Vec<String>,
@@ -382,7 +383,7 @@ impl Codec {
         for _ in 0..n_info {
             let key = self.read_dictionary_string(&mut d)?;
             let mut value = d.decode_typed_value()?.into_value();
-            let meta = meta_data_for_field(&self.header, &key)?;
+            let meta = meta_data_for_field(&self.header, &self.fields, &key)?;
             if meta.line_type == LineType::Flag {
                 value = Value::Bool(true);
             }
@@ -723,6 +724,7 @@ fn read_header(bytes: &[u8]) -> Result<(Codec, usize), Bcf2Error> {
     });
     Ok((
         Codec {
+            fields: FieldIndex::new(&header),
             header,
             codec_version,
             header_version,

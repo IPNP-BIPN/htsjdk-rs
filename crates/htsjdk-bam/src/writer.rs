@@ -201,11 +201,28 @@ impl<W: Write> BamWriter<W> {
         // htsjdk takes the pointer *before* encoding and again after, so the chunk spans
         // exactly this record's bytes. Taking it after the write for the start, or including
         // the next record, shifts every chunk in the index.
-        let start_offset = self.bgzf.file_pointer();
+        //
+        // Only an indexing writer asks: a pointer waits for every block in flight, so asking on
+        // every record would deflate the whole file on this thread.
+        let indexing = self.indexer.is_some();
+        let pointer = |bgzf: &mut BgzfWriter<_>| {
+            if indexing {
+                bgzf.file_pointer().map_err(WriteError::Io)
+            } else {
+                Ok(0)
+            }
+        };
+        let start_offset = match pointer(&mut self.bgzf) {
+            Ok(offset) => offset,
+            Err(error) => {
+                self.scratch = bytes;
+                return Err(error);
+            }
+        };
         let written = self.bgzf.write_all(&bytes).map_err(WriteError::Io);
         self.scratch = bytes;
         written?;
-        let stop_offset = self.bgzf.file_pointer();
+        let stop_offset = pointer(&mut self.bgzf)?;
 
         if let Some(indexer) = &mut self.indexer {
             let index_bin = if forced_bin {

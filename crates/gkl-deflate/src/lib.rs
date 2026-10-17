@@ -92,14 +92,32 @@ pub fn deflate_flavour(data: &[u8], level: usize, flavour: Flavour) -> Vec<u8> {
     deflate::Deflater::new(data, level, flavour).finish()
 }
 
+/// Level 0 is store only, through GKL's zlib: what `deflate_stored` writes for one `Z_FINISH` over
+/// a BGZF block, a single final stored block (header byte, length, its complement, the bytes).
+/// Measured against Picard 3.5.0 at `COMPRESSION_LEVEL=0` with GKL and with libdeflate, which
+/// write the same bytes. Anything longer than one stored block's 65,535 bytes is refused: BGZF
+/// never asks for it, and how this zlib would split one is not measured.
+pub fn stored(data: &[u8]) -> Vec<u8> {
+    let length = u16::try_from(data.len()).expect("a stored block holds at most 65,535 bytes");
+    let mut out = Vec::with_capacity(data.len() + 5);
+    out.push(0x01);
+    out.extend_from_slice(&length.to_le_bytes());
+    out.extend_from_slice(&(!length).to_le_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
 /// Compress `data` the way GKL's `IntelDeflater` does, on a CPU reporting SSE4.2.
 ///
-/// `level` is 1 to 9. Levels 1 and 2 go through ISA-L itself rather than through a port of it, for
+/// `level` is 0 to 9; 0 is [`stored`]. Levels 1 and 2 go through ISA-L itself rather than through a port of it, for
 /// the reason decision 0034 gives: ISA-L's own readable C finds different matches from the
 /// assembly kernels it ships, so translating the C would answer confidently and wrongly.
 ///
 /// Without the `isal` feature those two levels are refused rather than approximated.
 pub fn deflate_gkl(data: &[u8], level: usize) -> Vec<u8> {
+    if level == 0 {
+        return stored(data);
+    }
     if level == 1 || level == 2 {
         #[cfg(feature = "isal")]
         {

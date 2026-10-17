@@ -330,7 +330,10 @@ impl<'a> Deflater<'a> {
 
             if self.strstart >= W_SIZE + MAX_DIST {
                 self.window.copy_within(W_SIZE..WINDOW_SIZE - more, 0);
-                self.match_start -= W_SIZE;
+                // zlib's `match_start` is unsigned and wraps here when the last match lies below
+                // the slide. A release build already wrapped, so this changes no byte; a debug
+                // build panicked on overflow instead.
+                self.match_start = self.match_start.wrapping_sub(W_SIZE);
                 self.strstart -= W_SIZE;
                 self.block_start -= W_SIZE as isize;
                 if self.insert > self.strstart {

@@ -157,9 +157,10 @@ fn establish_header(text: &str) -> Result<EstablishedHeader, ReadError> {
 
     // A `LinkedHashSet`, so a line repeated exactly collapses onto its first occurrence and one
     // repeated with a different value does not.
+    let mut seen = std::collections::HashSet::with_capacity(lines.len());
     let mut deduped: Vec<HeaderLine> = Vec::with_capacity(lines.len());
     for line in lines {
-        if !deduped.iter().any(|kept| header_lines_equal(kept, &line)) {
+        if seen.insert(equality_key(&line)) {
             deduped.push(line);
         }
     }
@@ -194,34 +195,30 @@ fn is_format_string(key: &str) -> bool {
     key == "fileformat" || key == "format"
 }
 
-/// `VCFHeaderLine.equals` and its overrides, which is what the `LinkedHashSet` deduplicates by.
+/// What `VCFHeaderLine.equals` and its overrides compare, as a key, which is what the
+/// `LinkedHashSet` deduplicates by: a set rather than a scan, so a header of thousands of contig
+/// lines is not a quadratic read.
 ///
 /// Compound lines compare on ID, count, type and description and **ignore any extra tags**, so two
 /// `##INFO` lines differing only in a `Source` tag are one line to htsjdk. A dedup by rendered
 /// string would keep both, which is why this is spelled out rather than left to the renderer.
-fn header_lines_equal(a: &HeaderLine, b: &HeaderLine) -> bool {
-    match (a, b) {
-        (
-            HeaderLine::Compound {
-                key: ka,
-                id: ia,
-                number: na,
-                line_type: ta,
-                description: da,
-                ..
-            },
-            HeaderLine::Compound {
-                key: kb,
-                id: ib,
-                number: nb,
-                line_type: tb,
-                description: db,
-                ..
-            },
-        ) => ka == kb && ia == ib && na == nb && ta == tb && da == db,
+fn equality_key(line: &HeaderLine) -> (String, String, String) {
+    match line {
+        HeaderLine::Compound {
+            key,
+            id,
+            number,
+            line_type,
+            description,
+            ..
+        } => (
+            key.clone(),
+            id.clone(),
+            format!("{number:?}\t{line_type:?}\t{description}"),
+        ),
         // Everything else compares by key and rendered value, which for these variants is the
-        // whole line.
-        _ => a.key() == b.key() && a.render() == b.render(),
+        // whole line. The empty third part keeps it apart from any compound key.
+        other => (other.key().to_string(), other.render(), String::new()),
     }
 }
 
@@ -333,6 +330,34 @@ mod tests {
     const HEADER: &str = "##fileformat=VCFv4.2\n\
                           ##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n\
                           #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n";
+
+    /// The dedup is `VCFHeaderLine.equals`: a compound line repeated with only an extra tag is one
+    /// line, the first; one with another description is two; a contig repeated exactly is one.
+    #[test]
+    fn repeated_header_lines_collapse_as_htsjdk_compares_them() {
+        let text = "##fileformat=VCFv4.2\n\
+                    ##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n\
+                    ##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\",Source=\"x\">\n\
+                    ##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Other\">\n\
+                    ##contig=<ID=1,length=10>\n\
+                    ##contig=<ID=1,length=10>\n\
+                    #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n";
+        let lines: Vec<String> = read_vcf(text)
+            .unwrap()
+            .header
+            .lines
+            .iter()
+            .map(HeaderLine::render)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">",
+                "INFO=<ID=DP,Number=1,Type=Integer,Description=\"Other\">",
+                "contig=<ID=1,length=10>",
+            ]
+        );
+    }
 
     /// A two-sample file with the samples in the given order, one record whose FORMAT keys are
     /// not sorted after `GT`.
