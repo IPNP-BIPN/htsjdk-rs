@@ -8,16 +8,28 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-10-14
+## [0.3.0] - 2026-10-17
 
-Java's number printing, reconstructed from behaviour, closes the last formatting gap; the rest are
-VCF bytes and a speed bound that gatk-rs's tools reached.
+Java's number printing, reconstructed from behaviour, closes the last formatting gap. CRAM 3.1,
+BCF2 and libdeflate bring the formats and the deflater Picard 3.5.0 writes; the rest are VCF bytes
+and a speed bound that gatk-rs's tools reached.
 
 ### Added
 
 - `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
   where they are not the shortest decimal. Reconstructed from the oracle's measured behaviour, not
   from the JDK's GPL-2.0 source (decision 0046).
+- **CRAM 3.1, read and written as htsjdk 5.0.0 does** (#252): the rANS Nx16, arithmetic,
+  fqzcomp and name-tokeniser codecs, `reader::CramReader` with htsjdk's slice normalisation,
+  `writer::write_cram` (NORMAL profile, per-tag GZIP/rANS trial) and the `.bai` of a CRAM.
+  Writing a bzip2 block is not ported, so an `SA` or `XA` tag that would need one is refused.
+- **`htsjdk_vcf::bcf2`**: htsjdk's BCF2 codec and writer, BCF 2.1 uncompressed, with INFO in
+  Java `HashMap` order and the oracle's refusals (#251).
+- **`Deflater::Libdeflate`**: libdeflate v1.25, which htsjdk 5.0.0 uses whenever jlibdeflate
+  loads, so `USE_JDK_DEFLATER=true` in Picard 3.5.0 is libdeflate's bytes (#248).
+- `_with` variants of `write_bam_header_block`, `block_copy`, `reheader_bam`, `gather_bam_files`
+  and `TabixIndex::write` that take the level and the deflater; the existing functions keep
+  their signatures (#248).
 
 ### Fixed
 
@@ -29,6 +41,8 @@ VCF bytes and a speed bound that gatk-rs's tools reached.
 - **A file whose sample columns are not sorted has every record decoded**, as
   `AbstractVCFCodec.parseVCFLine` does when `samplesWereAlreadySorted()` is false, so it is written
   back re-encoded rather than copied verbatim. The order is `String.compareTo`'s (#242).
+- **A Tribble index's double properties are written as `Double.toString` writes them**: a
+  feature-length variance below a thousandth is `3.111081185151864E-4`, not `0.000311...` (#250).
 
 ### Changed
 
