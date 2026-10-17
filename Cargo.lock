@@ -305,6 +305,7 @@ version = "0.2.0"
 dependencies = [
  "flate2",
  "gkl-deflate",
+ "libdeflate-sys",
  "libz-sys",
  "md-5",
  "rapidgzip-core",

@@ -71,6 +71,10 @@ pub struct GenotypesContext {
     samples: Option<Arc<[String]>>,
     /// `loaded`. Once set, the text is no longer the record's answer.
     decoded: AtomicBool,
+    /// `BCF2Codec.LazyData`: the genotype block of a BCF record, which `BCF2Writer` copies into a
+    /// BCF whose header agrees with the one it was read under. It is never VCF text, so the VCF
+    /// encoder re-encodes such a record.
+    bcf: Option<crate::bcf2::LazyData>,
 }
 
 impl GenotypesContext {
@@ -81,6 +85,7 @@ impl GenotypesContext {
             unparsed: None,
             samples: None,
             decoded: AtomicBool::new(true),
+            bcf: None,
         }
     }
 
@@ -92,6 +97,28 @@ impl GenotypesContext {
             unparsed: Some(unparsed),
             samples: Some(samples),
             decoded: AtomicBool::new(false),
+            bcf: None,
+        }
+    }
+
+    /// A context read from a BCF file: the decoded genotypes and the block they were decoded from.
+    pub fn lazy_bcf(genotypes: Vec<Genotype>, data: crate::bcf2::LazyData) -> Self {
+        Self {
+            genotypes,
+            unparsed: None,
+            samples: None,
+            decoded: AtomicBool::new(false),
+            bcf: Some(data),
+        }
+    }
+
+    /// The BCF block while the context is still lazy, which is `isLazyWithData()` with
+    /// `BCF2Codec.LazyData` behind it.
+    pub fn bcf_unparsed(&self) -> Option<&crate::bcf2::LazyData> {
+        if self.decoded.load(Ordering::Relaxed) {
+            None
+        } else {
+            self.bcf.as_ref()
         }
     }
 
@@ -141,7 +168,7 @@ impl GenotypesContext {
     ///
     /// For a caller that has to look at the list *as the encoder does*, which is what the verbatim
     /// branch itself does when it does not take it. Nothing outside this crate needs it.
-    pub(crate) fn peek(&self) -> &[Genotype] {
+    pub fn peek(&self) -> &[Genotype] {
         &self.genotypes
     }
 
@@ -200,6 +227,7 @@ impl Clone for GenotypesContext {
             unparsed: self.unparsed.clone(),
             samples: self.samples.clone(),
             decoded: AtomicBool::new(self.decoded.load(Ordering::Relaxed)),
+            bcf: self.bcf.clone(),
         }
     }
 }

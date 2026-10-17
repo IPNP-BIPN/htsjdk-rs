@@ -20,11 +20,12 @@
 use std::io::{self, Read};
 
 use htsjdk_bgzf::{
-    check_termination, vfp, BgzfError, BgzfReader, BgzfWriter, FileTermination, EMPTY_GZIP_BLOCK,
+    check_termination, vfp, BgzfError, BgzfReader, BgzfWriter, Deflater, FileTermination,
+    DEFAULT_COMPRESSION_LEVEL, EMPTY_GZIP_BLOCK,
 };
 
 use crate::header::SamHeader;
-use crate::writer::{write_bam_header_block, BAM_MAGIC};
+use crate::writer::{write_bam_header_block_with, BAM_MAGIC};
 
 /// Why a block-copy reheader could not run.
 #[derive(Debug)]
@@ -94,6 +95,24 @@ pub fn block_copy(
     skip_header: bool,
     skip_terminator: bool,
 ) -> Result<Vec<u8>, ReheaderError> {
+    block_copy_with(
+        input_bam,
+        skip_header,
+        skip_terminator,
+        DEFAULT_COMPRESSION_LEVEL,
+        Deflater::Jdk,
+    )
+}
+
+/// [`block_copy`] with the compression of the one re-compressed block named: htsjdk writes it
+/// through a `BlockCompressedOutputStream`, which takes the static default level and deflater.
+pub fn block_copy_with(
+    input_bam: &[u8],
+    skip_header: bool,
+    skip_terminator: bool,
+    level: u32,
+    deflater: Deflater,
+) -> Result<Vec<u8>, ReheaderError> {
     // checkTermination: reject a file whose tail is not a valid GZIP block, and learn whether an
     // EOF terminator is present (so skip_terminator can drop exactly it).
     let term = check_termination(input_bam);
@@ -127,7 +146,7 @@ pub fn block_copy(
         // Re-compress the first-record tail as one flushed block (empty tail writes nothing, as
         // htsjdk's flush() of a zero-byte BlockCompressedOutputStream writes no block).
         if !tail.is_empty() {
-            let mut w = BgzfWriter::new(Vec::new());
+            let mut w = BgzfWriter::with_deflater(Vec::new(), level, deflater);
             io::Write::write_all(&mut w, &tail)?;
             out.extend_from_slice(&w.into_inner_without_terminator()?);
         }
@@ -154,10 +173,26 @@ pub fn block_copy(
 /// `reheaderBamFile(newHeader, input, skipHeader=true, skipTerminator=false)`: the whole reheadered
 /// BAM as bytes. `input_bam` is the raw BAM file (BGZF-framed, terminator included).
 pub fn reheader_bam(new_header: &SamHeader, input_bam: &[u8]) -> Result<Vec<u8>, ReheaderError> {
+    reheader_bam_with(
+        new_header,
+        input_bam,
+        DEFAULT_COMPRESSION_LEVEL,
+        Deflater::Jdk,
+    )
+}
+
+/// [`reheader_bam`] with the compression of the blocks it writes named, which are the header and
+/// the first record block's tail; every other block is copied as it was.
+pub fn reheader_bam_with(
+    new_header: &SamHeader,
+    input_bam: &[u8],
+    level: u32,
+    deflater: Deflater,
+) -> Result<Vec<u8>, ReheaderError> {
     // The new header as flushed BGZF block(s), no terminator, then the record blocks block-copied
     // with the header dropped and the terminator kept.
-    let mut out = write_bam_header_block(new_header)?;
-    out.extend_from_slice(&block_copy(input_bam, true, false)?);
+    let mut out = write_bam_header_block_with(new_header, level, deflater)?;
+    out.extend_from_slice(&block_copy_with(input_bam, true, false, level, deflater)?);
     Ok(out)
 }
 
@@ -167,6 +202,7 @@ mod tests {
     use crate::reader::BamReader;
     use crate::sam_file::read_sam_with;
     use crate::text_parse::ValidationStringency;
+    use crate::writer::write_bam_header_block;
     use crate::writer::BamWriter;
 
     fn build_bam(sam: &str) -> Vec<u8> {

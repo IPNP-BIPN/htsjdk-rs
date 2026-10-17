@@ -302,17 +302,9 @@ impl VcfHeader {
         // carries only its string, so contigs order among themselves by index and against
         // others by string. Where those two disagree the Java comparator has a cycle and its
         // result depends on TreeSet insertion order; see decision 0016 and the module doc.
-        let mut sorted: Vec<(SortKey, String)> = self
-            .lines
-            .iter()
-            .filter(|l| !is_format_string(l.key()))
-            .map(|l| (l.sort_key(), l.render()))
-            .collect();
-        sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        sorted.dedup_by(|a, b| a.1 == b.1);
-        for (_, line) in sorted {
+        for line in self.sorted_lines() {
             out.push_str(METADATA_INDICATOR);
-            out.push_str(&line);
+            out.push_str(&line.render());
             out.push('\n');
         }
 
@@ -328,6 +320,22 @@ impl VcfHeader {
         }
         out.push('\n');
         out
+    }
+}
+
+impl VcfHeader {
+    /// `getMetaDataInSortedOrder` without its prepended `fileformat` line: the lines the writer
+    /// writes, in the order it writes them, a line rendering like an earlier one dropped.
+    pub fn sorted_lines(&self) -> Vec<&HeaderLine> {
+        let mut sorted: Vec<(SortKey, String, &HeaderLine)> = self
+            .lines
+            .iter()
+            .filter(|l| !is_format_string(l.key()))
+            .map(|l| (l.sort_key(), l.render(), l))
+            .collect();
+        sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        sorted.dedup_by(|a, b| a.1 == b.1);
+        sorted.into_iter().map(|(_, _, line)| line).collect()
     }
 }
 
