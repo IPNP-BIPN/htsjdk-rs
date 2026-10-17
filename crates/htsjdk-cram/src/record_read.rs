@@ -111,8 +111,9 @@ pub struct CramRecord {
     pub read_bases: Vec<u8>,
     /// Only present where the CRAM flags say the scores were kept as an array.
     pub quality_scores: Vec<u8>,
-    /// The tag ids the dictionary gave, three bytes each, in its order.
-    pub tags: Vec<[u8; 3]>,
+    /// The tag ids the dictionary gave, three bytes each, in its order, each with the value's
+    /// bytes as its series held them.
+    pub tags: Vec<([u8; 3], Vec<u8>)>,
 }
 
 /// What a slice knows about itself that the reader needs.
@@ -295,8 +296,8 @@ pub fn read_record(
             descriptor.id,
             &descriptor.parameters,
         )?;
-        read_byte_array(&encoding, streams, None)?;
-        record.tags.push(*id);
+        let value = read_byte_array(&encoding, streams, None)?;
+        record.tags.push((*id, value));
     }
 
     if !record.flags.is_segment_unmapped() {
