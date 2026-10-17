@@ -680,6 +680,31 @@
       ]
     },
     {
+      "id": "bcf2",
+      "title": "BCF2, written and read as VcfFormatConverter does it",
+      "status": "golden-pending",
+      "harness": "tools/vcf-conformance",
+      "why": "Picard accepts .bcf wherever it accepts .vcf and htsjdk-rs had no BCF codec, so every VCF tool refused one. htsjdk's BCF is BCF 2.1 and uncompressed, and the bytes it writes are decided by four things that are not in the specification. INFO is in hash order: BCF2Writer.buildInfo iterates the attribute HashMap, so the order of a record's INFO block is the bucket order of every map its attributes were copied through, and putAll into an empty map presizes its table to the entry count, so one key gets a table of two and the same keys come out differently from different maps. A record from a VCF is fullyDecoded first: each value is typed by its header line, looked up as a FORMAT line before an INFO line even for an INFO key, a count the header disagrees with is TribbleException$InvalidHeader, an INFO key named FT is dropped, and an integer list holding a missing element is a NullPointerException because determineIntegerType unboxes every element. GQ is capped at 99 by GQAccessor. And a genotype block nobody decoded is copied into a BCF whose header agrees, which upstream decodes at once when the samples are not sorted, so the dump has the same records under both sample orders. Each case is converted three ways, VCF to BCF, that BCF to VCF and to BCF again, and the inputs are printed with the outputs so the port replays exactly what was measured. The read side is measured on damaged copies of one BCF: a bad magic, versions 3 and 2.2, header lengths of zero and past the end, a truncated record and truncated block sizes, a BGZF-compressed BCF, which is refused as having no magic, and an empty file, with the reader's own wrapping of each message.",
+      "expect_rows": 60,
+      "expect_contains": [
+        "err\trefuse-nullint\tbcf\tjava.lang.NullPointerException",
+        "Discordant field size detected for field AC",
+        "Cannot write BCF2 file with missing contig lines",
+        "err\tblock-compressed\tvcf\thtsjdk.tribble.TribbleException$MalformedFeatureFile",
+        "minor version = 1 but this file has minor version 2",
+        "bcf2\ttrio\t"
+      ],
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "Bcf2Dump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "vcf-genotype-likelihoods",
       "title": "GL to PL, and the double parser under it",
       "status": "oracle-backed",
