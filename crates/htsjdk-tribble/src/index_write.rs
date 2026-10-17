@@ -524,20 +524,11 @@ impl DynamicIndexCreator {
     }
 }
 
-/// `String.valueOf(double)` for the two shapes these properties take.
+/// `String.valueOf(double)`.
 fn java_double(value: f64) -> String {
-    htsjdk_vcf_jformat(value)
-}
-
-/// The formatter lives in `jmath`'s sibling and is not a dependency of this crate, so the two
-/// shapes that occur here are spelled out: an integral value keeps its `.0`, and everything else
-/// takes Rust's shortest round-trip rendering, which agrees with Java's for these magnitudes.
-fn htsjdk_vcf_jformat(value: f64) -> String {
-    if value == value.trunc() && value.abs() < 1e7 {
-        format!("{value:.1}")
-    } else {
-        format!("{value}")
-    }
+    // `Double.toString`, whose exponent form starts below 1e-3: a feature variance of 3.1e-4 is
+    // `3.111081185151864E-4`, which a shortest round-trip rendering writes as `0.000311...`.
+    jmath::to_string::double_to_string(value)
 }
 
 /// `IndexFactory`'s two ordering checks, which run over the feature stream before any creator sees

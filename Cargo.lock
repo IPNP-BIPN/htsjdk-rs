@@ -333,6 +333,7 @@ dependencies = [
  "flate2",
  "htsjdk-bam",
  "htsjdk-bgzf",
+ "jmath",
 ]
 
 [[package]]
