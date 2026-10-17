@@ -8,6 +8,12 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-17
+
+Java's number printing, reconstructed from behaviour, closes the last formatting gap. CRAM 3.1,
+BCF2 and libdeflate bring the formats and the deflater Picard 3.5.0 writes; the rest are VCF bytes
+and a speed bound that gatk-rs's tools reached.
+
 ### Added
 
 - `BgzfWriter` deflates full blocks on every core (rayon) and writes them in order, with the
@@ -17,6 +23,17 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 - `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
   where they are not the shortest decimal. Reconstructed from the oracle's measured behaviour, not
   from the JDK's GPL-2.0 source (decision 0046).
+- **CRAM 3.1, read and written as htsjdk 5.0.0 does** (#252): the rANS Nx16, arithmetic,
+  fqzcomp and name-tokeniser codecs, `reader::CramReader` with htsjdk's slice normalisation,
+  `writer::write_cram` (NORMAL profile, per-tag GZIP/rANS trial) and the `.bai` of a CRAM.
+  Writing a bzip2 block is not ported, so an `SA` or `XA` tag that would need one is refused.
+- **`htsjdk_vcf::bcf2`**: htsjdk's BCF2 codec and writer, BCF 2.1 uncompressed, with INFO in
+  Java `HashMap` order and the oracle's refusals (#251).
+- **`Deflater::Libdeflate`**: libdeflate v1.25, which htsjdk 5.0.0 uses whenever jlibdeflate
+  loads, so `USE_JDK_DEFLATER=true` in Picard 3.5.0 is libdeflate's bytes (#248).
+- `_with` variants of `write_bam_header_block`, `block_copy`, `reheader_bam`, `gather_bam_files`
+  and `TabixIndex::write` that take the level and the deflater; the existing functions keep
+  their signatures (#248).
 
 ### Changed
 
@@ -30,6 +47,21 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 - `FormatUtil` formatting now matches on all 41,678 corpus values (was 99.84%, 66 quarantined),
   the SAM text writer on all 67 records (`Float.MIN_VALUE` is `1.4E-45`), and `%f` / `%e` on all
   127,803 swept doubles (was 99.85%). Nothing formatting-related is licence-blocked any more.
+- **A written GQ is capped at 99**, as `VCFEncoder` does through `GQAccessor`. The genotype keeps
+  its real GQ, which GATK's `GQ_MEAN` reads; only the text is capped.
+- **A file whose sample columns are not sorted has every record decoded**, as
+  `AbstractVCFCodec.parseVCFLine` does when `samplesWereAlreadySorted()` is false, so it is written
+  back re-encoded rather than copied verbatim. The order is `String.compareTo`'s (#242).
+- **A Tribble index's double properties are written as `Double.toString` writes them**: a
+  feature-length variance below a thousandth is `3.111081185151864E-4`, not `0.000311...` (#250).
+
+### Changed
+
+- `jmath` `log` and `log10` answer from a table, an exact reduction and a short polynomial whenever
+  twice the error bound rounds to one double, and fall back to the double-double series otherwise:
+  277 ns per call becomes 11.6, with 200 million inputs checked and none differing (decision 0045).
+- `noodles-bam` 0.96.0, `noodles-sam` 0.91.0, `noodles-vcf` 0.94.0 and `noodles-core` 0.21.0, used
+  by the test oracles only.
 
 ## [0.2.0] - 2026-10-01
 

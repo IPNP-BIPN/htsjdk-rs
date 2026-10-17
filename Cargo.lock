@@ -93,6 +93,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
+name = "bzip2"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3a53fac24f34a81bc9954b5d6cfce0c21e18ec6959f44f56e8e90e4bb7c346c"
+dependencies = [
+ "libbz2-rs-sys",
+]
+
+[[package]]
 name = "cc"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -265,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "gkl-deflate"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "isal-sys",
@@ -280,7 +289,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "htsjdk-bam"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "htsjdk-bgzf",
@@ -292,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-bgzf"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "gkl-deflate",
@@ -305,23 +314,28 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-cram"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
+ "bzip2",
  "flate2",
  "htsjdk-bam",
+ "htsjdk-bgzf",
+ "jmath",
+ "libdeflate-sys",
+ "md-5",
  "sha2",
 ]
 
 [[package]]
 name = "htsjdk-diff"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "htsjdk-bgzf",
 ]
 
 [[package]]
 name = "htsjdk-metrics"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "jmath",
@@ -329,16 +343,17 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-tribble"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "htsjdk-bam",
  "htsjdk-bgzf",
+ "jmath",
 ]
 
 [[package]]
 name = "htsjdk-vcf"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
  "htsjdk-tribble",
@@ -384,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "jmath"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "flate2",
 ]
@@ -445,6 +460,12 @@ checksum = "409851a618475d2d5796377cad353802345cba92c867d9fbcde9cf4eac4e14df"
 dependencies = [
  "lexical-util",
 ]
+
+[[package]]
+name = "libbz2-rs-sys"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b357333733e8260735ba5894eb928c02ecc69c78715f01a8019e7fa7f2db4c"
 
 [[package]]
 name = "libc"

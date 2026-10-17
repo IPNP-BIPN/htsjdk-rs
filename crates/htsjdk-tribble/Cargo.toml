@@ -1,6 +1,6 @@
 [package]
 name = "htsjdk-tribble"
-version = "0.2.0"
+version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -12,6 +12,8 @@ htsjdk-bam = { path = "../htsjdk-bam" }
 # not of the caller's plumbing.
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 flate2.workspace = true
+# `String.valueOf(double)` for the statistics an index carries as properties.
+jmath.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
