@@ -278,6 +278,9 @@ impl WriterReference<'_> {
             .ok_or_else(|| {
                 CramError::IllegalArgument(format!("Reference sequence index {index} not found"))
             })?;
+        if let Some(message) = self.source.refusal(&sequence.name) {
+            return Err(CramError::IllegalArgument(message));
+        }
         let mut found = self.source.sequence_bases(&sequence.name);
         if found.is_none() {
             for variant in name_variants(&sequence.name) {

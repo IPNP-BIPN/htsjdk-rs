@@ -42,6 +42,29 @@ const NO_READGROUP_ID: i32 = -1;
 pub trait ReferenceSource {
     /// The whole sequence, uppercased, or `None` when the source has no such sequence.
     fn sequence_bases(&mut self, name: &str) -> Option<Arc<Vec<u8>>>;
+
+    /// What the source throws instead of answering, for one that never has a sequence:
+    /// `CRAMLazyReferenceSource`'s `IllegalArgumentException`. `None` for a source that answers
+    /// `null` and leaves the caller to refuse.
+    fn refusal(&self, _name: &str) -> Option<String> {
+        None
+    }
+}
+
+/// `CRAMLazyReferenceSource`, which `ReferenceSource.getDefaultCRAMReferenceSource` gives a
+/// writer made with no reference: every request throws.
+pub struct LazyReference;
+
+impl ReferenceSource for LazyReference {
+    fn sequence_bases(&mut self, _name: &str) -> Option<Arc<Vec<u8>>> {
+        None
+    }
+
+    fn refusal(&self, name: &str) -> Option<String> {
+        Some(format!(
+            "A reference must be supplied that includes the reference sequence for {name}."
+        ))
+    }
 }
 
 /// `CRAMLazyReferenceSource`: what a reader without a reference gets, and it has nothing.
@@ -188,6 +211,9 @@ impl ReferenceRegion {
                 "Requested start {zero_based_start} is beyond the sequence length {}",
                 sequence.name
             )));
+        }
+        if let Some(message) = source.refusal(&sequence.name) {
+            return Err(CramError::IllegalArgument(message));
         }
         let Some(all) = source.sequence_bases(&sequence.name) else {
             self.valid = false;
@@ -380,7 +406,7 @@ fn validate_md5(region: &ReferenceRegion, span: i32, expected: &[u8; 16]) -> Res
         let hex: String = expected.iter().map(|b| format!("{b:02x}")).collect();
         return Err(CramError::Cram(format!(
             "The MD5 for the reference failed to validate against the expected value {hex}. \
-             This indicates that the supplied reference is not the one originally used to create the CRAM."
+             This indicates that the supplied reference is not the one originally used to create the CRAM.."
         )));
     }
     Ok(())

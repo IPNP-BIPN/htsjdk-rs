@@ -258,6 +258,19 @@ fn a_missing_reference_fails_as_htsjdk_does() {
         error.java_line(),
         "java.lang.IllegalArgumentException: Failure getting reference bases for sequence chr1"
     );
+    // A writer made with no reference has the lazy source, which throws its own message.
+    let error = write_cram(
+        &header,
+        &written,
+        "file:///x.cram",
+        &mut htsjdk_cram::reader::LazyReference,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "A reference must be supplied that includes the reference sequence for chr1."
+    );
+    // One given a reference that lacks the sequence refuses with the record.
     let error = write_cram(
         &header,
         &written,
