@@ -300,6 +300,7 @@ dependencies = [
  "libz-sys",
  "md-5",
  "rapidgzip-core",
+ "rayon",
 ]
 
 [[package]]

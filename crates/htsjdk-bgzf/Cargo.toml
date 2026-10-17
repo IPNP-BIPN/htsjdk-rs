@@ -22,6 +22,8 @@ gkl-igzip = ["gkl-deflate/isal"]
 # levels it never asks for. `gkl-igzip` below turns it back on for one that does.
 gkl-deflate = { path = "../gkl-deflate", default-features = false }
 flate2.workspace = true
+# Deflates full blocks on every core; the bytes are the serial writer's (see `BgzfWriter`).
+rayon = "1.12.0"
 libz-sys.workspace = true
 # htsjdk 5.0.0's default deflater: jlibdeflate 0.1.0, which builds libdeflate v1.25 from source. The
 # version is pinned exactly because libdeflate's bytes, unlike its format, change between releases.
