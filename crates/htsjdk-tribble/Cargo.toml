@@ -12,6 +12,8 @@ htsjdk-bam = { path = "../htsjdk-bam" }
 # not of the caller's plumbing.
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 flate2.workspace = true
+# `Double.toString`, which the index properties are rendered with.
+jmath.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true
