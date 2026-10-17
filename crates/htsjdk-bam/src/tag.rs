@@ -256,9 +256,39 @@ pub fn write_tag(out: &mut Vec<u8>, tag: Tag, value: &TagValue) -> Result<(), Ta
 /// `SAMBinaryTagAndValue.insert` maintains a linked list sorted ascending by the packed short,
 /// with an equal tag *replacing* rather than duplicating. `BAMRecordCodec.encode` then walks
 /// that list, so the sort order is the write order.
-#[derive(Debug, Clone, Default, PartialEq)]
+///
+/// A record read from a file htsjdk did not write may carry its tags in an order, or with integer
+/// types, that the sorted list would not reproduce. htsjdk writes such a record from the bytes it
+/// read for as long as nothing is set on it (`BAMRecord.getVariableBinaryRepresentation`), so the
+/// block is kept beside the list until the first [`Self::insert`] or [`Self::remove`]. A block
+/// the list already reproduces is not kept: its record re-encodes to the same bytes either way.
+#[derive(Debug, Clone, Default)]
 pub struct Tags {
     entries: Vec<(Tag, TagValue)>,
+    raw: Option<RawBlock>,
+}
+
+/// The tag block as it was read, and a hash of the record's other variable fields as they were
+/// read: the name, cigar, bases and qualities. A writer uses the block only while both still hold.
+#[derive(Debug, Clone)]
+struct RawBlock {
+    tags: Box<[u8]>,
+    prefix_hash: u64,
+}
+
+/// Two tag lists are equal when they hold the same tags: how they were read is not part of it.
+impl PartialEq for Tags {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+/// FNV-1a, 64 bits: a fixed, seedless hash, so a record hashes the same way when it is read and
+/// when it is written.
+pub(crate) fn prefix_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 impl Tags {
@@ -266,8 +296,10 @@ impl Tags {
         Self::default()
     }
 
-    /// `SAMBinaryTagAndValue.insert`: sorted insert, replacing on an equal tag.
+    /// `SAMBinaryTagAndValue.insert`: sorted insert, replacing on an equal tag. Like
+    /// `setAttribute`, it makes the record stale whatever the value: the block read is dropped.
     pub fn insert(&mut self, tag: Tag, value: TagValue) {
+        self.raw = None;
         match self.entries.binary_search_by_key(&tag, |(t, _)| *t) {
             Ok(i) => self.entries[i] = (tag, value),
             Err(i) => self.entries.insert(i, (tag, value)),
@@ -283,6 +315,7 @@ impl Tags {
 
     /// `SAMRecord.setAttribute(tag, null)`: drop the tag if present.
     pub fn remove(&mut self, tag: Tag) {
+        self.raw = None;
         if let Ok(i) = self.entries.binary_search_by_key(&tag, |(t, _)| *t) {
             self.entries.remove(i);
         }
@@ -298,6 +331,34 @@ impl Tags {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// `SAMRecord.eagerDecode()`, which drops the bytes read: what a reader opened with
+    /// `EAGERLY_DECODE` hands over, and what a tool that decodes eagerly writes canonically.
+    pub fn forget_raw(&mut self) {
+        self.raw = None;
+    }
+
+    /// Keep the block read, for a record whose name, cigar, bases and qualities hash to
+    /// `prefix_hash`. Called by the reader only when the block is not canonical.
+    pub(crate) fn keep_raw(&mut self, tags: &[u8], prefix_hash: u64) {
+        self.raw = Some(RawBlock {
+            tags: tags.into(),
+            prefix_hash,
+        });
+    }
+
+    /// Whether a block read is still held, which only a non-canonical one ever is.
+    pub fn holds_raw(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// The block read, if the record's other variable fields still hash to what they were.
+    pub(crate) fn raw_for(&self, prefix_hash: u64) -> Option<&[u8]> {
+        self.raw
+            .as_ref()
+            .filter(|raw| raw.prefix_hash == prefix_hash)
+            .map(|raw| &*raw.tags)
     }
 
     /// Total on-disk size, as `BAMRecordCodec.encode` accumulates it.
@@ -317,8 +378,17 @@ impl Tags {
     /// The block carries no count and no length of its own: it is read until the bytes run out,
     /// which is why the CRAM slice header's tag section can only be delimited by its block.
     pub fn read(bytes: &[u8]) -> Result<Self, TagReadError> {
+        Ok(Self::read_checked(bytes)?.0)
+    }
+
+    /// [`Self::read`], and whether writing the list back gives the same bytes: tags strictly
+    /// ascending by the packed short, every integer in the type `getIntegerType` would pick, and
+    /// no `H` (which comes back as a `B` array).
+    pub(crate) fn read_checked(bytes: &[u8]) -> Result<(Self, bool), TagReadError> {
         let mut cursor = Cursor { bytes, at: 0usize };
         let mut tags = Self::new();
+        let mut canonical = true;
+        let mut previous: Option<Tag> = None;
         while cursor.at < cursor.bytes.len() {
             let tag = Tag(cursor.i16()?);
             let ty = cursor.u8()?;
@@ -327,10 +397,19 @@ impl Tags {
             } else {
                 read_single_value(ty, &mut cursor)?
             };
+            if canonical {
+                canonical = previous.is_none_or(|p| p < tag)
+                    && match &value {
+                        TagValue::Int(v) => integer_type(*v).is_ok_and(|t| t == ty),
+                        TagValue::ByteArray { .. } => ty == b'B',
+                        _ => true,
+                    };
+            }
+            previous = Some(tag);
             // `insert` is htsjdk's own: sorted by the packed short, and an equal tag *replaces*.
             tags.insert(tag, value);
         }
-        Ok(tags)
+        Ok((tags, canonical))
     }
 }
 
