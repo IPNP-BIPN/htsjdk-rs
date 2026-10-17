@@ -36,32 +36,59 @@ pub struct Compound<'a> {
     pub line_type: LineType,
 }
 
-/// The first `key` line with this ID, which is the one `VCFHeader`'s map keeps.
-pub fn compound<'a>(header: &'a VcfHeader, key: &str, wanted: &str) -> Option<Compound<'a>> {
-    header.lines.iter().find_map(|line| match line {
-        HeaderLine::Compound {
-            key: k,
-            id,
-            number,
-            line_type,
-            ..
-        } if k == key && id == wanted => Some(Compound {
-            line,
-            id,
-            number: *number,
-            line_type: *line_type,
-        }),
-        _ => None,
-    })
+/// The position of the first INFO and FORMAT line of each ID, built once per header: a
+/// GRCh38 header carries thousands of contig lines, and every field of every record looks here.
+#[derive(Debug, Clone, Default)]
+pub struct FieldIndex {
+    first: std::collections::HashMap<(String, String), usize>,
+}
+
+impl FieldIndex {
+    pub fn new(header: &VcfHeader) -> Self {
+        let mut first = std::collections::HashMap::new();
+        for (i, line) in header.lines.iter().enumerate() {
+            if let HeaderLine::Compound { key, id, .. } = line {
+                first.entry((key.clone(), id.clone())).or_insert(i);
+            }
+        }
+        Self { first }
+    }
+
+    /// The first `key` line with this ID in `header`, which is the one `VCFHeader`'s map keeps.
+    /// `header` must be the one the index was built from.
+    pub fn compound<'a>(
+        &self,
+        header: &'a VcfHeader,
+        key: &str,
+        wanted: &str,
+    ) -> Option<Compound<'a>> {
+        let &i = self.first.get(&(key.to_string(), wanted.to_string()))?;
+        match &header.lines[i] {
+            line @ HeaderLine::Compound {
+                id,
+                number,
+                line_type,
+                ..
+            } => Some(Compound {
+                line,
+                id,
+                number: *number,
+                line_type: *line_type,
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// `VariantContextUtils.getMetaDataForField`: FORMAT, then INFO.
 pub fn meta_data_for_field<'a>(
     header: &'a VcfHeader,
+    index: &FieldIndex,
     field: &str,
 ) -> Result<Compound<'a>, Bcf2Error> {
-    compound(header, "FORMAT", field)
-        .or_else(|| compound(header, "INFO", field))
+    index
+        .compound(header, "FORMAT", field)
+        .or_else(|| index.compound(header, "INFO", field))
         .ok_or_else(|| {
             Bcf2Error::tribble(format!(
                 "Fully decoding VariantContext requires header line for all fields, but none was \
@@ -218,6 +245,7 @@ fn decode_value(
 fn decode_attributes(
     attributes: &[(String, Value)],
     header: &VcfHeader,
+    index: &FieldIndex,
     lenient: bool,
     vc: &VariantContext,
 ) -> Result<Vec<(String, Value)>, Bcf2Error> {
@@ -226,7 +254,7 @@ fn decode_attributes(
         if field == "FT" {
             continue;
         }
-        let format = meta_data_for_field(header, field)?;
+        let format = meta_data_for_field(header, index, field)?;
         let value = decode_value(field, value, &format, vc)?;
         if value != Value::Missing
             && !lenient
@@ -270,15 +298,24 @@ pub const VCF_CODEC_INFO: [Fill; 2] = [Fill::Put, Fill::PutAll];
 /// `vc.fullyDecode(header, false)` on a record the VCF codec made, whose attributes are in file
 /// order. The result's attributes are in the order `BCF2Writer.buildInfo` will meet them.
 pub fn fully_decode(vc: &VariantContext, header: &VcfHeader) -> Result<VariantContext, Bcf2Error> {
+    fully_decode_indexed(vc, header, &FieldIndex::new(header))
+}
+
+/// [`fully_decode`] with the header's [`FieldIndex`] already built.
+pub fn fully_decode_indexed(
+    vc: &VariantContext,
+    header: &VcfHeader,
+    index: &FieldIndex,
+) -> Result<VariantContext, Bcf2Error> {
     let source = reorder(&vc.attributes, &VCF_CODEC_INFO);
-    let decoded = decode_attributes(&source, header, false, vc)?;
+    let decoded = decode_attributes(&source, header, index, false, vc)?;
     let attributes = reorder(&decoded, &[Fill::PutSized(10), Fill::PutAll]);
 
     // `fullyDecodeGenotypes` reads the list, which is the decode of a lazy context.
     let mut genotypes = Vec::with_capacity(vc.genotypes.len());
     for g in vc.genotypes.iter() {
         let mut g = g.clone();
-        g.extended = decode_attributes(&g.extended, header, true, vc)?;
+        g.extended = decode_attributes(&g.extended, header, index, true, vc)?;
         genotypes.push(g);
     }
 

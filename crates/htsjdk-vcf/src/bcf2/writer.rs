@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use super::decode::{compound, count_for, fully_decode, max_ploidy, Compound};
+use super::decode::{count_for, fully_decode_indexed, max_ploidy, Compound, FieldIndex};
 use super::encoder::Bcf2Encoder;
 use super::java_hash::{order_through, Fill};
 use super::types::{
@@ -627,6 +627,7 @@ pub struct Bcf2Writer {
     /// The header of the last lazy block seen, and whether its blocks can be copied.
     last_lazy: Option<(std::sync::Arc<LazyHeader>, bool)>,
     own_lazy_header: LazyHeader,
+    fields: FieldIndex,
 }
 
 impl Bcf2Writer {
@@ -671,13 +672,14 @@ impl Bcf2Writer {
             .collect();
 
         // `BCF2FieldWriterManager.setup`, over the IDs `VCFHeader` keeps, the first line of each.
+        let fields = FieldIndex::new(&sorted);
         let mut site_writers = HashMap::new();
         let mut genotypes_writers = HashMap::new();
         for line in &sorted.lines {
             let HeaderLine::Compound { key, id, .. } = line else {
                 continue;
             };
-            let Some(c) = compound(&sorted, key, id) else {
+            let Some(c) = fields.compound(&sorted, key, id) else {
                 continue;
             };
             if !std::ptr::eq(c.line, line) {
@@ -726,6 +728,7 @@ impl Bcf2Writer {
             encoder: Bcf2Encoder::new(),
             last_lazy: None,
             own_lazy_header,
+            fields,
         })
     }
 
@@ -759,7 +762,7 @@ impl Bcf2Writer {
         let decoded;
         let (vc, filters) = match origin {
             Origin::VcfCodec => {
-                decoded = fully_decode(vc, &self.header)?;
+                decoded = fully_decode_indexed(vc, &self.header, &self.fields)?;
                 (&decoded, vcf_codec_filters(vc))
             }
             Origin::Bcf2Codec => (vc, bcf2_codec_filters(vc)),
