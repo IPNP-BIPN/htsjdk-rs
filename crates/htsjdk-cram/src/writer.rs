@@ -753,6 +753,8 @@ pub struct CramWriter<'a> {
     trials: HashMap<i32, TrialCompressor>,
     global_record_counter: i64,
     out: Vec<u8>,
+    /// `CRAMBAIIndexer`, when the output is to be indexed.
+    index: Option<crate::bai::CramBaiIndexer>,
 }
 
 impl<'a> CramWriter<'a> {
@@ -816,11 +818,27 @@ impl<'a> CramWriter<'a> {
             trials: HashMap::new(),
             global_record_counter: 0,
             out,
+            index: None,
         }
     }
 
+    /// Index the file as it is written, `SAMFileWriterFactory`'s `CREATE_INDEX` for a CRAM.
+    pub fn with_index(mut self) -> Self {
+        let lengths = self.header.sequences.iter().map(|s| s.length).collect();
+        self.index = Some(crate::bai::CramBaiIndexer::new(lengths));
+        self
+    }
+
     /// Every record, then the EOF container: `writeAlignment` for each and `finish(true)`.
-    pub fn write_all(mut self, records: &[BamRecord]) -> Result<Vec<u8>, CramError> {
+    pub fn write_all(self, records: &[BamRecord]) -> Result<Vec<u8>, CramError> {
+        Ok(self.write_all_indexed(records)?.0)
+    }
+
+    /// [`Self::write_all`], with the BAI index when [`Self::with_index`] asked for one.
+    pub fn write_all_indexed(
+        mut self,
+        records: &[BamRecord],
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), CramError> {
         let mut current = UNINITIALIZED_REFERENCE_ID;
         let mut pending: Vec<&BamRecord> = Vec::new();
         let mut bases: i64 = 0;
@@ -853,7 +871,8 @@ impl<'a> CramWriter<'a> {
             self.write_container(&slices)?;
         }
         self.out.extend_from_slice(&EOF_V3);
-        Ok(self.out)
+        let index = self.index.map(crate::bai::CramBaiIndexer::finish);
+        Ok((self.out, index))
     }
 
     /// `SliceFactory.getUpdatedReferenceContext`.
@@ -1028,12 +1047,22 @@ impl<'a> CramWriter<'a> {
             tag_encodings,
         };
 
+        let container_offset = self.out.len() as i64;
+        let mut entries = Vec::new();
         let mut body = compression.write_block(MAJOR);
         let mut landmarks = Vec::new();
         let (mut record_count, mut block_count, mut base_count) = (0i32, 0i32, 0i64);
         let mut contexts: Vec<(i32, i32, i32)> = Vec::new();
         for records in slices.iter_mut() {
             landmarks.push(body.len() as i32);
+            if self.index.is_some() {
+                entries.extend(bai_entries(
+                    records,
+                    container_offset,
+                    i64::from(*landmarks.last().unwrap()),
+                    landmarks.len() as i32 - 1,
+                ));
+            }
             let (slice_bytes, context, blocks) = self.slice(records, &compression, &matrix)?;
             body.extend_from_slice(&slice_bytes);
             record_count += records.len() as i32;
@@ -1072,6 +1101,14 @@ impl<'a> CramWriter<'a> {
         ));
         self.out.extend_from_slice(&body);
         self.global_record_counter += i64::from(record_count);
+        if let Some(index) = self.index.as_mut() {
+            index
+                .process_container(entries)
+                .map_err(|message| CramError::Other {
+                    class: "htsjdk.samtools.SAMException",
+                    message,
+                })?;
+        }
         Ok(())
     }
 
@@ -1255,6 +1292,118 @@ impl<'a> CramWriter<'a> {
         let trial = self.trials.entry(id).or_insert_with(TrialCompressor::new);
         Ok(trial.compress(content))
     }
+}
+
+/// `Slice.getBAIEntries` for a slice being written, whose counts its constructor kept.
+fn bai_entries(
+    records: &[WriteRecord],
+    container_offset: i64,
+    slice_offset: i64,
+    landmark_index: i32,
+) -> Vec<crate::bai::BaiEntry> {
+    use crate::bai::{BaiEntry, Span};
+    let entry = |reference: i32, s: Span| BaiEntry {
+        reference,
+        alignment_start: s.start,
+        alignment_span: s.span,
+        mapped: s.mapped,
+        unmapped: s.unmapped,
+        unplaced: s.unplaced,
+        container_offset,
+        slice_offset,
+        landmark_index,
+    };
+    let mut contexts: BTreeSet<i32> = BTreeSet::new();
+    let (mut start, mut end) = (i32::MAX, 0);
+    let (mut mapped, mut unmapped, mut unplaced) = (0, 0, 0);
+    for r in records {
+        if r.is_placed() {
+            contexts.insert(r.reference_index);
+            start = start.min(r.alignment_start);
+            end = end.max(r.alignment_end);
+            if r.is_unmapped() {
+                unmapped += 1;
+            } else {
+                mapped += 1;
+            }
+        } else {
+            contexts.insert(UNMAPPED_UNPLACED_ID);
+        }
+        if r.alignment_start == 0 {
+            unplaced += 1;
+        }
+    }
+    let counts = |start, span| Span {
+        start,
+        span,
+        mapped,
+        unmapped,
+        unplaced,
+    };
+    if contexts.len() <= 1 {
+        let id = contexts
+            .iter()
+            .next()
+            .copied()
+            .unwrap_or(UNMAPPED_UNPLACED_ID);
+        if id < 0 {
+            return vec![entry(UNMAPPED_UNPLACED_ID, counts(0, 0))];
+        }
+        return vec![entry(id, counts(start, end - start + 1))];
+    }
+    // `getMultiRefAlignmentSpans` and `mergeRecordSpan`.
+    let mut spans: std::collections::BTreeMap<i32, Span> = std::collections::BTreeMap::new();
+    for r in records {
+        let (key, span) = if r.is_unmapped() {
+            if r.alignment_start == 0 {
+                (
+                    UNMAPPED_UNPLACED_ID,
+                    Span {
+                        start: 0,
+                        span: 0,
+                        mapped: 0,
+                        unmapped: 1,
+                        unplaced: 1,
+                    },
+                )
+            } else {
+                (
+                    r.reference_index,
+                    Span {
+                        start: r.alignment_start,
+                        span: r.read_length,
+                        mapped: 0,
+                        unmapped: 1,
+                        unplaced: 0,
+                    },
+                )
+            }
+        } else {
+            (
+                r.reference_index,
+                Span {
+                    start: r.alignment_start,
+                    span: r.alignment_end - r.alignment_start,
+                    mapped: 1,
+                    unmapped: 0,
+                    unplaced: 0,
+                },
+            )
+        };
+        spans
+            .entry(key)
+            .and_modify(|existing| *existing = Span::combine(*existing, span))
+            .or_insert(span);
+    }
+    let mut out: Vec<BaiEntry> = spans
+        .iter()
+        .filter(|(k, _)| **k != UNMAPPED_UNPLACED_ID)
+        .map(|(k, s)| entry(*k, *s))
+        .collect();
+    if let Some(s) = spans.get(&UNMAPPED_UNPLACED_ID) {
+        out.push(entry(UNMAPPED_UNPLACED_ID, *s));
+    }
+    out
 }
 
 /// `SAMFileWriterImpl.setHeader`'s sort order stamp: a recognised `SO` kept, anything else
@@ -1597,6 +1746,19 @@ fn container_header_bytes(
     }
     out.extend_from_slice(&crc32(&out).to_le_bytes());
     out
+}
+
+/// A whole file and its BAI index: `CREATE_INDEX` with a `.cram` output.
+pub fn write_cram_indexed(
+    header: &SamHeader,
+    records: &[BamRecord],
+    id: &str,
+    reference: &mut dyn ReferenceSource,
+) -> Result<(Vec<u8>, Vec<u8>), CramError> {
+    let (cram, index) = CramWriter::new(header, id, reference)
+        .with_index()
+        .write_all_indexed(records)?;
+    Ok((cram, index.expect("an indexing writer returns its index")))
 }
 
 /// A whole file: [`CramWriter::new`] then [`CramWriter::write_all`].
