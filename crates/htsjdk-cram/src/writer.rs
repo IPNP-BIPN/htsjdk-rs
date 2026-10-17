@@ -1,7 +1,7 @@
 //! Writing SAM records as a CRAM 3.1 file, as htsjdk 5.0.0's `CRAMFileWriter` does with the
 //! default `CRAMEncodingStrategy`, which is `CRAMCompressionProfile.NORMAL`.
 //!
-//! Ported from `CRAMContainerStreamWriter`, `ContainerFactory`, `SliceFactory`,
+//! Ported from `htsjdk.samtools.CRAMContainerStreamWriter`, `ContainerFactory`, `SliceFactory`,
 //! `CompressionHeaderFactory`, `CompressionHeaderEncodingMap`, `Slice`, `CramRecordWriter`,
 //! `CRAMCompressionRecord(SAMRecord)` and `Container.write` at htsjdk 5.0.0.
 //!

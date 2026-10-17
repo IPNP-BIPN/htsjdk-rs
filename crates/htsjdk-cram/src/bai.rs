@@ -1,7 +1,7 @@
 //! A BAI index of a CRAM, as `CRAMBAIIndexer` builds one while `CRAMFileWriter` writes: what
 //! `SAMFileWriterFactory` gives a `.cram` output when `CREATE_INDEX` is set, as `<output>.bai`.
 //!
-//! Ported from `CRAMBAIIndexer`, `BAIEntry`, `Slice.getBAIEntries` and `BAMIndexMetaData` at
+//! Ported from `htsjdk.samtools.CRAMBAIIndexer`, `BAIEntry`, `Slice.getBAIEntries` and `BAMIndexMetaData` at
 //! htsjdk 5.0.0.
 //!
 //! # A chunk is a slice, not a record

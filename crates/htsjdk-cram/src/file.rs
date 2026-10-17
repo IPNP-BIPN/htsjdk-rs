@@ -305,6 +305,14 @@ pub fn decompress(
             crate::gzip::decompress(content).map_err(FileError::Codec)
         }
         CompressionMethod::Rans => rans::uncompress(content).map_err(|_| FileError::Corrupt),
+        CompressionMethod::Bzip2 => {
+            use std::io::Read;
+            let mut out = Vec::with_capacity(uncompressed_size.max(0) as usize);
+            bzip2::read::BzDecoder::new(content)
+                .read_to_end(&mut out)
+                .map_err(|_| FileError::Corrupt)?;
+            Ok(out)
+        }
         CompressionMethod::RansNx16 => {
             crate::rans_nx16::uncompress(content).map_err(FileError::from)
         }
