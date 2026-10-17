@@ -524,20 +524,12 @@ impl DynamicIndexCreator {
     }
 }
 
-/// `String.valueOf(double)` for the two shapes these properties take.
+/// `String.valueOf(double)`, which is Java 17's `Double.toString`: computerized scientific notation
+/// below 10^-3 and from 10^7 up, and digits that are not always the shortest. A variance under a
+/// thousandth is ordinary (any file of SNPs whose lengths barely vary), and Rust's `{}` writes it
+/// out in full where the reference writes `3.111081185151864E-4`.
 fn java_double(value: f64) -> String {
-    htsjdk_vcf_jformat(value)
-}
-
-/// The formatter lives in `jmath`'s sibling and is not a dependency of this crate, so the two
-/// shapes that occur here are spelled out: an integral value keeps its `.0`, and everything else
-/// takes Rust's shortest round-trip rendering, which agrees with Java's for these magnitudes.
-fn htsjdk_vcf_jformat(value: f64) -> String {
-    if value == value.trunc() && value.abs() < 1e7 {
-        format!("{value:.1}")
-    } else {
-        format!("{value}")
-    }
+    jmath::to_string::double_to_string(value)
 }
 
 /// `IndexFactory`'s two ordering checks, which run over the feature stream before any creator sees
@@ -708,6 +700,17 @@ mod tests {
         }
         creator.add_feature(&feature("chr2", 51, 60), 64);
         assert_eq!(creator.properties()[0].1, "364.0");
+    }
+
+    /// A variance under a thousandth is written the way `Double.toString` writes it, in
+    /// scientific notation: Picard 3.5.0's SortVcf index of 900,000 records, nearly all SNPs, says
+    /// `MEAN_FEATURE_VARIANCE` = `3.111081185151864E-4`, where `{}` wrote `0.0003111081185151864`.
+    #[test]
+    fn a_small_variance_is_written_in_scientific_notation() {
+        assert_eq!(java_double(0.0003111081185151864), "3.111081185151864E-4");
+        assert_eq!(java_double(364.0), "364.0");
+        assert_eq!(java_double(6.999942222222221), "6.999942222222221");
+        assert_eq!(java_double(1.0e7), "1.0E7");
     }
 
     /// One block means the optimizer's first test breaks before any merge.
