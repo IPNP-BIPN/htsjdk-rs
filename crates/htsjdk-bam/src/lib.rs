@@ -60,7 +60,7 @@ pub mod writer;
 pub use bin::compute_indexing_bin;
 pub use build_index::{build_bam_index, BuildIndexError};
 pub use cigar::{Cigar, CigarElement, Op};
-pub use gather::{gather_bam_files, gather_bam_files_with};
+pub use gather::{gather_bam_files, gather_bam_files_to, gather_bam_files_with};
 pub use header::SamHeader;
 pub use index::{parse_bai_metadata, BaiParseError, IndexStats, ReferenceMetadata};
 pub use reader::BamReader;

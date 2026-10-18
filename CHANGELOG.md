@@ -8,6 +8,12 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
+### Added
+
+- `reheader::block_copy_to` and `gather_bam_files_to`: the block copy and the gather from seekable
+  inputs to a writer, in constant memory, with the bytes of `block_copy_with` and
+  `gather_bam_files_with`, which now run through them. `ReheaderError::Write` is a failed write.
+
 ## [0.3.0] - 2026-10-17
 
 Java's number printing, reconstructed from behaviour, closes the last formatting gap. CRAM 3.1,
