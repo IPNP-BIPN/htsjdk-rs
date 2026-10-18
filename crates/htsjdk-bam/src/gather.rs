@@ -16,7 +16,9 @@
 
 use htsjdk_bgzf::{Deflater, DEFAULT_COMPRESSION_LEVEL, EMPTY_GZIP_BLOCK};
 
-use crate::reheader::{block_copy_with, ReheaderError};
+use std::io::{Read, Seek, Write};
+
+use crate::reheader::{block_copy_to, ReheaderError};
 
 /// `gatherWithBlockCopying(inputs, output)`: the concatenated BAM as bytes. Each element of `bams`
 /// is a whole raw BAM file (BGZF-framed, terminator included). The first file's header is kept and
@@ -34,13 +36,30 @@ pub fn gather_bam_files_with(
     deflater: Deflater,
 ) -> Result<Vec<u8>, ReheaderError> {
     let mut out = Vec::new();
-    for (i, bam) in bams.iter().enumerate() {
+    gather_bam_files_to(
+        bams.iter().map(std::io::Cursor::new),
+        &mut out,
+        level,
+        deflater,
+    )?;
+    Ok(out)
+}
+
+/// [`gather_bam_files_with`] from seekable inputs, the first one's header kept, written to `out` as
+/// they are read: a gather of any size runs in constant memory.
+pub fn gather_bam_files_to<R: Read + Seek, W: Write>(
+    inputs: impl IntoIterator<Item = R>,
+    out: &mut W,
+    level: u32,
+    deflater: Deflater,
+) -> Result<(), ReheaderError> {
+    for (i, mut input) in inputs.into_iter().enumerate() {
         let skip_header = i != 0;
-        out.extend_from_slice(&block_copy_with(bam, skip_header, true, level, deflater)?);
+        block_copy_to(&mut input, out, skip_header, true, level, deflater)?;
     }
     // And lastly add the terminator block.
-    out.extend_from_slice(&EMPTY_GZIP_BLOCK);
-    Ok(out)
+    out.write_all(&EMPTY_GZIP_BLOCK)
+        .map_err(ReheaderError::Write)
 }
 
 #[cfg(test)]

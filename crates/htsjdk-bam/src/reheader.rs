@@ -17,11 +17,11 @@
 //! Byte-identity holds against Picard run with `USE_JDK_DEFLATER=true` (java.util.zip), matching the
 //! rest of htsjdk-rs's BGZF writes; the default GKL/igzip deflater is a separate surface.
 
-use std::io::{self, Read};
+use std::io::{self, BufReader, Cursor, Read, Seek, SeekFrom, Write};
 
 use htsjdk_bgzf::{
     check_termination, vfp, BgzfError, BgzfReader, BgzfWriter, Deflater, FileTermination,
-    DEFAULT_COMPRESSION_LEVEL, EMPTY_GZIP_BLOCK,
+    DEFAULT_COMPRESSION_LEVEL, EMPTY_GZIP_BLOCK, MAX_COMPRESSED_BLOCK_SIZE,
 };
 
 use crate::header::SamHeader;
@@ -40,6 +40,8 @@ pub enum ReheaderError {
     BlockNotFound,
     /// The input has no valid GZIP block at the end of the file (`checkTermination == DEFECTIVE`).
     Defective,
+    /// Writing the output failed.
+    Write(io::Error),
 }
 
 impl From<BgzfError> for ReheaderError {
@@ -113,25 +115,56 @@ pub fn block_copy_with(
     level: u32,
     deflater: Deflater,
 ) -> Result<Vec<u8>, ReheaderError> {
+    let mut out = Vec::new();
+    block_copy_to(
+        &mut Cursor::new(input_bam),
+        &mut out,
+        skip_header,
+        skip_terminator,
+        level,
+        deflater,
+    )?;
+    Ok(out)
+}
+
+/// [`block_copy_with`] from a seekable input to `out`, as it is read: only the block the first
+/// record starts in is held, and the blocks after it are copied straight through, so a file of any
+/// size is copied in constant memory.
+pub fn block_copy_to<R: Read + Seek, W: Write>(
+    input: &mut R,
+    out: &mut W,
+    skip_header: bool,
+    skip_terminator: bool,
+    level: u32,
+    deflater: Deflater,
+) -> Result<(), ReheaderError> {
     // checkTermination: reject a file whose tail is not a valid GZIP block, and learn whether an
-    // EOF terminator is present (so skip_terminator can drop exactly it).
-    let term = check_termination(input_bam);
+    // EOF terminator is present (so skip_terminator can drop exactly it). It reads no more than the
+    // last block's worth of the file.
+    let length = input.seek(SeekFrom::End(0))?;
+    let tail_length = length.min(MAX_COMPRESSED_BLOCK_SIZE as u64);
+    input.seek(SeekFrom::Start(length - tail_length))?;
+    let mut tail = vec![0; tail_length as usize];
+    input.read_exact(&mut tail)?;
+    let term = check_termination(&tail);
     if term == FileTermination::Defective {
         return Err(ReheaderError::Defective);
     }
 
-    let mut out = Vec::new();
     let copy_start = if skip_header {
         // Locate the first record: consume the header, then read the virtual file pointer.
-        let mut finder = BgzfReader::new(input_bam);
+        input.seek(SeekFrom::Start(0))?;
+        let mut finder = BgzfReader::new(BufReader::new(&mut *input));
         consume_header(&mut finder)?;
         let vptr = finder.virtual_pos();
+        drop(finder);
         let first_block_addr = vfp::block_address(vptr);
         let first_offset = vfp::block_offset(vptr) as usize;
 
         // Find the decoded block the first record starts in, to grab its tail and its successor's
         // compressed address. A fresh reader is used because the finder consumed part of the stream.
-        let mut scan = BgzfReader::new(input_bam);
+        input.seek(SeekFrom::Start(0))?;
+        let mut scan = BgzfReader::new(BufReader::new(&mut *input));
         let mut tail: Vec<u8> = Vec::new();
         let mut next_block_addr: Option<u64> = None;
         while let Some(block) = scan.next_block()? {
@@ -141,6 +174,7 @@ pub fn block_copy_with(
                 break;
             }
         }
+        drop(scan);
         let next_block_addr = next_block_addr.ok_or(ReheaderError::BlockNotFound)?;
 
         // Re-compress the first-record tail as one flushed block (empty tail writes nothing, as
@@ -148,26 +182,32 @@ pub fn block_copy_with(
         if !tail.is_empty() {
             let mut w = BgzfWriter::with_deflater(Vec::new(), level, deflater);
             io::Write::write_all(&mut w, &tail)?;
-            out.extend_from_slice(&w.into_inner_without_terminator()?);
+            out.write_all(&w.into_inner_without_terminator()?)
+                .map_err(ReheaderError::Write)?;
         }
-        next_block_addr as usize
+        next_block_addr
     } else {
         0
     };
 
     let skip_last = if term == FileTermination::HasTerminatorBlock && skip_terminator {
-        EMPTY_GZIP_BLOCK.len()
+        EMPTY_GZIP_BLOCK.len() as u64
     } else {
         0
     };
     // htsjdk copies `length - skipLast - pos` bytes. For an input with no records the first-record
     // pointer lands at EOF (`pos == length`), so with the terminator dropped this count goes
-    // negative and `transferByStream` copies nothing; guard the slice to match.
-    let end = input_bam.len() - skip_last;
+    // negative and `transferByStream` copies nothing; guard the count to match.
+    let end = length - skip_last;
     if copy_start < end {
-        out.extend_from_slice(&input_bam[copy_start..end]);
+        input.seek(SeekFrom::Start(copy_start))?;
+        let copied = io::copy(&mut input.by_ref().take(end - copy_start), out)
+            .map_err(ReheaderError::Write)?;
+        if copied != end - copy_start {
+            return Err(ReheaderError::Truncated);
+        }
     }
-    Ok(out)
+    Ok(())
 }
 
 /// `reheaderBamFile(newHeader, input, skipHeader=true, skipTerminator=false)`: the whole reheadered
