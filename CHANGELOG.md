@@ -16,6 +16,10 @@ and a speed bound that gatk-rs's tools reached.
 
 ### Added
 
+- `BgzfWriter` deflates full blocks on every core (rayon) and writes them in order, with the
+  serial writer's bytes for every deflater and level: a block's payload depends only on its own
+  bytes, the level and the deflater, and the block boundaries do not move. `parallel(false)` turns
+  it off.
 - `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
   where they are not the shortest decimal. Reconstructed from the oracle's measured behaviour, not
   from the JDK's GPL-2.0 source (decision 0046).
@@ -31,8 +35,15 @@ and a speed bound that gatk-rs's tools reached.
   and `TabixIndex::write` that take the level and the deflater; the existing functions keep
   their signatures (#248).
 
+### Changed
+
+- `BgzfWriter::file_pointer` takes `&mut self` and returns `io::Result<u64>`: it writes the blocks
+  in flight before answering, so the offset stays exact. `BamWriter` asks only when indexing.
+
 ### Fixed
 
+- `gkl-deflate` no longer panics on overflow in a debug build when the window slides with the last
+  match below it; release builds already wrapped, so no byte changes.
 - `FormatUtil` formatting now matches on all 41,678 corpus values (was 99.84%, 66 quarantined),
   the SAM text writer on all 67 records (`Float.MIN_VALUE` is `1.4E-45`), and `%f` / `%e` on all
   127,803 swept doubles (was 99.85%). Nothing formatting-related is licence-blocked any more.
