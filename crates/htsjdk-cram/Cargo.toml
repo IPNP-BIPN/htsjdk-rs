@@ -20,7 +20,7 @@ jmath = { path = "../jmath" }
 # htsjdk 5.0.0 deflates a CRAM GZIP block through its default `DeflaterFactory`, which is jlibdeflate
 # 0.1.0, libdeflate v1.25. The version is pinned exactly because libdeflate's bytes change between
 # releases.
-libdeflate-sys = "=1.25.2"
+libdeflate-sys = "=1.26.1"
 # Reading a bzip2 block, which htsjdk's tag trial picks for SA and XA when it is smallest.
 # Decompression is deterministic, so any decoder reads it; writing one is commons-compress's
 # encoder, whose bytes are not libbzip2's, and is not ported.
