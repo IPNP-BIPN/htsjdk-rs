@@ -27,28 +27,29 @@ pub struct BadBase {
 /// onto `N`. Everything else raises `IllegalArgumentException`; a port that silently
 /// substituted `N` would produce a valid BAM with different bases.
 pub fn base_to_nibble(base: u8) -> Option<u8> {
-    let n = match base {
-        b'=' => 0,
-        b'A' | b'a' => 1,
-        b'C' | b'c' => 2,
-        b'M' | b'm' => 3,
-        b'G' | b'g' => 4,
-        b'R' | b'r' => 5,
-        b'S' | b's' => 6,
-        b'V' | b'v' => 7,
-        b'T' | b't' => 8,
-        b'W' | b'w' => 9,
-        b'Y' | b'y' => 10,
-        b'H' | b'h' => 11,
-        b'K' | b'k' => 12,
-        b'D' | b'd' => 13,
-        b'B' | b'b' => 14,
-        // htsjdk folds '.' onto N, in both the low and the high table.
-        b'N' | b'n' | b'.' => 15,
-        _ => return None,
-    };
-    Some(n)
+    match NIBBLE[base as usize] {
+        NOT_A_BASE => None,
+        n => Some(n),
+    }
 }
+
+const NOT_A_BASE: u8 = 0xff;
+
+// A table rather than a match: the match compiled to a branch per base and was three quarters
+// of BAM record encoding.
+const NIBBLE: [u8; 256] = {
+    let mut t = [NOT_A_BASE; 256];
+    let codes = b"=ACMGRSVTWYHKDBN";
+    let mut i = 0;
+    while i < 16 {
+        t[codes[i] as usize] = i as u8;
+        t[codes[i].to_ascii_lowercase() as usize] = i as u8;
+        i += 1;
+    }
+    // htsjdk folds '.' onto N, in both the low and the high table.
+    t[b'.' as usize] = 15;
+    t
+};
 
 /// `SAMUtils.bytesToCompressedBases`.
 ///
