@@ -33,7 +33,9 @@
 use crate::allele::Allele;
 use crate::header::VcfHeader;
 use crate::header_parse::VcfVersion;
-use crate::record_parse::{split_condensed, RecordError, MISSING_VALUE, NUM_STANDARD_FIELDS};
+use crate::record_parse::{
+    split_condensed_borrowed, RecordError, MISSING_VALUE, NUM_STANDARD_FIELDS,
+};
 use crate::variant::{Genotype, Value};
 
 /// `VCFConstants.PHASING_TOKENS`.
@@ -73,7 +75,7 @@ pub fn parse_genotypes(
     // The array is sized from the header, and this split does **not** condense, so an extra column
     // is a count mismatch rather than a joined last field.
     let expected = crate::record_parse::column_count(header) - NUM_STANDARD_FIELDS;
-    let parts = split_condensed(block, '\t', expected, false);
+    let parts = split_condensed_borrowed(block, '\t', expected, false);
     if parts.len() != expected {
         return Err(malformed(
             line_number,
@@ -96,14 +98,16 @@ pub fn parse_genotypes(
         let sample = header
             .samples
             .get(offset)
-            .cloned()
-            .unwrap_or_else(|| String::from("<missing>"));
+            .map_or("<missing>", String::as_str);
         // The whole value list is percent-decoded here, before any key is looked at, so from VCF
         // 4.3 the **GT string itself** goes through the transformer along with everything else.
         // Below 4.3 the transformer is a pass-through and this is a copy.
-        let decoded: Vec<String> = crate::text_transformer::TextTransformer::for_version(version)
-            .decode_all(column.split(':'));
-        let values: Vec<&str> = decoded.iter().map(String::as_str).collect();
+        let transformer = crate::text_transformer::TextTransformer::for_version(version);
+        let decoded: Vec<std::borrow::Cow<'_, str>> = column
+            .split(':')
+            .map(|part| transformer.decode_borrowed(part))
+            .collect();
+        let values: Vec<&str> = decoded.iter().map(|value| value.as_ref()).collect();
 
         if keys.len() < values.len() {
             // The message is wrong upstream and reproduced as it is: `values` is
@@ -132,7 +136,7 @@ pub fn parse_genotypes(
             ));
         }
 
-        let mut genotype = Genotype::new(&sample, Vec::new());
+        let mut genotype = Genotype::new(sample, Vec::new());
         let mut gt_position: i64 = -1;
 
         for (index, key) in keys.iter().enumerate() {
