@@ -295,8 +295,7 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
                 // rather than on first access keeps the refusal a malformed genotype produces at
                 // the read, where every caller of this function already expects it.
                 Ok(genotypes) => {
-                    variant.genotypes =
-                        GenotypesContext::lazy(genotypes, block.clone(), samples.clone());
+                    variant.genotypes = GenotypesContext::lazy(genotypes, block, samples.clone());
                     if !samples_were_already_sorted {
                         variant.genotypes.decode();
                     }

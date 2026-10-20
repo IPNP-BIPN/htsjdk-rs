@@ -54,6 +54,17 @@ impl TextTransformer {
     pub fn decode_all<'a>(self, raw: impl Iterator<Item = &'a str>) -> Vec<String> {
         raw.map(|part| self.decode(part)).collect()
     }
+
+    /// [`decode`](Self::decode) for a caller that reads the text and drops it: a value with no
+    /// escape to undo is borrowed, which is every value below 4.3 and nearly every one above.
+    pub fn decode_borrowed(self, raw: &str) -> std::borrow::Cow<'_, str> {
+        match self {
+            TextTransformer::PercentEncoded if raw.contains('%') => {
+                std::borrow::Cow::Owned(decode_percent_encoded_chars(raw))
+            }
+            _ => std::borrow::Cow::Borrowed(raw),
+        }
+    }
 }
 
 /// `VCFPercentEncodedTextTransformer.decodePercentEncodedChars`.
