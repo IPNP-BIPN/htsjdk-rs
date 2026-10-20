@@ -34,6 +34,11 @@ fn error_probability_table() -> [f64; 101] {
     table
 }
 
+/// The table built once: the static initialiser runs once in Java too, and rebuilding 101
+/// `strict_math::pow` calls per lookup was most of the fingerprint tools' CPU.
+static ERROR_PROBABILITY_BY_PHRED_SCORE: std::sync::LazyLock<[f64; 101]> =
+    std::sync::LazyLock::new(error_probability_table);
+
 /// `QualityUtil.getErrorProbabilityFromPhredScore(i)`.
 ///
 /// `None` is the Java `ArrayIndexOutOfBoundsException`: the method indexes a 101-entry table and
@@ -42,7 +47,7 @@ pub fn error_probability_from_phred_score(score: i32) -> Option<f64> {
     if !(0..=100).contains(&score) {
         return None;
     }
-    Some(error_probability_table()[score as usize])
+    Some(ERROR_PROBABILITY_BY_PHRED_SCORE[score as usize])
 }
 
 /// `QualityUtil.getPhredScoreFromErrorProbability(probability)`.
@@ -67,7 +72,7 @@ pub fn phred_score_from_obs_and_errors(observations: f64, errors: f64) -> i32 {
 /// A no-call base contributes a whole error rather than its quality's probability, which is the
 /// one line of this function that is not arithmetic.
 pub fn sum_of_error_probabilities(bases: &[u8], quals: &[u8]) -> f64 {
-    let table = error_probability_table();
+    let table = &*ERROR_PROBABILITY_BY_PHRED_SCORE;
     let mut sum = 0.0;
     for (i, &base) in bases.iter().enumerate() {
         if crate::sequence::is_no_call(base) {
@@ -89,6 +94,19 @@ mod tests {
         let table = error_probability_table();
         assert_eq!(table[7], 1.0 / jmath::strict_math::pow(10.0, 0.7));
         assert_eq!(table[0], 1.0);
+    }
+
+    #[test]
+    fn the_cached_table_is_the_freshly_built_table_bit_for_bit() {
+        let fresh = error_probability_table();
+        for (i, (cached, built)) in ERROR_PROBABILITY_BY_PHRED_SCORE
+            .iter()
+            .zip(fresh)
+            .enumerate()
+        {
+            assert_eq!(cached.to_bits(), built.to_bits(), "entry {i}");
+            assert_eq!(error_probability_from_phred_score(i as i32), Some(built));
+        }
     }
 
     #[test]
