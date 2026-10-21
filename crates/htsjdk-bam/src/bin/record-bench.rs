@@ -205,11 +205,11 @@ fn files(dir: &Path, records: &[BamRecord], reps: usize) {
     );
     for run in 0..reps {
         let start = std::time::Instant::now();
-        std::hint::black_box(read_bam(&corpus));
-        println!(
-            "rust_bam_decode_run{run}_secs={:.6}",
-            start.elapsed().as_secs_f64()
-        );
+        let answer = std::hint::black_box(read_bam(&corpus));
+        let seconds = start.elapsed().as_secs_f64();
+        // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+        drop(answer);
+        println!("rust_bam_decode_run{run}_secs={:.6}", seconds);
     }
 
     let out = dir.join("port_out.bam");

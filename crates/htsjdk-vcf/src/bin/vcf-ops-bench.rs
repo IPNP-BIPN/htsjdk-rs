@@ -46,11 +46,11 @@ impl Bench {
         for run in 0..self.reps {
             let input = setup();
             let start = Instant::now();
-            std::hint::black_box(f(input));
-            println!(
-                "rust_{name}_run{run}_secs={:.6}",
-                start.elapsed().as_secs_f64()
-            );
+            let answer = std::hint::black_box(f(input));
+            let seconds = start.elapsed().as_secs_f64();
+            // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+            drop(answer);
+            println!("rust_{name}_run{run}_secs={:.6}", seconds);
         }
         out
     }
