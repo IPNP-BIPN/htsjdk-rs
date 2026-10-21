@@ -356,6 +356,7 @@ name = "htsjdk-vcf"
 version = "0.3.0"
 dependencies = [
  "flate2",
+ "htsjdk-bgzf",
  "htsjdk-tribble",
  "jmath",
  "noodles-core",

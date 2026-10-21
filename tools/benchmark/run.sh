@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Times the port's BGZF, BAM and VCF codecs against htsjdk's, on the same inputs, inside the
-# pinned oracle container, and asserts the two write the same bytes in the same run.
+# Times the port's operations against htsjdk's, on the same inputs, inside the pinned oracle
+# container, and asserts the two write the same bytes (or decode the same content) in the same run:
+# BGZF, BAM and VCF first, then every other operation the crates implement (`*-ops-bench`,
+# `cram-bench`, `metrics-bench` against `*Bench.java`).
 #
 # Both sides run in the container for the same reason picard-rs's benchmark does: timing a native
 # binary against an emulated JVM measures the emulator. The port is cross-built for linux/amd64
@@ -24,8 +26,13 @@ echo "== cross-building the port for linux/amd64"
 docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
   bash -c 'set -e
     cargo build --release -p htsjdk-bgzf --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-bam --bin record-bench --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-vcf --bin vcf-bench --target-dir /out/amd64 2>&1 | tail -1'
+    cargo build --release -p htsjdk-bam --bin record-bench --bin bam-ops-bench \
+      --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-vcf --bin vcf-bench --bin vcf-ops-bench \
+      --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-cram --bin cram-bench --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-metrics --bin metrics-bench --target-dir /out/amd64 2>&1 \
+      | tail -1'
 
 echo "== htsjdk, in the pinned container"
 docker run --rm --platform linux/amd64 \
@@ -60,6 +67,25 @@ docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v 
   -w /work htsjdk-rs-oracle:4.2.0 \
   "cp /harness/CodecBench.java . && javac -cp \$ORACLE_CP -d . CodecBench.java \
    && java -cp .:\$ORACLE_CP CodecBench /out $REPS" | tee "$OUT/java-codec.txt"
+
+# Everything else, on the files the two programs above left behind (corpus.bam, corpus.vcf) and on
+# inputs each bench generates. The port goes first because htsjdk reads several of its outputs;
+# `cram-bench ... read` goes last because it reads the CRAM 3.0 file htsjdk just wrote.
+echo "== the other operations, the port"
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+  "/out/amd64/release/bam-ops-bench /out $REPS $MB > /out/ops-bam.txt \
+   && /out/amd64/release/vcf-ops-bench /out $REPS > /out/ops-vcf.txt \
+   && /out/amd64/release/cram-bench /out $REPS 200000 > /out/ops-cram.txt \
+   && /out/amd64/release/metrics-bench /out $REPS > /out/ops-metrics.txt"
+echo "== the other operations, htsjdk"
+docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v "$OUT":/out \
+  -w /work htsjdk-rs-oracle:4.2.0 \
+  "cp /harness/*OpsBench.java /harness/CramBench.java /harness/MetricsBench.java . \
+   && javac -cp \$ORACLE_CP -d . *OpsBench.java CramBench.java MetricsBench.java \
+   && for c in BamOpsBench VcfOpsBench CramBench MetricsBench; do \
+        java -cp .:\$ORACLE_CP \$c /out $REPS || exit 1; done" > "$OUT/ops-java.txt"
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+  "/out/amd64/release/cram-bench /out $REPS 200000 read > /out/ops-cram-read.txt"
 
 echo "== bytes first"
 python3 - "$OUT" <<'PY'
@@ -190,3 +216,55 @@ for key, nbytes in size.items():
     print(f"{key[0] + ' ' + key[1]:18} {mb / j:>12.1f} {mb / r:>10.1f} "
           f"{recs / j:>13,.0f} {recs / r:>12,.0f} {j / r:>6.2f}x")
 CODEC
+
+echo "== every other operation: outputs first, then MB/s and records/s, median of $REPS"
+python3 - "$OUT" <<'OPS'
+import sys, re, pathlib, statistics
+
+out = pathlib.Path(sys.argv[1])
+ops, secs = {}, {}
+for f in sorted(out.glob("ops-*.txt")):
+    for line in f.read_text().splitlines():
+        m = re.match(r"op name=(\w+) bytes=(\d+) records=(\d+) check=(\w+) files=(\S+)", line)
+        if m:
+            ops[m.group(1)] = (int(m.group(2)), int(m.group(3)), m.group(4), m.group(5).split(","))
+        m = re.match(r"(rust|java)_(\w+)_run\d+_secs=([\d.]+)", line)
+        if m:
+            secs.setdefault(m.group(2), {}).setdefault(m.group(1), []).append(float(m.group(3)))
+
+def tribble(data):
+    # The indexed file's path and its modification time name the file rather than describe it.
+    end = data.index(0, 12)
+    return data[:12] + data[end + 1:end + 9] + data[end + 17:]
+
+bad = []
+for name, (_, _, check, suffixes) in ops.items():
+    if set(secs.get(name, {})) != {"rust", "java"}:
+        bad.append(f"{name}: timed by {sorted(secs.get(name, {}))} only")
+        continue
+    for suffix in suffixes:
+        port, java = out / f"port_{name}{suffix}", out / f"java_{name}{suffix}"
+        if not java.exists():
+            bad.append(f"{name}: htsjdk wrote no {java.name}")
+            continue
+        a, b = port.read_bytes(), java.read_bytes()
+        if check == "idx" and suffix.endswith(".idx"):
+            a, b = tribble(a), tribble(b)
+        if a != b:
+            bad.append(f"{name}: {port.name} ({len(a)} bytes) != {java.name} ({len(b)} bytes)")
+if bad:
+    print("\n".join(bad))
+    raise SystemExit("the two sides disagree; the timing below means nothing")
+print(f"{len(ops)} operations, every output identical "
+      "(bytes: the files themselves; decoded: a rendering of what was read or computed; "
+      "idx: bytes less the indexed file's path and mtime)")
+
+print(f"{'operation':22} {'check':8} {'MB':>7} {'htsjdk MB/s':>12} {'port MB/s':>10} "
+      f"{'htsjdk rec/s':>13} {'port rec/s':>13} {'ratio':>7}")
+for name, (nbytes, records, check, _) in ops.items():
+    j, r = statistics.median(secs[name]["java"]), statistics.median(secs[name]["rust"])
+    mb = nbytes / (1024 * 1024)
+    mbps = f"{mb / j:>12.1f} {mb / r:>10.1f}" if nbytes else f"{'-':>12} {'-':>10}"
+    print(f"{name:22} {check:8} {mb:>7.1f} {mbps} {records / j:>13,.0f} {records / r:>13,.0f} "
+          f"{j / r:>6.2f}x")
+OPS

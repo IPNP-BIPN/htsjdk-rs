@@ -13,6 +13,8 @@ jmath.workspace = true
 # this edge rather than being duplicated here. The dependency runs this way and not the other:
 # `htsjdk-tribble` has a VCF codec but knows nothing about writing one.
 htsjdk-tribble = { path = "../htsjdk-tribble" }
+# Only `vcf-ops-bench` uses it, to write a `.vcf.gz` the way picard-rs's writer does.
+htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 
 [dev-dependencies]
 flate2.workspace = true
