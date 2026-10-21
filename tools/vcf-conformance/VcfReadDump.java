@@ -134,6 +134,9 @@ public class VcfReadDump {
               + "chr1\t400\t.\tC\tG\tx\tPASS\tDP=40\n"));
         // The same short line, first rather than fourth, so the offset is visible and not inferred.
         read("short-line-first", sites("VCFv4.2", "chr1\t100\t.\tA\tT\t50\tPASS\n"));
+        // VariantContext refuses a repeated allele at make(), and parseVCFLine rewraps the message.
+        read("ref-equals-alt", sites("VCFv4.2", "chr1\t14\trs13\tG\tG\t50\tPASS\tDP=10\n"));
+        read("duplicate-alts", sites("VCFv4.2", "chr1\t100\t.\tA\tC,c\t50\tPASS\tDP=10\n"));
 
         // Line endings. The reader is asked whether it strips a carriage return or leaves it on the
         // last column, where it would become part of an INFO value and never fail.

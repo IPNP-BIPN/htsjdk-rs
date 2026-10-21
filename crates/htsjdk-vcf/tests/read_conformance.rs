@@ -151,6 +151,14 @@ fn read_cases() -> Vec<(&'static str, String)> {
             sites("VCFv4.2", "chr1\t100\t.\tA\tT\t50\tPASS\n"),
         ),
         (
+            "ref-equals-alt",
+            sites("VCFv4.2", "chr1\t14\trs13\tG\tG\t50\tPASS\tDP=10\n"),
+        ),
+        (
+            "duplicate-alts",
+            sites("VCFv4.2", "chr1\t100\t.\tA\tC,c\t50\tPASS\tDP=10\n"),
+        ),
+        (
             "crlf",
             sites(
                 "VCFv4.2",
