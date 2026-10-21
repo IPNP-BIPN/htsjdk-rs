@@ -39,6 +39,44 @@ const MAX_DIST: usize = W_SIZE - MIN_LOOKAHEAD;
 const WINDOW_SIZE: usize = 2 * W_SIZE;
 const WINDOW_PADDING: usize = MAX_MATCH + 8;
 
+/// How many leading bytes `a` and `b` share, `a.len()` at most: the byte loop of zlib's
+/// `longest_match`, compared a word at a time.
+fn common_prefix(a: &[u8], b: &[u8]) -> usize {
+    let n = a.len().min(b.len());
+    let mut i = 0;
+    while i + 8 <= n {
+        let x = u64::from_le_bytes(a[i..i + 8].try_into().unwrap())
+            ^ u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        if x != 0 {
+            return i + (x.trailing_zeros() / 8) as usize;
+        }
+        i += 8;
+    }
+    while i < n && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+#[cfg(test)]
+#[test]
+fn common_prefix_is_the_byte_loop() {
+    let mut seed = 7u64;
+    for _ in 0..20_000 {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let len = (seed >> 33) as usize % 300;
+        let a: Vec<u8> = (0..len).map(|i| (i % 3) as u8).collect();
+        let mut b = a.clone();
+        if len > 0 && seed & 1 == 0 {
+            b[(seed >> 40) as usize % len] ^= 1;
+        }
+        let expected = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        assert_eq!(common_prefix(&a, &b), expected);
+    }
+}
+
 /// zlib's `configuration_table`, verbatim. `good_length` and `max_lazy` mean different things on
 /// the fast path and the slow one, which is why the table is read through [`Config`] rather than
 /// inlined.
@@ -158,18 +196,68 @@ enum Hash {
 /// The CRC-32C the SSE4.2 `crc32` instruction computes: reflected, polynomial 0x1EDC6F41, and no
 /// final inversion. `_mm_crc32_u32(0, val)` processes `val`'s four bytes least-significant first.
 fn crc32c_u32(val: u32) -> u32 {
-    let mut crc = 0u32;
-    for byte in val.to_le_bytes() {
-        crc ^= byte as u32;
-        for _ in 0..8 {
+    // Slicing-by-4: the same value as feeding the four bytes through the bitwise CRC.
+    CRC32C[3][(val & 0xFF) as usize]
+        ^ CRC32C[2][((val >> 8) & 0xFF) as usize]
+        ^ CRC32C[1][((val >> 16) & 0xFF) as usize]
+        ^ CRC32C[0][(val >> 24) as usize]
+}
+
+/// `CRC32C[0]` is the byte table of the reflected Castagnoli polynomial; `CRC32C[k]` is a byte
+/// followed by `k` zero bytes.
+const CRC32C: [[u32; 256]; 4] = {
+    let mut t = [[0u32; 256]; 4];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u32;
+        let mut k = 0;
+        while k < 8 {
             crc = if crc & 1 != 0 {
                 (crc >> 1) ^ 0x82F6_3B78
             } else {
                 crc >> 1
             };
+            k += 1;
         }
+        t[0][i] = crc;
+        i += 1;
     }
-    crc
+    let mut i = 0;
+    while i < 256 {
+        let mut k = 1;
+        while k < 4 {
+            let prev = t[k - 1][i];
+            t[k][i] = (prev >> 8) ^ t[0][(prev & 0xFF) as usize];
+            k += 1;
+        }
+        i += 1;
+    }
+    t
+};
+
+#[cfg(test)]
+#[test]
+fn crc32c_u32_is_the_bitwise_crc() {
+    let bitwise = |val: u32| {
+        let mut crc = 0u32;
+        for byte in val.to_le_bytes() {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0x82F6_3B78
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc
+    };
+    let mut v = 0x1234_5678u32;
+    for _ in 0..200_000 {
+        v = v.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        assert_eq!(crc32c_u32(v), bitwise(v));
+        assert_eq!(crc32c_u32(v & 0x00FF_FFFF), bitwise(v & 0x00FF_FFFF));
+    }
 }
 
 /// One match, as `deflate_medium.c` carries it: where it starts in the window, where it matched,
@@ -412,17 +500,12 @@ impl<'a> Deflater<'a> {
             {
                 // fall through to the chain step
             } else {
-                // scan[2] == match[2] is implied by the hash, so the comparison starts at 3.
-                let mut s = scan + 2;
-                let mut t = m + 2;
-                loop {
-                    s += 1;
-                    t += 1;
-                    if self.window[s] != self.window[t] || s >= strend {
-                        break;
-                    }
-                }
-                let len = MAX_MATCH - (strend - s);
+                // scan[2] == match[2] is implied by the hash, so the comparison starts at 3 and
+                // stops at the first differing byte or at strend, eight bytes at a time.
+                let len = 3 + common_prefix(
+                    &self.window[scan + 3..strend],
+                    &self.window[m + 3..m + MAX_MATCH],
+                );
                 if len > best_len {
                     self.match_start = cur_match;
                     best_len = len;
