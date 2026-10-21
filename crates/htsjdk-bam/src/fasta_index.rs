@@ -142,8 +142,7 @@ impl<R: Read + Seek> IndexedFasta<R> {
         let entry = self
             .index
             .get(contig)
-            .ok_or_else(|| FastaIndexError::UnknownContig(contig.to_string()))?
-            .clone();
+            .ok_or_else(|| FastaIndexError::UnknownContig(contig.to_string()))?;
         if stop as u64 > entry.size {
             return Err(FastaIndexError::PastEndOfContig);
         }
@@ -155,37 +154,30 @@ impl<R: Read + Seek> IndexedFasta<R> {
 
         let bases_per_line = entry.bases_per_line.max(1);
         let bytes_per_line = entry.bytes_per_line.max(bases_per_line);
-        let terminator = bytes_per_line - bases_per_line;
+        let terminator = (bytes_per_line - bases_per_line) as usize;
+        // A base's byte offset: whole lines, then the offset within the line.
+        let offset = |base: i64| {
+            ((base as u64 - 1) / bases_per_line) * bytes_per_line
+                + (base as u64 - 1) % bases_per_line
+        };
+        let first = offset(start);
 
-        // The first base's byte offset: whole lines, then the offset within the line.
-        let mut offset = ((start as u64 - 1) / bases_per_line) * bytes_per_line
-            + (start as u64 - 1) % bases_per_line;
-
-        let mut buffer = vec![0u8; bases_per_line as usize];
-        while target.len() < length {
-            let position_in_line = offset % bytes_per_line;
-            // A `.fai` whose location lands inside a terminator: step to the next base.
-            if position_in_line >= bases_per_line {
-                offset += bytes_per_line - position_in_line;
-                continue;
-            }
-            let run = std::cmp::min(
-                bases_per_line - position_in_line,
-                (length - target.len()) as u64,
-            ) as usize;
-            self.source
-                .seek(SeekFrom::Start(entry.location + offset))
-                .map_err(|error| FastaIndexError::Io(error.to_string()))?;
-            self.source
-                .read_exact(&mut buffer[..run])
-                .map_err(|error| FastaIndexError::Io(error.to_string()))?;
-            target.extend_from_slice(&buffer[..run]);
-            offset += run as u64
-                + if position_in_line + run as u64 == bases_per_line {
-                    terminator
-                } else {
-                    0
-                };
+        // The whole span in one read, terminators included, then the terminators dropped: htsjdk
+        // reads the span through one channel read too, where a read per line costs a syscall each.
+        let mut raw = vec![0u8; (offset(stop) - first + 1) as usize];
+        self.source
+            .seek(SeekFrom::Start(entry.location + first))
+            .map_err(|error| FastaIndexError::Io(error.to_string()))?;
+        self.source
+            .read_exact(&mut raw)
+            .map_err(|error| FastaIndexError::Io(error.to_string()))?;
+        let mut at = 0;
+        let mut column = (first % bytes_per_line) as usize;
+        while at < raw.len() {
+            let run = (bases_per_line as usize - column).min(raw.len() - at);
+            target.extend_from_slice(&raw[at..at + run]);
+            at += run + terminator;
+            column = 0;
         }
         Ok(target)
     }

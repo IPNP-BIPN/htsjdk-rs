@@ -201,8 +201,24 @@ pub fn block_copy_to<R: Read + Seek, W: Write>(
     let end = length - skip_last;
     if copy_start < end {
         input.seek(SeekFrom::Start(copy_start))?;
-        let copied = io::copy(&mut input.by_ref().take(end - copy_start), out)
-            .map_err(ReheaderError::Write)?;
+        // A megabyte at a time: `io::copy`'s 8 KiB buffer costs a pair of syscalls per 8 KiB
+        // when both ends are files, where htsjdk's channel transfer moves far larger runs.
+        let mut buffer = vec![0u8; 1 << 20];
+        let mut remaining = end - copy_start;
+        let mut copied = 0u64;
+        while remaining > 0 {
+            let want = remaining.min(buffer.len() as u64) as usize;
+            let got = match input.read(&mut buffer[..want]) {
+                Ok(0) => break,
+                Ok(got) => got,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            out.write_all(&buffer[..got])
+                .map_err(ReheaderError::Write)?;
+            remaining -= got as u64;
+            copied += got as u64;
+        }
         if copied != end - copy_start {
             return Err(ReheaderError::Truncated);
         }
@@ -231,9 +247,30 @@ pub fn reheader_bam_with(
 ) -> Result<Vec<u8>, ReheaderError> {
     // The new header as flushed BGZF block(s), no terminator, then the record blocks block-copied
     // with the header dropped and the terminator kept.
-    let mut out = write_bam_header_block_with(new_header, level, deflater)?;
-    out.extend_from_slice(&block_copy_with(input_bam, true, false, level, deflater)?);
+    let mut out = Vec::with_capacity(input_bam.len());
+    reheader_bam_to(
+        new_header,
+        &mut Cursor::new(input_bam),
+        &mut out,
+        level,
+        deflater,
+    )?;
     Ok(out)
+}
+
+/// [`reheader_bam_with`] from a seekable input to `out`, as it is read, which is how htsjdk's
+/// `reheaderBamFile` goes from one path to another: the new header's blocks, then the records'
+/// blocks copied through.
+pub fn reheader_bam_to<R: Read + Seek, W: Write>(
+    new_header: &SamHeader,
+    input: &mut R,
+    out: &mut W,
+    level: u32,
+    deflater: Deflater,
+) -> Result<(), ReheaderError> {
+    out.write_all(&write_bam_header_block_with(new_header, level, deflater)?)
+        .map_err(ReheaderError::Write)?;
+    block_copy_to(input, out, true, false, level, deflater)
 }
 
 #[cfg(test)]

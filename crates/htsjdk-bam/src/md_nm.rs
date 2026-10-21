@@ -47,7 +47,7 @@ pub fn calculate_md_and_nm(
                     if bases_equal(read_base, ref_base) || read_base == 0 {
                         match_count += 1;
                     } else {
-                        md.push_str(&match_count.to_string());
+                        push_count(&mut md, match_count);
                         md.push(ref_base as char);
                         match_count = 0;
                         nm_count += 1;
@@ -61,7 +61,7 @@ pub fn calculate_md_and_nm(
                 block_read_start += block_length;
             }
             Op::D => {
-                md.push_str(&match_count.to_string());
+                push_count(&mut md, match_count);
                 md.push('^');
                 let mut in_block = 0;
                 while in_block < block_length {
@@ -95,15 +95,41 @@ pub fn calculate_md_and_nm(
             Op::H | Op::P => {} // consume neither read nor reference
         }
     }
-    md.push_str(&match_count.to_string());
+    push_count(&mut md, match_count);
 
     (md, nm_count)
+}
+
+/// `StringBuilder.append(int)` for the non-negative counts MD carries, without the `String`
+/// `to_string` would allocate per mismatch.
+fn push_count(md: &mut String, count: i32) {
+    let mut digits = [0u8; 10];
+    let mut at = digits.len();
+    let mut n = count.max(0) as u32;
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    md.extend(digits[at..].iter().map(|&d| d as char));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cigar::Cigar;
+
+    #[test]
+    fn counts_are_written_as_to_string_writes_them() {
+        for n in [0, 7, 9, 10, 99, 151, 1000, i32::MAX] {
+            let mut md = String::from("x");
+            push_count(&mut md, n);
+            assert_eq!(md, format!("x{n}"));
+        }
+    }
 
     const REF: &[u8] = b"ACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT";
 
