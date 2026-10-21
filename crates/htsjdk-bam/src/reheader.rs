@@ -231,9 +231,30 @@ pub fn reheader_bam_with(
 ) -> Result<Vec<u8>, ReheaderError> {
     // The new header as flushed BGZF block(s), no terminator, then the record blocks block-copied
     // with the header dropped and the terminator kept.
-    let mut out = write_bam_header_block_with(new_header, level, deflater)?;
-    out.extend_from_slice(&block_copy_with(input_bam, true, false, level, deflater)?);
+    let mut out = Vec::with_capacity(input_bam.len());
+    reheader_bam_to(
+        new_header,
+        &mut Cursor::new(input_bam),
+        &mut out,
+        level,
+        deflater,
+    )?;
     Ok(out)
+}
+
+/// [`reheader_bam_with`] from a seekable input to `out`, as it is read, which is how htsjdk's
+/// `reheaderBamFile` goes from one path to another: the new header's blocks, then the records'
+/// blocks copied through.
+pub fn reheader_bam_to<R: Read + Seek, W: Write>(
+    new_header: &SamHeader,
+    input: &mut R,
+    out: &mut W,
+    level: u32,
+    deflater: Deflater,
+) -> Result<(), ReheaderError> {
+    out.write_all(&write_bam_header_block_with(new_header, level, deflater)?)
+        .map_err(ReheaderError::Write)?;
+    block_copy_to(input, out, true, false, level, deflater)
 }
 
 #[cfg(test)]

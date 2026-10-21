@@ -18,14 +18,58 @@
 //!
 //! An interval whose adjusted `start > end` is dropped on add and yields no overlaps on query,
 //! matching the `if (start <= end)` guard on both sides.
+//!
+//! A query does not scan the contig. On first use each contig's intervals are sorted by start,
+//! and a query visits only those starting within the longest stored interval's length of it,
+//! then hands the hits back in insertion order, which is what the plain scan returned and what a
+//! caller iterating the result sees.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// One stored interval and the object it carries.
 struct Entry<T> {
     start: i32,
     end: i32,
     object: T,
+}
+
+/// One contig's intervals in insertion order, and the start-sorted view queries search.
+struct Contig<T> {
+    entries: Vec<Entry<T>>,
+    index: OnceLock<StartIndex>,
+}
+
+/// `order[i]` is the entry with the `i`-th smallest start, `starts[i]` that start, and `span` the
+/// largest `end - start` on the contig, which bounds how far left of a query a hit can start.
+struct StartIndex {
+    order: Vec<u32>,
+    starts: Vec<i32>,
+    span: i64,
+}
+
+impl<T> Contig<T> {
+    fn index(&self) -> &StartIndex {
+        self.index.get_or_init(|| {
+            let mut order: Vec<u32> = (0..self.entries.len() as u32).collect();
+            order.sort_by_key(|&i| self.entries[i as usize].start);
+            let starts = order
+                .iter()
+                .map(|&i| self.entries[i as usize].start)
+                .collect();
+            let span = self
+                .entries
+                .iter()
+                .map(|e| e.end as i64 - e.start as i64)
+                .max()
+                .unwrap_or(0);
+            StartIndex {
+                order,
+                starts,
+                span,
+            }
+        })
+    }
 }
 
 /// `OverlapDetector<T>`.
@@ -37,7 +81,7 @@ struct Entry<T> {
 pub struct OverlapDetector<T> {
     lhs_buffer: i32,
     rhs_buffer: i32,
-    by_contig: HashMap<String, Vec<Entry<T>>>,
+    by_contig: HashMap<String, Contig<T>>,
 }
 
 impl<T> OverlapDetector<T> {
@@ -62,10 +106,15 @@ impl<T> OverlapDetector<T> {
         let start = start + self.lhs_buffer;
         let end = end - self.lhs_buffer;
         if start <= end {
-            self.by_contig
+            let contig = self
+                .by_contig
                 .entry(contig.to_string())
-                .or_default()
-                .push(Entry { start, end, object });
+                .or_insert_with(|| Contig {
+                    entries: Vec::new(),
+                    index: OnceLock::new(),
+                });
+            contig.entries.push(Entry { start, end, object });
+            contig.index = OnceLock::new();
         }
     }
 
@@ -80,14 +129,25 @@ impl<T> OverlapDetector<T> {
         if start > end {
             return Vec::new();
         }
-        match self.by_contig.get(contig) {
-            None => Vec::new(),
-            Some(entries) => entries
-                .iter()
-                .filter(|e| e.start <= end && e.end >= start)
-                .map(|e| &e.object)
-                .collect(),
-        }
+        let Some(contig) = self.by_contig.get(contig) else {
+            return Vec::new();
+        };
+        // shortcut: one interval as long as the contig makes every query visit every start to
+        // its left, which is the plain scan again; an interval tree would bound that too.
+        let index = contig.index();
+        let from = index
+            .starts
+            .partition_point(|&s| (s as i64) < start as i64 - index.span);
+        let to = index.starts.partition_point(|&s| s <= end);
+        let mut hits: Vec<u32> = index.order[from..to.max(from)]
+            .iter()
+            .copied()
+            .filter(|&i| contig.entries[i as usize].end >= start)
+            .collect();
+        hits.sort_unstable();
+        hits.into_iter()
+            .map(|i| &contig.entries[i as usize].object)
+            .collect()
     }
 
     /// `overlapsAny(locatable)`.
@@ -99,7 +159,7 @@ impl<T> OverlapDetector<T> {
     pub fn get_all(&self) -> Vec<&T> {
         self.by_contig
             .values()
-            .flat_map(|v| v.iter().map(|e| &e.object))
+            .flat_map(|c| c.entries.iter().map(|e| &e.object))
             .collect()
     }
 }
@@ -107,6 +167,44 @@ impl<T> OverlapDetector<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The indexed query against the scan it replaced: same objects, same order, with a long
+    /// interval in the mix, queries added between, and both buffer signs.
+    #[test]
+    fn the_index_answers_as_the_scan_did() {
+        let mut seed = 7u64;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((seed >> 33) % bound) as i32
+        };
+        for (lhs, rhs) in [(0, 0), (3, -2), (-4, 5)] {
+            let mut d = OverlapDetector::new(lhs, rhs);
+            let mut stored: Vec<(&str, i32, i32, usize)> = Vec::new();
+            for i in 0..2000 {
+                let contig = ["a", "b"][next(2) as usize];
+                let start = next(100_000);
+                let length = if i == 500 { 60_000 } else { next(300) };
+                d.add(contig, start, start + length, i);
+                if start + lhs <= start + length - lhs {
+                    stored.push((contig, start + lhs, start + length - lhs, i));
+                }
+                if i % 100 == 0 || i > 1900 {
+                    let (c, s) = (["a", "b", "c"][next(3) as usize], next(100_000));
+                    let e = s + next(2000);
+                    let (qs, qe) = (s + rhs, e - rhs);
+                    let expected: Vec<usize> = stored
+                        .iter()
+                        .filter(|x| qs <= qe && x.0 == c && x.1 <= qe && x.2 >= qs)
+                        .map(|x| x.3)
+                        .collect();
+                    let got: Vec<usize> = d.get_overlaps(c, s, e).into_iter().copied().collect();
+                    assert_eq!(got, expected, "query {c}:{s}-{e} after {i} adds");
+                }
+            }
+        }
+    }
 
     fn detector(intervals: &[(&str, i32, i32, &str)]) -> OverlapDetector<String> {
         let mut d = OverlapDetector::create();
