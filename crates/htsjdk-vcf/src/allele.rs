@@ -207,6 +207,11 @@ impl Allele {
         self.is_symbolic
     }
 
+    /// `equals(other, true)`: the bases and no-call state, ignoring the reference flag.
+    pub fn equals_ignore_ref(&self, other: &Allele) -> bool {
+        self.is_no_call == other.is_no_call && self.bases == other.bases
+    }
+
     /// `getDisplayString`: the bases as written into REF and ALT.
     ///
     /// For a no-call this is the empty string, not `.`, because a no-call carries no bases.

@@ -285,6 +285,23 @@ fn parse_vcf_line(
     };
 
     let alleles = parse_alleles(&reference, alts, line_number)?;
+    // `VariantContext.makeAlleles`, reached through `builder.make()`: reference status is
+    // ignored, so an ALT equal to REF is as much a duplicate as a repeated ALT. The one flagged is
+    // always an ALT (the reference comes first), so `toString` adds no `*`.
+    for (i, allele) in alleles.iter().enumerate() {
+        if alleles[..i]
+            .iter()
+            .any(|seen| seen.equals_ignore_ref(allele))
+        {
+            return Err(generate_exception(
+                line_number,
+                &format!(
+                    "Duplicate allele added to VariantContext: {}",
+                    allele.display_string()
+                ),
+            ));
+        }
+    }
 
     let mut variant = VariantContext::new(&contig, pos, alleles);
     variant.id = id;
