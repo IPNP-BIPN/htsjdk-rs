@@ -55,9 +55,9 @@ repositories name one set of pins, and moving one alone reproduces a combination
 ## Throughput
 
 Measured, not claimed, and only where the bytes are pinned first: `tools/benchmark/run.sh` times
-the port's BGZF against htsjdk's on the same payloads, in the same pinned container, and asserts
-that every framed stream the two write is byte-identical **before** it prints a duration. A speed
-number for a path with no golden is not a measurement of this port
+the port's BGZF, BAM and VCF codecs against htsjdk's on the same inputs, in the same pinned
+container, and asserts that every stream and file the two write is byte-identical **before** it
+prints a duration. A speed number for a path with no golden is not a measurement of this port
 ([#78](https://github.com/IPNP-BIPN/htsjdk-rs/issues/78)).
 
 ```sh
@@ -65,41 +65,64 @@ tools/benchmark/run.sh 64 3
 ```
 
 The figures come from the `benchmark` job, which runs it on a real x86-64 runner; a run on a
-developer machine goes through an emulated container and measures the emulator.
+developer machine goes through an emulated container and measures the emulator. Both sides are
+library calls, not command-line tools: htsjdk 4.2.0 on JDK 17 with its defaults, the port at the
+same commit.
 
-Measured on an AMD EPYC 7763, 64 MB payloads, median of three, **after** the run asserted that
-every framed stream the two sides wrote was byte-identical on all ten keys:
+### BGZF
+
+Measured on an AMD EPYC 7763 (4 vCPUs), 64 MB payloads, median of three, **after** the run asserted
+that every framed stream the two sides wrote was byte-identical on all ten keys:
 
 | operation | payload | level | htsjdk | port | ratio |
 |---|---|---:|---:|---:|---:|
-| deflate | text | 1 | 990 MB/s | 983 MB/s | 0.99x |
-| deflate | text | 5 | 332 MB/s | 389 MB/s | 1.17x |
-| deflate | random | 5 | 43.9 MB/s | 44.5 MB/s | 1.01x |
-| inflate | text | 1 | 1677 MB/s | 5292 MB/s | 3.16x |
-| inflate | text | 5 | 1685 MB/s | 2391 MB/s | 1.42x |
-| inflate | random | 5 | 310 MB/s | 334 MB/s | 1.08x |
+| deflate | text | 1 | 757 MB/s | 1612 MB/s | 2.13x |
+| deflate | text | 5 | 182 MB/s | 597 MB/s | 3.27x |
+| deflate | random | 5 | 36.2 MB/s | 105 MB/s | 2.90x |
+| inflate | text | 1 | 1319 MB/s | 4170 MB/s | 3.16x |
+| inflate | text | 5 | 1406 MB/s | 2043 MB/s | 1.45x |
+| inflate | random | 5 | 275 MB/s | 286 MB/s | 1.04x |
 
-Deflate is zlib on both sides at levels above two, so the ratios near 1.0 are the honest answer:
-the port is not compressing faster, it is calling the same library with less overhead around it.
-Inflate is where the port's own code sits between the caller and zlib, and 3.16x on the
+Deflate is stock zlib on both sides at every level: htsjdk's default deflater factory hands out
+`java.util.zip.Deflater`, and the port's `Deflater::Jdk` calls the same zlib, so the bytes match
+by construction. The `gkl-deflate` crate, a Rust port of Intel GKL's deflater that GATK installs
+in htsjdk's place, is not on this path. The deflate ratio is parallelism, not a faster compressor:
+the port's BGZF writer deflates full blocks on every core and htsjdk's on the calling thread, and
+the bytes are the same either way. Inflate is single-threaded on both sides, and 3.16x on the
 compressible payload is what removing a per-block allocation and a per-block inflater is worth
 (#226).
 
-The two paths above BGZF, which have no htsjdk column because htsjdk's codecs write into a stream
-rather than answering with bytes:
+### BAM and VCF files
 
-| path | throughput |
-|---|---:|
-| BAM record decode | 877 MB/s, 2,875,000 records/s |
-| BAM record encode | 197 MB/s, 646,000 records/s |
-| VCF read | 58 MB/s, 498,000 records/s |
-| VCF write, records copied through | 164 MB/s, 1,404,000 records/s |
-| VCF write, genotypes read first | 61 MB/s, 519,000 records/s |
+400,000 BAM records of 151 bases (122 MB inflated) and 200,000 VCF records with four samples
+(23 MB), median of three, **after** the run asserted that the BAM and both VCFs the two sides wrote
+were byte-identical. Rates are over the same bytes and records for both columns.
 
-The last two rows are one number and its absence: a record nothing looked at is written from the
-file's own text, and a record whose genotypes were read is rebuilt column by column. That is
+| path | htsjdk | port | ratio |
+|---|---:|---:|---:|
+| BAM read, every record decoded | 171 MB/s, 559,000 records/s | 147 MB/s, 481,000 records/s | 0.86x |
+| BAM write | 25 MB/s, 83,000 records/s | 88 MB/s, 289,000 records/s | 3.49x |
+| VCF read, genotypes left lazy | 64 MB/s, 546,000 records/s | 43 MB/s, 371,000 records/s | 0.68x |
+| VCF read, genotypes decoded | 27 MB/s, 235,000 records/s | 43 MB/s, 370,000 records/s | 1.57x |
+| VCF write, records copied through | 68 MB/s, 581,000 records/s | 157 MB/s, 1,346,000 records/s | 2.32x |
+| VCF write, genotypes read first | 31 MB/s, 261,000 records/s | 47 MB/s, 406,000 records/s | 1.55x |
+
+htsjdk reads the BAM with `EAGERLY_DECODE` and `SILENT` validation, the closest it has to the
+port's reader, which decodes every field and validates nothing. Its default `STRICT` would add a
+validation pass on top. The two rows where htsjdk is ahead are real. The port reads a BAM by
+inflating the whole file before decoding it, where htsjdk streams. And the port's VCF reader
+parses every genotype up front: it reproduces `LazyGenotypesContext`'s observable effect on the
+output, not its deferral, so leaving the genotypes alone saves htsjdk the parse and saves the port
+nothing. BAM write, like BGZF deflate, owes most of its ratio to deflating on every core.
+
+The two VCF write rows are one number and its absence: a record nothing looked at is written from
+the file's own text, and a record whose genotypes were read is rebuilt column by column. That is
 htsjdk's `LazyGenotypesContext`, and reproducing it made copying records through 2.7x faster as a
 side effect of making it correct.
+
+The BAM record codec alone, in memory with no BGZF, has no htsjdk column because htsjdk's codec
+writes into a stream rather than answering with bytes: 658 MB/s and 2,158,000 records/s to
+decode, 446 MB/s and 1,462,000 records/s to encode.
 
 ## Bit-identity contract
 
