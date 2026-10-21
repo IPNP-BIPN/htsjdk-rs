@@ -201,8 +201,24 @@ pub fn block_copy_to<R: Read + Seek, W: Write>(
     let end = length - skip_last;
     if copy_start < end {
         input.seek(SeekFrom::Start(copy_start))?;
-        let copied = io::copy(&mut input.by_ref().take(end - copy_start), out)
-            .map_err(ReheaderError::Write)?;
+        // A megabyte at a time: `io::copy`'s 8 KiB buffer costs a pair of syscalls per 8 KiB
+        // when both ends are files, where htsjdk's channel transfer moves far larger runs.
+        let mut buffer = vec![0u8; 1 << 20];
+        let mut remaining = end - copy_start;
+        let mut copied = 0u64;
+        while remaining > 0 {
+            let want = remaining.min(buffer.len() as u64) as usize;
+            let got = match input.read(&mut buffer[..want]) {
+                Ok(0) => break,
+                Ok(got) => got,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e.into()),
+            };
+            out.write_all(&buffer[..got])
+                .map_err(ReheaderError::Write)?;
+            remaining -= got as u64;
+            copied += got as u64;
+        }
         if copied != end - copy_start {
             return Err(ReheaderError::Truncated);
         }
