@@ -55,9 +55,9 @@ repositories name one set of pins, and moving one alone reproduces a combination
 ## Throughput
 
 Measured, not claimed, and only where the bytes are pinned first: `tools/benchmark/run.sh` times
-the port's BGZF, BAM and VCF codecs against htsjdk's on the same inputs, in the same pinned
-container, and asserts that every stream and file the two write is byte-identical **before** it
-prints a duration. A speed number for a path with no golden is not a measurement of this port
+every operation the port has an htsjdk counterpart for against htsjdk's, on the same inputs, in
+the same pinned container, and asserts that every stream and file the two write is identical
+**before** it prints a duration. A speed number for a path with no golden is not a measurement of this port
 ([#78](https://github.com/IPNP-BIPN/htsjdk-rs/issues/78)).
 
 ```sh
@@ -123,6 +123,84 @@ side effect of making it correct.
 The BAM record codec alone, in memory with no BGZF, has no htsjdk column because htsjdk's codec
 writes into a stream rather than answering with bytes: 658 MB/s and 2,158,000 records/s to
 decode, 446 MB/s and 1,462,000 records/s to encode.
+
+### Every other operation
+
+The same run then times the rest of what the crates implement (`bam-ops-bench`, `vcf-ops-bench`,
+`cram-bench` and `metrics-bench` against `BamOpsBench`, `VcfOpsBench`, `CramBench` and
+`MetricsBench`), and asserts all 44 outputs identical before printing a rate. **bytes**: the
+files the two sides wrote are identical. **decoded**: the operation's result lives in memory, or
+its bytes legitimately differ, so what is compared is a rendering of it (records as SAM, sequences
+as name, length and MD5, query answers). **idx**: identical except the indexed file's path and
+modification time, which name the file rather than describe it. Measured on an AMD EPYC 7763,
+median of three, htsjdk 4.2.0 on JDK 17.
+
+| operation | check | over | htsjdk | port | ratio |
+|---|---|---|---:|---:|---:|
+| SAM write | bytes | 153 MB of SAM, 400,000 records | 189 MB/s | 225 MB/s | 1.19x |
+| SAM read | decoded | same | 113 MB/s | 200 MB/s | 1.76x |
+| sort, queryname | decoded | 400,000 records | 2,211,000 rec/s | 2,649,000 rec/s | 1.20x |
+| sort, coordinate (from queryname order) | decoded | same | 1,709,000 rec/s | 4,328,000 rec/s | 2.53x |
+| BAI from a sorted BAM | bytes | 75 MB of BAM | 83 MB/s | 110 MB/s | 1.32x |
+| SBI writer, 10 M offsets | bytes | 76 MB of offsets | 3,278 MB/s | 2,692 MB/s | 0.82x |
+| BAM reheader, block copy | bytes | 75 MB of BAM | 1,270 MB/s | 411 MB/s | 0.32x |
+| BAM gather, block copy | bytes | 226 MB of BAM | 398 MB/s | 521 MB/s | 1.31x |
+| FASTQ write | bytes | 128 MB of FASTQ | 288 MB/s | 467 MB/s | 1.62x |
+| FASTQ read | decoded | same | 575 MB/s | 405 MB/s | 0.70x |
+| FASTA write with `.fai` and `.dict` | bytes | 64 MB of bases | 18 MB/s | 260 MB/s | 14.35x |
+| FASTA read | decoded | same | 585 MB/s | 630 MB/s | 1.08x |
+| indexed FASTA, 200,000 queries of 151 bp | decoded | 29 MB of bases | 93 MB/s | 31 MB/s | 0.33x |
+| MD and NM | decoded | 400,000 reads | 473,000 rec/s | 304,000 rec/s | 0.64x |
+| interval list write | bytes | 500,000 intervals | 215 MB/s | 151 MB/s | 0.70x |
+| interval list read | decoded | same | 15 MB/s | 144 MB/s | 9.53x |
+| interval list `sorted()` | decoded | same | 1,311,000 rec/s | 759,000 rec/s | 0.58x |
+| interval list `uniqued()` | decoded | same | 1,082,000 rec/s | 685,000 rec/s | 0.63x |
+| `OverlapDetector`, 50,000 targets, 100,000 queries | decoded | 150,000 intervals | 2,373,000 rec/s | 96,000 rec/s | 0.04x |
+| liftover, chain load and 200,000 intervals | decoded | 200,000 intervals | 104,000 rec/s | 1,017,000 rec/s | 9.79x |
+| CRAM write | decoded | 200,000 records | 120,000 rec/s | 81,000 rec/s | 0.68x |
+| CRAM read | decoded | same | 229,000 rec/s | 168,000 rec/s | 0.73x |
+| rANS 4x8 order 0, compress / uncompress | bytes / decoded | 29 MB of qualities | 123 / 205 MB/s | 224 / 336 MB/s | 1.82x / 1.64x |
+| rANS 4x8 order 1, compress / uncompress | bytes / decoded | same | 113 / 141 MB/s | 182 / 177 MB/s | 1.62x / 1.26x |
+| rANS Nx16 order 0, compress / uncompress | bytes / decoded | same | 112 / 123 MB/s | 274 / 281 MB/s | 2.44x / 2.29x |
+| rANS Nx16 order 1, compress / uncompress | bytes / decoded | same | 96 / 99 MB/s | 133 / 145 MB/s | 1.39x / 1.47x |
+| range coder order 0, compress / uncompress | bytes / decoded | same | 35 / 26 MB/s | 41 / 42 MB/s | 1.16x / 1.58x |
+| range coder order 1, compress / uncompress | bytes / decoded | same | 35 / 29 MB/s | 54 / 46 MB/s | 1.58x / 1.60x |
+| name tokeniser, compress / uncompress | decoded / decoded | 4.6 MB of names | 2.4 / 25 MB/s | 15.5 / 27 MB/s | 6.41x / 1.06x |
+| fqzcomp, uncompress | decoded | 29 MB of qualities | 16 MB/s | 21 MB/s | 1.28x |
+| metrics file write | bytes | 200,000 rows, two histograms | 26 MB/s | 59 MB/s | 2.28x |
+| BCF write | bytes | 23 MB of VCF, 200,000 records | 18 MB/s | 21 MB/s | 1.15x |
+| BCF read | decoded | same | 74 MB/s | 46 MB/s | 0.61x |
+| VCF write with `.idx` on the fly | idx | same | 78 MB/s | 81 MB/s | 1.05x |
+| `.vcf.gz` write with `.tbi` | bytes | same | 20 MB/s | 21 MB/s | 1.05x |
+| `.vcf.gz` read | decoded | same | 78 MB/s | 33 MB/s | 0.43x |
+| BED decode | decoded | 21 MB, 500,000 lines | 23 MB/s | 104 MB/s | 4.53x |
+
+Where the bytes differ, the reason is a version, never a defect. The port writes htsjdk 5.0.0's
+CRAM 3.1 and the container's htsjdk 4.2.0 writes CRAM 3.0, and 4.2.0 cannot read 3.1, so CRAM
+write compares each side's file decoded by its own reader and CRAM read is both sides on htsjdk's
+3.0 file. The port's reader restores `MD` where a record lacks it, as 5.0.0's and htslib's do and
+4.2.0's does not, so the comparison drops that tag. The port's name tokeniser is 5.0.0's encoder,
+so its row checks that htsjdk 4.2.0 decodes the port's streams to the input. fqzcomp has no
+compress row because 4.2.0's `FQZCompEncode.compress` throws "not implemented".
+
+The rows where htsjdk is ahead, and what in the port makes them so. No library code changed to
+produce this table.
+
+* **`OverlapDetector`**: the port scans every target on the query's contig (decision 0020); htsjdk
+  walks an interval tree.
+* **Indexed FASTA**: one `seek` and one unbuffered `read` per 60-base line, and a copy of the
+  index entry per query; htsjdk reads the whole span in one channel read.
+* **BAM reheader**: `reheader_bam` takes and returns whole files as slices, so the copy goes
+  through memory twice; htsjdk copies file to file through a buffer.
+* **`.vcf.gz` read**: the whole file is inflated on one thread before parsing starts, as for BAM
+  read; the uncompressed VCF read alone is at parity (0.98x in the same run).
+* **Interval list `sorted()` and `uniqued()`**: each comparison finds both contigs' indexes by a
+  linear search of the dictionary, after `sorted()` has deep-copied the list. **Write**: one
+  `format!` per interval, then the whole file as one string.
+* **CRAM write** is not like for like (3.1 with 5.0.0's choices against 3.0). **CRAM read** includes
+  the `MD` the port computes and 4.2.0 does not.
+* **MD and NM**: a `String` allocated per mismatch for the match count. **SBI writer**, **FASTQ
+  read** and **BCF read**: not profiled.
 
 ## Bit-identity contract
 
