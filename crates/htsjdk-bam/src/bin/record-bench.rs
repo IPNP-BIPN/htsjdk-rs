@@ -9,11 +9,23 @@
 //! run on one machine is comparable with a run on another, and the digests say whether an
 //! optimisation moved a byte.
 //!
-//! Usage: record-bench [records] [reps]
+//! Given a directory, it also writes the corpus there as a BAM file and times the whole-file paths
+//! htsjdk has an answer for: reading every record of it (inflate and decode), and writing those
+//! records to a new BAM (encode and deflate). `tools/benchmark/CodecBench.java` times htsjdk on the
+//! same file, and the runner compares the two written files byte for byte before either duration.
+//!
+//! Usage: record-bench [records] [reps] [dir]
+
+use std::io::{BufWriter, Write};
+use std::path::Path;
 
 use htsjdk_bam::cigar::{Cigar, CigarElement, Op};
+use htsjdk_bam::header::{ReadGroup, SequenceRecord};
 use htsjdk_bam::record::BamRecord;
 use htsjdk_bam::tag::{Tag, TagValue, Tags};
+use htsjdk_bam::writer::BamWriter;
+use htsjdk_bam::{BamReader, SamHeader};
+use htsjdk_bgzf::decompress_all;
 use md5::{Digest, Md5};
 
 fn hex(bytes: &[u8]) -> String {
@@ -95,6 +107,7 @@ fn main() {
         .map(|a| a.parse().expect("records"))
         .unwrap_or(200_000);
     let reps: usize = args.next().map(|a| a.parse().expect("reps")).unwrap_or(3);
+    let dir = args.next();
 
     let mut rng = Lcg(12345);
     let records: Vec<BamRecord> = (0..count).map(|i| record(i, &mut rng)).collect();
@@ -142,6 +155,66 @@ fn main() {
             count as f64 / seconds
         );
         std::hint::black_box(out);
+    }
+
+    if let Some(dir) = dir {
+        files(Path::new(&dir), &records, reps);
+    }
+}
+
+/// Reads every record of a BAM file: the inflate and the decode, as a caller pays them.
+fn read_bam(path: &Path) -> (SamHeader, Vec<BamRecord>, usize) {
+    let data = decompress_all(&std::fs::read(path).expect("reads")).expect("inflates");
+    let reader = BamReader::new(&data).expect("a BAM");
+    let header = reader.header.text.clone();
+    let records = reader.map(|r| r.expect("decodes")).collect();
+    (header, records, data.len())
+}
+
+fn write_bam(path: &Path, header: &SamHeader, records: &[BamRecord]) {
+    let file = std::fs::File::create(path).expect("creates");
+    let mut writer = BamWriter::new(BufWriter::new(file), header).expect("writes");
+    for record in records {
+        writer.write(record).expect("encodes");
+    }
+    writer.finish().expect("finishes").flush().expect("flushes");
+}
+
+/// The file rows. Durations only: the runner divides the counts printed here, so the htsjdk column
+/// is over the same bytes and records.
+fn files(dir: &Path, records: &[BamRecord], reps: usize) {
+    let mut header = SamHeader::default();
+    header
+        .sequences
+        .push(SequenceRecord::new("chr1", 250_000_000));
+    let mut group = ReadGroup::new("rg1");
+    group.attributes.set("SM", "s1");
+    header.read_groups.push(group);
+    let corpus = dir.join("corpus.bam");
+    write_bam(&corpus, &header, records);
+
+    let (header, decoded, inflated) = read_bam(&corpus);
+    println!(
+        "bam_records={} bam_inflated_bytes={inflated}",
+        decoded.len()
+    );
+    for run in 0..reps {
+        let start = std::time::Instant::now();
+        std::hint::black_box(read_bam(&corpus));
+        println!(
+            "rust_bam_decode_run{run}_secs={:.6}",
+            start.elapsed().as_secs_f64()
+        );
+    }
+
+    let out = dir.join("port_out.bam");
+    for run in 0..reps {
+        let start = std::time::Instant::now();
+        write_bam(&out, &header, &decoded);
+        println!(
+            "rust_bam_encode_run{run}_secs={:.6}",
+            start.elapsed().as_secs_f64()
+        );
     }
 }
 

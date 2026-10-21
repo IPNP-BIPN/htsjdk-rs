@@ -11,12 +11,18 @@
 //! Every tool that copies records through pays the first and every tool that inspects them pays the
 //! second, so the gap between the two rows is what laziness is worth.
 //!
-//! Usage: vcf-bench [records] [reps]
+//! It writes the corpus to a file and reads it back, so `tools/benchmark/CodecBench.java` can time
+//! htsjdk's `VCFFileReader` and `VCFWriter` on the very same bytes, and the runner compares the
+//! files the two sides write before it prints either duration.
+//!
+//! Usage: vcf-bench [records] [reps] [samples] [dir]
 
-use htsjdk_vcf::encoder::VcfEncoder;
-use htsjdk_vcf::reader::read_vcf;
+use std::path::{Path, PathBuf};
 
-fn corpus(records: usize, samples: usize) -> String {
+use htsjdk_vcf::reader::{read_vcf, VcfFile};
+use htsjdk_vcf::vcf_file::write_vcf;
+
+fn corpus_text(records: usize, samples: usize) -> String {
     let mut text = String::from("##fileformat=VCFv4.2\n");
     text.push_str("##INFO=<ID=DP,Number=1,Type=Integer,Description=\"Depth\">\n");
     text.push_str("##INFO=<ID=AF,Number=A,Type=Float,Description=\"Frequency\">\n");
@@ -43,8 +49,10 @@ fn corpus(records: usize, samples: usize) -> String {
     for index in 0..records {
         let position = 1 + index as u64 * 37 % 249_000_000;
         let bases = *b"ACGT";
-        let reference = bases[(next() % 4) as usize] as char;
-        let alternate = bases[((next() % 3) as usize + 1) % 4] as char;
+        // ALT is offset from REF so the two never coincide: htsjdk rejects a duplicate allele.
+        let base = (next() % 4) as usize;
+        let reference = bases[base] as char;
+        let alternate = bases[(base + 1 + (next() % 3) as usize) % 4] as char;
         // The FORMAT is deliberately NOT in the order the encoder computes, which is what makes
         // the two modes measurably different files as well as different speeds.
         text.push_str(&format!(
@@ -83,58 +91,57 @@ fn main() {
         .next()
         .map(|a| a.parse().expect("samples"))
         .unwrap_or(4);
+    let dir = PathBuf::from(args.next().unwrap_or_else(|| ".".to_string()));
 
-    let text = corpus(records, samples);
-    let megabytes = text.len() as f64 / (1024.0 * 1024.0);
+    let corpus = dir.join("corpus.vcf");
+    let text = corpus_text(records, samples);
+    std::fs::write(&corpus, &text).expect("writes the corpus");
     println!(
-        "vcf_records={records} samples={samples} text_bytes={}",
+        "vcf_records={records} samples={samples} vcf_text_bytes={}",
         text.len()
     );
+    assert_eq!(read(&corpus, false).records.len(), records);
 
-    let file = read_vcf(&text).expect("the corpus parses");
-    assert_eq!(file.records.len(), records);
-    for run in 0..reps {
-        let start = std::time::Instant::now();
-        let parsed = read_vcf(&text).expect("parses");
-        let seconds = start.elapsed().as_secs_f64();
-        println!(
-            "rust_vcf_read_run{run}_mbps={:.2} recs_per_sec={:.0}",
-            megabytes / seconds,
-            records as f64 / seconds
-        );
-        std::hint::black_box(parsed);
-    }
-
-    for mode in ["copy", "touched"] {
+    // `lazy` is what htsjdk's reader leaves behind, and the port's too; `decoded` reaches one
+    // genotype per record, which is `LazyGenotypesContext.decode()` in the reference.
+    for (mode, decode) in [("lazy", false), ("decoded", true)] {
         for run in 0..reps {
-            // A fresh read each run: encoding is destructive of the laziness, so a second pass
-            // over the same records would measure the other mode.
-            let file = read_vcf(&text).expect("parses");
-            let encoder = VcfEncoder::new(&file.header);
-            let mut records_out = file.records;
-            if mode == "touched" {
-                for record in &mut records_out {
-                    let _ = record.genotypes.first();
-                }
-            }
-            if samples == 0 && mode == "touched" {
-                // Nothing to touch, and nothing the mode would measure.
-                break;
-            }
-            let mut out = String::with_capacity(text.len());
             let start = std::time::Instant::now();
-            for record in &records_out {
-                encoder.encode_into(record, &mut out).expect("encodes");
-                out.push('\n');
-            }
-            let seconds = start.elapsed().as_secs_f64();
+            std::hint::black_box(read(&corpus, decode));
             println!(
-                "rust_vcf_encode_{mode}_run{run}_mbps={:.2} recs_per_sec={:.0} bytes={}",
-                out.len() as f64 / (1024.0 * 1024.0) / seconds,
-                records as f64 / seconds,
-                out.len()
+                "rust_vcf_read_{mode}_run{run}_secs={:.6}",
+                start.elapsed().as_secs_f64()
             );
-            std::hint::black_box(out);
         }
     }
+
+    for (mode, decode) in [("copy", false), ("touched", true)] {
+        if samples == 0 && decode {
+            // Nothing to touch, and nothing the mode would measure.
+            break;
+        }
+        let out = dir.join(format!("port_{mode}.vcf"));
+        for run in 0..reps {
+            // A fresh read each run, untimed: decoding is what makes the encoder leave the verbatim
+            // branch, so a write must not see records an earlier one touched.
+            let file = read(&corpus, decode);
+            let start = std::time::Instant::now();
+            let written = write_vcf(&file.header, &file.records).expect("encodes");
+            std::fs::write(&out, written).expect("writes");
+            println!(
+                "rust_vcf_write_{mode}_run{run}_secs={:.6}",
+                start.elapsed().as_secs_f64()
+            );
+        }
+    }
+}
+
+fn read(path: &Path, decode: bool) -> VcfFile {
+    let file = read_vcf(&std::fs::read_to_string(path).expect("reads")).expect("parses");
+    if decode {
+        for record in &file.records {
+            let _ = record.genotypes.first();
+        }
+    }
+    file
 }

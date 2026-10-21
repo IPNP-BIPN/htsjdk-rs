@@ -476,9 +476,9 @@ jobs:
         run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
 
       - name: Time the port against htsjdk, on the same payloads
-        # The runner asserts byte equality of every framed stream before it prints a single
-        # duration: a speed number for a path whose bytes were not compared is not a measurement of
-        # this port.
+        # The runner asserts byte equality of every framed stream, and of every BAM and VCF file the
+        # two sides write, before it prints a single duration: a speed number for a path whose
+        # bytes were not compared is not a measurement of this port.
         run: tools/benchmark/run.sh 64 3 | tee /tmp/benchmark.txt
 
       - name: Publish the measurement

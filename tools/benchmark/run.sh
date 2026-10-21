@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Times the port's BGZF against htsjdk's, on the same payloads, inside the pinned oracle container,
-# and asserts the two write the same bytes in the same run.
+# Times the port's BGZF, BAM and VCF codecs against htsjdk's, on the same inputs, inside the
+# pinned oracle container, and asserts the two write the same bytes in the same run.
 #
 # Both sides run in the container for the same reason picard-rs's benchmark does: timing a native
 # binary against an emulated JVM measures the emulator. The port is cross-built for linux/amd64
@@ -38,21 +38,28 @@ docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4
   "/out/amd64/release/bgzf-bench $MB $REPS" | tee "$OUT/rust.txt"
 
 # The record codec, which #78 names as the second path under everything: every read filter and
-# every walker pays it per record. There is no htsjdk column for it -- htsjdk's codec writes into a
-# stream rather than answering with bytes, so the two would not be the same measurement -- and it
-# prints the digest of the corpus it encoded, which is what makes a speed change reviewable: an
-# optimisation that moves a byte says so here rather than in a suite an hour later.
+# every walker pays it per record. Its in-memory rows have no htsjdk column -- htsjdk's codec writes
+# into a stream rather than answering with bytes -- and they print the digest of the corpus they
+# encoded, which is what makes a speed change reviewable. With a directory it also writes that
+# corpus as a BAM file and times reading and rewriting the whole file, which htsjdk can do too.
 echo "== the record codec, in the same container"
 docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
-  "/out/amd64/release/record-bench 400000 $REPS" | tee "$OUT/records.txt"
+  "/out/amd64/release/record-bench 400000 $REPS /out" | tee "$OUT/records.txt"
 
-# The VCF codec, #78's third path. The two encode rows are the two the library has rather than two
+# The VCF codec, #78's third path. The two write rows are the two the library has rather than two
 # implementations of one: a record nothing looked at is written from the file's own text, and a
 # record whose genotypes were read is rebuilt column by column. Every tool that copies records pays
 # the first and every tool that inspects them pays the second.
 echo "== the VCF codec, in the same container"
 docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
-  "/out/amd64/release/vcf-bench 200000 $REPS 4" | tee "$OUT/vcf.txt"
+  "/out/amd64/release/vcf-bench 200000 $REPS 4 /out" | tee "$OUT/vcf.txt"
+
+# htsjdk on the files the two programs above just wrote, writing its own output next to theirs.
+echo "== htsjdk's BAM and VCF codecs, on the same files"
+docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v "$OUT":/out \
+  -w /work htsjdk-rs-oracle:4.2.0 \
+  "cp /harness/CodecBench.java . && javac -cp \$ORACLE_CP -d . CodecBench.java \
+   && java -cp .:\$ORACLE_CP CodecBench /out $REPS" | tee "$OUT/java-codec.txt"
 
 echo "== bytes first"
 python3 - "$OUT" <<'PY'
@@ -82,6 +89,32 @@ if java != rust:
 print(f"byte-identical on {len(java)} keys (payload digests and framed streams)")
 PY
 
+python3 - "$OUT" <<'FILES'
+import sys, re, pathlib, hashlib, gzip
+
+out = pathlib.Path(sys.argv[1])
+text = "".join((out / f).read_text() for f in ("records.txt", "vcf.txt", "java-codec.txt"))
+counts = dict(re.findall(r"(\w+_records)=(\d+)", text))
+for kind in ("bam", "vcf"):
+    if counts.get(f"{kind}_records") != counts.get(f"java_{kind}_records"):
+        raise SystemExit(f"{kind}: the port read {counts.get(f'{kind}_records')} records, "
+                         f"htsjdk {counts.get(f'java_{kind}_records')}")
+bad = False
+for port, java in (("port_out.bam", "java_out.bam"), ("port_copy.vcf", "java_copy.vcf"),
+                   ("port_touched.vcf", "java_touched.vcf")):
+    a, b = (out / port).read_bytes(), (out / java).read_bytes()
+    if a == b:
+        print(f"{port} == {java}: {len(a)} bytes, md5={hashlib.md5(a).hexdigest()}")
+        continue
+    bad = True
+    print(f"{port} != {java}: {len(a)} vs {len(b)} bytes")
+    if port.endswith(".bam"):
+        same = gzip.decompress(a) == gzip.decompress(b)
+        print(f"  inflated: {'identical, so the deflater differs' if same else 'different too'}")
+if bad:
+    raise SystemExit("the two sides wrote different files; the timing below means nothing")
+FILES
+
 echo "== throughput, MB/s, median of $REPS"
 python3 - "$OUT" <<'PY'
 import sys, re, pathlib, statistics
@@ -105,7 +138,7 @@ for key in sorted(rates):
     print(f"{key[0]:10} {key[1]:8} {key[2]:>5} {j:>9.1f} {r:>9.1f} {r / j:>6.2f}x")
 PY
 
-echo "== the record codec, MB/s and records/s, median of $REPS"
+echo "== the record codec in memory, MB/s and records/s, median of $REPS"
 python3 - "$OUT" <<'REC'
 import sys, re, pathlib, statistics
 
@@ -125,21 +158,35 @@ for name in ("decode", "encode"):
         print(f"{name:8} {mbps:>9.1f} MB/s {recs:>12,.0f} records/s")
 REC
 
-echo "== the VCF codec, MB/s, median of $REPS"
-python3 - "$OUT" <<'VCF'
+echo "== BAM and VCF files, htsjdk against the port, median of $REPS"
+python3 - "$OUT" <<'CODEC'
 import sys, re, pathlib, statistics
 
 out = pathlib.Path(sys.argv[1])
-rows = {}
-for line in (out / "vcf.txt").read_text().splitlines():
-    m = re.match(r"rust_vcf_read_run\d+_mbps=([\d.]+) recs_per_sec=(\d+)", line)
-    if m:
-        rows.setdefault("read", []).append((float(m.group(1)), int(m.group(2))))
-    m = re.match(r"rust_vcf_encode_(\w+)_run\d+_mbps=([\d.]+) recs_per_sec=(\d+)", line)
-    if m:
-        rows.setdefault(f"encode {m.group(1)}", []).append((float(m.group(2)), int(m.group(3))))
-for name, values in rows.items():
-    mbps = statistics.median(v[0] for v in values)
-    recs = statistics.median(v[1] for v in values)
-    print(f"{name:16} {mbps:>9.1f} MB/s {recs:>12,.0f} records/s")
-VCF
+text = "".join((out / f).read_text() for f in ("records.txt", "vcf.txt", "java-codec.txt"))
+n = {k: int(v) for k, v in
+     re.findall(r"\b(bam_records|bam_inflated_bytes|vcf_records|vcf_text_bytes)=(\d+)", text)}
+secs = {}
+for side, kind, op, value in re.findall(r"(java|rust)_(bam|vcf)_(\w+?)_run\d+_secs=([\d.]+)", text):
+    secs.setdefault((kind, op), {}).setdefault(side, []).append(float(value))
+# Every rate is over one denominator for both sides: the inflated BAM stream, the VCF both read, or
+# the VCF both wrote (identical, checked above).
+size = {
+    ("bam", "decode"): n["bam_inflated_bytes"],
+    ("bam", "encode"): n["bam_inflated_bytes"],
+    ("vcf", "read_lazy"): n["vcf_text_bytes"],
+    ("vcf", "read_decoded"): n["vcf_text_bytes"],
+    ("vcf", "write_copy"): (out / "port_copy.vcf").stat().st_size,
+    ("vcf", "write_touched"): (out / "port_touched.vcf").stat().st_size,
+}
+print(f"{'path':18} {'htsjdk MB/s':>12} {'port MB/s':>10} {'htsjdk rec/s':>13} {'port rec/s':>12} {'ratio':>7}")
+for key, nbytes in size.items():
+    row = secs.get(key, {})
+    if "java" not in row or "rust" not in row:
+        continue
+    recs = n[f"{key[0]}_records"]
+    j, r = statistics.median(row["java"]), statistics.median(row["rust"])
+    mb = nbytes / (1024 * 1024)
+    print(f"{key[0] + ' ' + key[1]:18} {mb / j:>12.1f} {mb / r:>10.1f} "
+          f"{recs / j:>13,.0f} {recs / r:>12,.0f} {j / r:>6.2f}x")
+CODEC
