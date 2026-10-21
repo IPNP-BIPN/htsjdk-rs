@@ -6,7 +6,12 @@ license.workspace = true
 repository.workspace = true
 description = "Port of htsjdk's FormatUtil and MetricsFile output format"
 
+[features]
+# The benches' global allocator; see the workspace manifest.
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
+mimalloc = { workspace = true, optional = true }
 jmath.workspace = true
 
 [dev-dependencies]

@@ -287,11 +287,144 @@ fn read_up_to<R: Read>(r: &mut R, buf: &mut [u8]) -> io::Result<usize> {
 /// the block structure. It deliberately does not hide the block structure from anything that
 /// needs it: the differential harness reports positions in terms of blocks, and losing that
 /// would make a divergence in a large BAM unlocatable.
+///
+/// The blocks are inflated on rayon's workers, each into its own slice of the output, after a
+/// serial walk over the headers that applies [`BgzfReader::next_block`]'s checks in its order. The
+/// error returned is the one the serial loop would have stopped at: the first failing block's, or
+/// the header walk's if every block before it inflated.
 pub fn decompress_all(bytes: &[u8]) -> Result<Vec<u8>, BgzfError> {
+    use rayon::prelude::*;
+
+    let mut blocks = Vec::new();
+    let mut at = 0usize;
+    let walk_error = loop {
+        match block_frame(&bytes[at..]) {
+            Ok(None) => break None,
+            Ok(Some(frame)) => {
+                blocks.push((at, frame));
+                at += frame.0;
+            }
+            Err(error) => break Some(error),
+        }
+    };
+    // A declared size past BGZF's 64 KiB is a damaged block; the serial reader sizes its buffer
+    // from it one block at a time, so it is left to refuse that block in its own way.
+    if blocks.len() < 2 || blocks.iter().any(|(_, (_, size))| *size > 1 << 16) {
+        return decompress_serial(bytes);
+    }
+
+    let total: usize = blocks.iter().map(|(_, (_, size))| size).sum();
+    let mut out = vec![0u8; total];
+    let mut rest = out.as_mut_slice();
+    let mut jobs = Vec::with_capacity(blocks.len());
+    for &(start, (length, size)) in &blocks {
+        let (slot, tail) = rest.split_at_mut(size);
+        rest = tail;
+        let deflated = &bytes[start + BLOCK_HEADER_LENGTH..start + length - BLOCK_FOOTER_LENGTH];
+        jobs.push((deflated, slot));
+    }
+    let first_failure = jobs
+        .into_par_iter()
+        .map_init(
+            || Decompress::new(false),
+            |inflater, (deflated, slot)| {
+                inflater.reset(false);
+                inflater
+                    .decompress(deflated, slot, FlushDecompress::Finish)
+                    .map_err(|e| BgzfError::Inflate(e.to_string()))?;
+                let actual = inflater.total_out() as usize;
+                if actual != slot.len() {
+                    return Err(BgzfError::BlockSizeDisagreement {
+                        declared: slot.len(),
+                        actual,
+                    });
+                }
+                Ok(())
+            },
+        )
+        .collect::<Vec<_>>()
+        .into_iter()
+        .find_map(Result::err);
+    match first_failure.or(walk_error) {
+        Some(error) => Err(error),
+        None => Ok(out),
+    }
+}
+
+/// One block's framing at the start of `bytes`: its compressed length and declared inflated size,
+/// with the refusals [`BgzfReader::next_block`] makes before it inflates anything. `None` is the
+/// end of the stream.
+fn block_frame(bytes: &[u8]) -> Result<Option<(usize, usize)>, BgzfError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    if bytes.len() < BLOCK_HEADER_LENGTH {
+        return Err(BgzfError::IncorrectHeaderSize);
+    }
+    let header = &bytes[..BLOCK_HEADER_LENGTH];
+    if header[0] != GZIP_ID1
+        || header[1] != GZIP_ID2
+        || header[2] != GZIP_CM_DEFLATE
+        || header[3] != GZIP_FLG
+        || u16::from_le_bytes([header[10], header[11]]) != GZIP_XLEN
+    {
+        return Err(BgzfError::InvalidGzipHeader);
+    }
+    let length = u16::from_le_bytes([header[16], header[17]]) as usize + 1;
+    if !(BLOCK_HEADER_LENGTH..=MAX_COMPRESSED_BLOCK_SIZE).contains(&length) {
+        return Err(BgzfError::UnexpectedBlockLength(length));
+    }
+    if bytes.len() < length {
+        return Err(BgzfError::PrematureEnd);
+    }
+    let footer = &bytes[length - BLOCK_FOOTER_LENGTH..length];
+    let size = u32::from_le_bytes([footer[4], footer[5], footer[6], footer[7]]) as usize;
+    Ok(Some((length, size)))
+}
+
+fn decompress_serial(bytes: &[u8]) -> Result<Vec<u8>, BgzfError> {
     let mut reader = BgzfReader::new(bytes);
     let mut out = Vec::new();
     while let Some(block) = reader.next_block()? {
         out.extend_from_slice(&block.data);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn stream(len: usize) -> Vec<u8> {
+        let payload: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+        let mut w = crate::BgzfWriter::new(Vec::new());
+        w.write_all(&payload).unwrap();
+        w.into_inner().unwrap()
+    }
+
+    /// The parallel path against the serial loop it replaces, on whole and damaged streams.
+    #[test]
+    fn parallel_inflate_answers_as_the_serial_loop_does() {
+        let good = stream(1 << 20);
+        assert_eq!(
+            decompress_all(&good).unwrap(),
+            decompress_serial(&good).unwrap()
+        );
+
+        // A corrupted deflate body in the third block, a truncated tail, and both at once: the
+        // serial loop stops at the earliest, and so must the parallel one.
+        let (first, _) = block_frame(&good).unwrap().unwrap();
+        let (second, _) = block_frame(&good[first..]).unwrap().unwrap();
+        let mut corrupt = good.clone();
+        corrupt[first + second + BLOCK_HEADER_LENGTH + 3] ^= 0xff;
+        let truncated = &good[..good.len() - 40];
+        let mut both = corrupt.clone();
+        both.truncate(both.len() - 40);
+        for damaged in [&corrupt[..], truncated, &both[..]] {
+            let parallel = decompress_all(damaged).unwrap_err().to_string();
+            let serial = decompress_serial(damaged).unwrap_err().to_string();
+            assert_eq!(parallel, serial);
+        }
+    }
 }

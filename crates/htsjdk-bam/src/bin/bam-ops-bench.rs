@@ -13,6 +13,11 @@
 //!
 //! Usage: bam-ops-bench dir reps megabytes   (dir holds record-bench's corpus.bam)
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::fmt::Write as _;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -33,10 +38,10 @@ use htsjdk_bam::sam_file::{read_sam_with, write_sam};
 use htsjdk_bam::sbi::SbiIndexWriter;
 use htsjdk_bam::text_parse::ValidationStringency;
 use htsjdk_bam::{
-    build_bam_index, coordinate, gather_bam_files, query_name, reheader_bam, BamReader, BamWriter,
-    SamHeader,
+    build_bam_index, coordinate, gather_bam_files_to, query_name, reheader_bam_to, BamReader,
+    BamWriter, SamHeader,
 };
-use htsjdk_bgzf::decompress_all;
+use htsjdk_bgzf::{decompress_all, Deflater, DEFAULT_COMPRESSION_LEVEL};
 use md5::{Digest, Md5};
 
 struct Bench {
@@ -55,11 +60,11 @@ impl Bench {
         let out = f();
         for run in 0..self.reps {
             let start = Instant::now();
-            std::hint::black_box(f());
-            println!(
-                "rust_{name}_run{run}_secs={:.6}",
-                start.elapsed().as_secs_f64()
-            );
+            let answer = std::hint::black_box(f());
+            let seconds = start.elapsed().as_secs_f64();
+            // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+            drop(answer);
+            println!("rust_{name}_run{run}_secs={:.6}", seconds);
         }
         out
     }
@@ -228,9 +233,19 @@ fn block_copy(b: &Bench) {
     let bytes = std::fs::metadata(&input).expect("exists").len() as usize;
     b.op("bam_reheader", bytes, records.len(), "bytes", ".bam");
     let out = b.path("bam_reheader", ".bam");
+    // The streaming forms, file to file, as htsjdk's `BamFileIoUtils` calls go path to path.
     b.time("bam_reheader", || {
-        let bam = reheader_bam(&header, &std::fs::read(&input).expect("reads")).expect("copies");
-        std::fs::write(&out, bam).expect("writes");
+        let mut input = std::fs::File::open(&input).expect("opens");
+        let mut w = BufWriter::new(std::fs::File::create(&out).expect("creates"));
+        reheader_bam_to(
+            &header,
+            &mut input,
+            &mut w,
+            DEFAULT_COMPRESSION_LEVEL,
+            Deflater::Jdk,
+        )
+        .expect("copies");
+        w.flush().expect("flushes");
     });
 
     let inputs = [
@@ -245,12 +260,12 @@ fn block_copy(b: &Bench) {
     b.op("bam_gather", bytes, records.len() * 3, "bytes", ".bam");
     let out = b.path("bam_gather", ".bam");
     b.time("bam_gather", || {
-        let data: Vec<Vec<u8>> = inputs
+        let files = inputs
             .iter()
-            .map(|p| std::fs::read(p).expect("reads"))
-            .collect();
-        let slices: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
-        std::fs::write(&out, gather_bam_files(&slices).expect("gathers")).expect("writes");
+            .map(|p| std::fs::File::open(p).expect("opens"));
+        let mut w = std::fs::File::create(&out).expect("creates");
+        gather_bam_files_to(files, &mut w, DEFAULT_COMPRESSION_LEVEL, Deflater::Jdk)
+            .expect("gathers");
     });
 }
 

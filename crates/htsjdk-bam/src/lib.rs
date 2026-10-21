@@ -65,7 +65,9 @@ pub use header::SamHeader;
 pub use index::{parse_bai_metadata, BaiParseError, IndexStats, ReferenceMetadata};
 pub use reader::BamReader;
 pub use record::{BamRecord, DecodeError, EncodeError};
-pub use reheader::{block_copy, block_copy_with, reheader_bam, reheader_bam_with, ReheaderError};
+pub use reheader::{
+    block_copy, block_copy_with, reheader_bam, reheader_bam_to, reheader_bam_with, ReheaderError,
+};
 pub use tag::{Tag, TagValue, Tags};
 pub use writer::write_bam_header_block;
 pub use writer::BamWriter;

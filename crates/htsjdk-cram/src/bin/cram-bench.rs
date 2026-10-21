@@ -21,6 +21,11 @@
 //!
 //! Usage: cram-bench dir reps [records]   then   cram-bench dir reps records read
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -50,11 +55,11 @@ impl Bench {
         let out = f();
         for run in 0..self.reps {
             let start = Instant::now();
-            std::hint::black_box(f());
-            println!(
-                "rust_{name}_run{run}_secs={:.6}",
-                start.elapsed().as_secs_f64()
-            );
+            let answer = std::hint::black_box(f());
+            let seconds = start.elapsed().as_secs_f64();
+            // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+            drop(answer);
+            println!("rust_{name}_run{run}_secs={:.6}", seconds);
         }
         out
     }

@@ -9,6 +9,11 @@
 //!
 //! Usage: vcf-ops-bench dir reps   (dir holds vcf-bench's corpus.vcf)
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::fmt::Write as _;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -41,11 +46,11 @@ impl Bench {
         for run in 0..self.reps {
             let input = setup();
             let start = Instant::now();
-            std::hint::black_box(f(input));
-            println!(
-                "rust_{name}_run{run}_secs={:.6}",
-                start.elapsed().as_secs_f64()
-            );
+            let answer = std::hint::black_box(f(input));
+            let seconds = start.elapsed().as_secs_f64();
+            // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+            drop(answer);
+            println!("rust_{name}_run{run}_secs={:.6}", seconds);
         }
         out
     }

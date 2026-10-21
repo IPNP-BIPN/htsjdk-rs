@@ -36,6 +36,7 @@
 //! `Display` and wrote it to the file would produce something that looks close enough to read.
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 /// `Interval`. Coordinates are 1-based and closed, as htsjdk's are.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,10 +269,32 @@ impl IntervalList {
 
     /// `sorted()`: an independent list in coordinate order.
     pub fn sorted(&self) -> IntervalList {
-        let mut out = self.clone();
-        out.intervals
-            .sort_by(|a, b| compare_coordinate(&self.dictionary, a, b));
-        out
+        // `compare_coordinate`, with each contig's index looked up once rather than per comparison.
+        let mut index: HashMap<&str, i32> = HashMap::with_capacity(self.dictionary.len());
+        for (i, name) in self.dictionary.iter().enumerate() {
+            index.entry(name.as_str()).or_insert(i as i32);
+        }
+        let keys: Vec<i32> = self
+            .intervals
+            .iter()
+            .map(|i| index.get(i.contig.as_str()).copied().unwrap_or(-1))
+            .collect();
+        let mut order: Vec<usize> = (0..self.intervals.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (lhs, rhs) = (&self.intervals[a], &self.intervals[b]);
+            keys[a]
+                .cmp(&keys[b])
+                .then_with(|| lhs.start.cmp(&rhs.start))
+                .then_with(|| lhs.end.cmp(&rhs.end))
+                .then_with(|| compare_strand_then_name(lhs, rhs))
+        });
+        IntervalList {
+            dictionary: self.dictionary.clone(),
+            intervals: order
+                .into_iter()
+                .map(|i| self.intervals[i].clone())
+                .collect(),
+        }
     }
 
     /// `uniqued()`: sorted, then overlapping and abutting intervals merged.
@@ -287,28 +310,23 @@ impl IntervalList {
         let mut current: Option<Interval> = None;
         let mut names: Vec<String> = Vec::new();
 
-        for next in &sorted.intervals {
+        for next in sorted.intervals {
             match &mut current {
-                None => {
-                    current = Some(next.clone());
-                    names.clear();
-                    if let Some(n) = &next.name {
-                        names.push(n.clone());
-                    }
-                }
-                Some(cur) if cur.intersects(next) || cur.within_distance_of(next, 1) => {
+                Some(cur) if cur.intersects(&next) || cur.within_distance_of(&next, 1) => {
                     cur.end = cur.end.max(next.end);
-                    if let Some(n) = &next.name {
-                        names.push(n.clone());
+                    if let Some(n) = next.name {
+                        names.push(n);
                     }
                 }
-                Some(cur) => {
-                    out.intervals.push(finish(cur, &names, concatenate_names));
-                    current = Some(next.clone());
+                _ => {
+                    if let Some(cur) = &current {
+                        out.intervals.push(finish(cur, &names, concatenate_names));
+                    }
                     names.clear();
                     if let Some(n) = &next.name {
                         names.push(n.clone());
                     }
+                    current = Some(next);
                 }
             }
         }
@@ -399,9 +417,19 @@ impl IntervalList {
     /// codec, which is already ported; this returns the body so the two can be joined without
     /// this module depending on the header writer.
     pub fn write_body(&self) -> String {
+        use std::fmt::Write as _;
         let mut out = String::new();
         for i in &self.intervals {
-            out.push_str(&i.to_file_line());
+            // `to_file_line`, written in place rather than allocated per line.
+            let name = i.name.as_deref().unwrap_or(".");
+            let _ = write!(
+                out,
+                "{}\t{}\t{}\t{}\t{name}",
+                i.contig,
+                i.start,
+                i.end,
+                i.strand()
+            );
             // BufferedWriter.newLine() writes the *platform* line separator. On the pinned
             // linux/amd64 oracle that is "\n"; a Windows JVM would write "\r\n" and produce a
             // different file from the same list. The port writes "\n" and says so rather than

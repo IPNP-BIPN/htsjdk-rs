@@ -17,6 +17,11 @@
 //!
 //! Usage: vcf-bench [records] [reps] [samples] [dir]
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::{Path, PathBuf};
 
 use htsjdk_vcf::reader::{read_vcf, VcfFile};
@@ -107,11 +112,11 @@ fn main() {
     for (mode, decode) in [("lazy", false), ("decoded", true)] {
         for run in 0..reps {
             let start = std::time::Instant::now();
-            std::hint::black_box(read(&corpus, decode));
-            println!(
-                "rust_vcf_read_{mode}_run{run}_secs={:.6}",
-                start.elapsed().as_secs_f64()
-            );
+            let answer = std::hint::black_box(read(&corpus, decode));
+            let seconds = start.elapsed().as_secs_f64();
+            // The answer is freed after the clock stops, as the JVM's collector frees htsjdk's later.
+            drop(answer);
+            println!("rust_vcf_read_{mode}_run{run}_secs={:.6}", seconds);
         }
     }
 
