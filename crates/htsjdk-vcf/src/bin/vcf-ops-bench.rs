@@ -9,6 +9,11 @@
 //!
 //! Usage: vcf-ops-bench dir reps   (dir holds vcf-bench's corpus.vcf)
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::fmt::Write as _;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};

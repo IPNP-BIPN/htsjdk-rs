@@ -17,6 +17,11 @@
 //!
 //! Usage: vcf-bench [records] [reps] [samples] [dir]
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::path::{Path, PathBuf};
 
 use htsjdk_vcf::reader::{read_vcf, VcfFile};

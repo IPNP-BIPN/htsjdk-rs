@@ -6,7 +6,12 @@ license.workspace = true
 repository.workspace = true
 description = "Byte-level port of htsjdk's BAM record codec"
 
+[features]
+# The benches' global allocator; see the workspace manifest.
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
+mimalloc = { workspace = true, optional = true }
 htsjdk-bgzf = { path = "../htsjdk-bgzf" }
 # QualityUtil is arithmetic before it is a utility: its phred conversion goes through Math.log10
 # and Math.round, and both have a port here rather than an equivalent in std.

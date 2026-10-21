@@ -6,7 +6,12 @@ license.workspace = true
 repository.workspace = true
 description = "Port of htsjdk's VCF support"
 
+[features]
+# The benches' global allocator; see the workspace manifest.
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
+mimalloc = { workspace = true, optional = true }
 # For `Math.round`, which is a `java.lang.Math` function and belongs there rather than here.
 jmath.workspace = true
 # The writer builds a Tribble index while it writes, so the creator lives on the other side of

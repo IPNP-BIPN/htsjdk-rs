@@ -6,6 +6,11 @@
 //! bytes have one (the `bgzf` and `zlib` suites), and this program re-establishes it on the very
 //! payload it is timing rather than trusting that.
 
+/// The allocator picard-rs links, so the rows measure the library as it ships there.
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::io::Write;
 
 use htsjdk_bgzf::{decompress_all, BgzfWriter};

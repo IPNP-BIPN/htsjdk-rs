@@ -7,12 +7,15 @@ repository.workspace = true
 description = "BGZF codec matching htsjdk's BlockCompressedOutputStream byte for byte"
 
 [features]
+# The benches' global allocator; see the workspace manifest.
+mimalloc = ["dep:mimalloc"]
 # Forwards `gkl-deflate/isal`, which is what `Deflater::Gkl` needs at levels 1 and 2. Off by
 # default: it links ISA-L and therefore wants nasm or yasm at build time. Without it those two
 # levels refuse rather than answer with zlib's bytes, which is `gkl-deflate`'s own behaviour.
 gkl-igzip = ["gkl-deflate/isal"]
 
 [dependencies]
+mimalloc = { workspace = true, optional = true }
 # The deflater is a choice the FORMAT does not make: GATK replaces htsjdk's static factory with
 # Intel's GKL, so a writer that knew only the JDK's could not reproduce anything GATK writes.
 #

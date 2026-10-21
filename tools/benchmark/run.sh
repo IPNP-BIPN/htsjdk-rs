@@ -22,16 +22,17 @@ mkdir -p "$OUT"
 echo "== cross-building the port for linux/amd64"
 # One `-p` per binary, and not one build of all three: selecting binaries across the workspace
 # unifies FEATURES across it too, which pulled `gkl-deflate/isal` into a build with no assembler
-# and failed in `isal-sys`'s configure. Each package builds with the features it declares.
+# and failed in `isal-sys`'s configure. Each package builds with the features it declares, plus
+# `mimalloc`: the benches then allocate through mimalloc, the global allocator picard-rs links.
 docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
   bash -c 'set -e
-    cargo build --release -p htsjdk-bgzf --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-bam --bin record-bench --bin bam-ops-bench \
+    cargo build --release -p htsjdk-bgzf --features mimalloc --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-bam --features mimalloc --bin record-bench --bin bam-ops-bench \
       --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-vcf --bin vcf-bench --bin vcf-ops-bench \
+    cargo build --release -p htsjdk-vcf --features mimalloc --bin vcf-bench --bin vcf-ops-bench \
       --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-cram --bin cram-bench --target-dir /out/amd64 2>&1 | tail -1
-    cargo build --release -p htsjdk-metrics --bin metrics-bench --target-dir /out/amd64 2>&1 \
+    cargo build --release -p htsjdk-cram --features mimalloc --bin cram-bench --target-dir /out/amd64 2>&1 | tail -1
+    cargo build --release -p htsjdk-metrics --features mimalloc --bin metrics-bench --target-dir /out/amd64 2>&1 \
       | tail -1'
 
 echo "== htsjdk, in the pinned container"
