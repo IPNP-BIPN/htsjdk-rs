@@ -144,9 +144,41 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// A typed CHAR value that `decode_typed_value` would return as one plain string: ASCII, not
+    /// empty, not starting with a comma. Anything else leaves the cursor untouched.
+    fn plain_ascii_string(&mut self) -> Option<&'a [u8]> {
+        let start = self.cursor.clone();
+        let descriptor = self.read_type_descriptor();
+        let plain = (|| {
+            if type_for(descriptor).ok()? != Bcf2Type::Char {
+                return None;
+            }
+            let size = self.decode_number_of_elements(descriptor).ok()?;
+            if size <= 0 {
+                return None;
+            }
+            let bytes = self.cursor.slice(size as usize)?;
+            let good = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+            let bytes = &bytes[..good];
+            (good > 0 && bytes[0] != b',' && bytes.is_ascii()).then_some(bytes)
+        })();
+        if plain.is_none() {
+            self.cursor = start;
+        }
+        plain
+    }
+
     /// `decodeLiteralString`: up to the first `\0`, exploded when it starts with a comma.
     fn decode_literal_string(&mut self, size: i32) -> Typed {
-        let bytes = self.cursor.bytes(size.max(0) as usize);
+        let n = size.max(0) as usize;
+        let padded;
+        let bytes = match self.cursor.slice(n) {
+            Some(bytes) => bytes,
+            None => {
+                padded = self.cursor.bytes(n);
+                &padded
+            }
+        };
         let good = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
         if good == 0 {
             return Typed::Null;
@@ -181,7 +213,8 @@ impl<'a> Decoder<'a> {
             }
             return Ok(None);
         }
-        let mut ints = vec![first];
+        let mut ints = Vec::with_capacity(size.max(1) as usize);
+        ints.push(first);
         for i in 1..size {
             let v = self.decode_int(t)?;
             if v == t.missing_bytes() {
@@ -255,6 +288,10 @@ struct Codec {
     header_version: Option<crate::header_parse::VcfVersion>,
     contig_names: Vec<String>,
     dictionary: Vec<String>,
+    /// Per dictionary entry, whether the FORMAT-then-INFO line `getMetaDataForField` finds for it
+    /// is a Flag, or `None` where there is no such line. Worked out once per header rather than by
+    /// name for every field of every record.
+    is_flag: Vec<Option<bool>>,
     lazy_header: Arc<LazyHeader>,
     samples_sorted: bool,
     record_no: i32,
@@ -280,9 +317,37 @@ impl Codec {
     }
 
     /// `getDictionaryString()`: the offset read as an `Integer`.
-    fn read_dictionary_string(&self, d: &mut Decoder) -> Result<String, Bcf2Error> {
-        match d.decode_typed_value()? {
-            Typed::Int(offset) => Ok(self.dictionary_string(offset)?.to_string()),
+    /// [`Self::read_dictionary_offset`]'s entry, borrowed for a caller that only compares it.
+    fn read_dictionary_str(&self, d: &mut Decoder) -> Result<&str, Bcf2Error> {
+        self.read_dictionary_offset(d)
+            .map(|i| self.dictionary[i].as_str())
+    }
+
+    /// The dictionary entry a field names, as its index, with `getDictionaryString`'s refusals.
+    fn read_dictionary_offset(&self, d: &mut Decoder) -> Result<usize, Bcf2Error> {
+        let descriptor = d.read_type_descriptor();
+        let size = d.decode_number_of_elements(descriptor)?;
+        // The one shape an offset has: a single integer, read without building a `Typed`.
+        if size == 1 {
+            if let Ok(t @ (Bcf2Type::Int8 | Bcf2Type::Int16 | Bcf2Type::Int32)) =
+                type_for(descriptor)
+            {
+                let offset = d.decode_int(t)?;
+                if offset != t.missing_bytes() {
+                    return self.dictionary_string(offset).map(|_| offset as usize);
+                }
+            } else {
+                return self.dictionary_offset_of(d.decode_typed_value_sized(descriptor, size)?);
+            }
+            return self.dictionary_offset_of(Typed::Null);
+        }
+        self.dictionary_offset_of(d.decode_typed_value_sized(descriptor, size)?)
+    }
+
+    /// `getDictionaryString()` on a decoded value, with its refusals.
+    fn dictionary_offset_of(&self, value: Typed) -> Result<usize, Bcf2Error> {
+        match value {
+            Typed::Int(offset) => self.dictionary_string(offset).map(|_| offset as usize),
             Typed::Null => Err(Bcf2Error::null_pointer(
                 "Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \
                  \"htsjdk.variant.bcf2.BCF2Decoder.decodeTypedValue()\" is null",
@@ -337,6 +402,14 @@ impl Codec {
 
         let mut alleles = Vec::with_capacity(n_alleles.max(0) as usize);
         for i in 0..n_alleles {
+            // An ordinary allele, made from the block's bytes without the `String` the general
+            // path decodes it into first.
+            if let Some(bases) = d.plain_ascii_string() {
+                let allele = Allele::create(bases, i == 0)
+                    .map_err(|e| Bcf2Error::illegal_argument(e.to_string()))?;
+                alleles.push(allele);
+                continue;
+            }
             let bases = match d.decode_typed_value()? {
                 Typed::Str(s) => s,
                 Typed::Null => {
@@ -381,22 +454,28 @@ impl Codec {
         // `decodeInfo`: a `HashMap(nInfo)` and then the builder's copy.
         let mut attributes: Vec<(String, Value)> = Vec::new();
         for _ in 0..n_info {
-            let key = self.read_dictionary_string(&mut d)?;
+            let offset = self.read_dictionary_offset(&mut d)?;
+            let key = self.dictionary[offset].as_str();
             let mut value = d.decode_typed_value()?.into_value();
-            let meta = meta_data_for_field(&self.header, &self.fields, &key)?;
-            if meta.line_type == LineType::Flag {
+            let is_flag = match self.is_flag[offset] {
+                Some(is_flag) => is_flag,
+                // No line for it: the lookup's own refusal.
+                None => meta_data_for_field(&self.header, &self.fields, key)
+                    .map(|meta| meta.line_type == LineType::Flag)?,
+            };
+            if is_flag {
                 value = Value::Bool(true);
             }
             match attributes.iter_mut().find(|(k, _)| *k == key) {
                 Some(slot) => slot.1 = value,
-                None => attributes.push((key, value)),
+                None => attributes.push((key.to_string(), value)),
             }
         }
         let attributes = if attributes.is_empty() {
             attributes
         } else {
             let n = n_info.max(0) as usize;
-            super::decode::reorder(&attributes, &[Fill::PutSized(n), Fill::PutAll])
+            super::decode::reorder_owned(attributes, &[Fill::PutSized(n), Fill::PutAll])
         };
 
         // `SitesInfoForDecoding.isValid`.
@@ -474,10 +553,10 @@ impl Codec {
             .map(|s| Genotype::new(s, Vec::new()))
             .collect();
         for _ in 0..n_fields {
-            let field = self.read_dictionary_string(&mut d)?;
+            let field = self.read_dictionary_str(&mut d)?;
             let descriptor = d.read_type_descriptor();
             let n = d.decode_number_of_elements(descriptor)?;
-            match field.as_str() {
+            match field {
                 "GT" => decode_gt(&vc.alleles, &mut d, descriptor, n, &mut gbs)?,
                 "FT" => {
                     for gb in gbs.iter_mut() {
@@ -526,7 +605,7 @@ impl Codec {
                         let value = value.into_value();
                         match gb.extended.iter_mut().find(|(k, _)| *k == field) {
                             Some(slot) => slot.1 = value,
-                            None => gb.extended.push((field.clone(), value)),
+                            None => gb.extended.push((field.to_string(), value)),
                         }
                     }
                 }
@@ -722,9 +801,19 @@ fn read_header(bytes: &[u8]) -> Result<(Codec, usize), Bcf2Error> {
         samples_in_order: sample_names_in_order(&header.samples),
         id_lines: id_lines(&header.lines),
     });
+    let fields = FieldIndex::new(&header);
+    let is_flag = dictionary
+        .iter()
+        .map(|key| {
+            meta_data_for_field(&header, &fields, key)
+                .ok()
+                .map(|meta| meta.line_type == LineType::Flag)
+        })
+        .collect();
     Ok((
         Codec {
-            fields: FieldIndex::new(&header),
+            fields,
+            is_flag,
             header,
             codec_version,
             header_version,
