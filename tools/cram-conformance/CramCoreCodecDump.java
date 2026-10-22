@@ -38,7 +38,10 @@ import htsjdk.samtools.cram.encoding.core.BetaIntegerEncoding;
 import htsjdk.samtools.cram.encoding.core.GammaIntegerEncoding;
 import htsjdk.samtools.cram.encoding.core.SubexponentialIntegerEncoding;
 import htsjdk.samtools.cram.structure.CompressionHeader;
+import htsjdk.samtools.cram.structure.CompressionHeaderEncodingMap;
+import htsjdk.samtools.cram.structure.CRAMCompressionProfile;
 import htsjdk.samtools.cram.structure.CompressorCache;
+import htsjdk.samtools.cram.structure.CRAMCodecModelContext;
 import htsjdk.samtools.cram.structure.SliceBlocks;
 import htsjdk.samtools.cram.structure.SliceBlocksReadStreams;
 import htsjdk.samtools.cram.structure.SliceBlocksWriteStreams;
@@ -188,13 +191,14 @@ public class CramCoreCodecDump {
     static Result round(final CRAMEncoding<Integer> encoding, final int[] values) {
         final Result result = new Result();
         try {
-            final CompressionHeader header = new CompressionHeader();
+            final CompressionHeader header = new CompressionHeader(new CompressionHeaderEncodingMap(
+                CRAMCompressionProfile.FAST.toStrategy()));
             final SliceBlocksWriteStreams writeStreams = new SliceBlocksWriteStreams(header);
             final CRAMCodec<Integer> writer = encoding.buildCodec(null, writeStreams);
             for (final int value : values) {
                 writer.write(value);
             }
-            final SliceBlocks blocks = writeStreams.flushStreamsToBlocks();
+            final SliceBlocks blocks = writeStreams.flushStreamsToBlocks(new CRAMCodecModelContext());
             result.hex = hex(blocks.getCoreBlock().getRawContent());
 
             final SliceBlocksReadStreams readStreams =

@@ -46,7 +46,10 @@ import htsjdk.samtools.cram.encoding.core.experimental.GolombIntegerEncoding;
 import htsjdk.samtools.cram.encoding.core.experimental.GolombLongEncoding;
 import htsjdk.samtools.cram.encoding.core.experimental.GolombRiceIntegerEncoding;
 import htsjdk.samtools.cram.structure.CompressionHeader;
+import htsjdk.samtools.cram.structure.CompressionHeaderEncodingMap;
+import htsjdk.samtools.cram.structure.CRAMCompressionProfile;
 import htsjdk.samtools.cram.structure.CompressorCache;
+import htsjdk.samtools.cram.structure.CRAMCodecModelContext;
 import htsjdk.samtools.cram.structure.SliceBlocks;
 import htsjdk.samtools.cram.structure.SliceBlocksReadStreams;
 import htsjdk.samtools.cram.structure.SliceBlocksWriteStreams;
@@ -261,7 +264,8 @@ public class CramGolombDump {
     }
 
     static SliceBlocksWriteStreams writeStreams() {
-        return new SliceBlocksWriteStreams(new CompressionHeader());
+        return new SliceBlocksWriteStreams(new CompressionHeader(new CompressionHeaderEncodingMap(
+                CRAMCompressionProfile.FAST.toStrategy())));
     }
 
     /** Write the values through the codec, take the raw core block, and read them back. */
@@ -273,7 +277,7 @@ public class CramGolombDump {
             for (final T value : values) {
                 writer.write(value);
             }
-            final SliceBlocks blocks = streams.flushStreamsToBlocks();
+            final SliceBlocks blocks = streams.flushStreamsToBlocks(new CRAMCodecModelContext());
             result.hex = hex(blocks.getCoreBlock().getRawContent());
 
             final SliceBlocksReadStreams readStreams =

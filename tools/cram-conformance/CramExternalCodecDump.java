@@ -49,12 +49,16 @@ import htsjdk.samtools.cram.encoding.external.ExternalByteEncoding;
 import htsjdk.samtools.cram.encoding.external.ExternalIntegerEncoding;
 import htsjdk.samtools.cram.encoding.external.ExternalLongEncoding;
 import htsjdk.samtools.cram.structure.CompressionHeader;
+import htsjdk.samtools.cram.structure.CompressionHeaderEncodingMap;
+import htsjdk.samtools.cram.structure.CRAMCompressionProfile;
 import htsjdk.samtools.cram.structure.CompressorCache;
+import htsjdk.samtools.cram.structure.CRAMCodecModelContext;
 import htsjdk.samtools.cram.structure.SliceBlocks;
 import htsjdk.samtools.cram.structure.block.Block;
 import htsjdk.samtools.cram.structure.SliceBlocksReadStreams;
 import htsjdk.samtools.cram.structure.SliceBlocksWriteStreams;
 
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -68,78 +72,78 @@ public class CramExternalCodecDump {
         methods();
 
         // Integer: ITF8 onto the block, at every width it has.
-        extInt(1, new int[] {0, 1, 127});
-        extInt(1, new int[] {128, 16383});
-        extInt(1, new int[] {16384, 2097151});
-        extInt(1, new int[] {2097152, 268435455});
-        extInt(1, new int[] {268435456, Integer.MAX_VALUE});
-        extInt(1, new int[] {-1, -2, Integer.MIN_VALUE});
-        extInt(7, new int[] {1, 2, 3});
+        extInt(11, new int[] {0, 1, 127});
+        extInt(11, new int[] {128, 16383});
+        extInt(11, new int[] {16384, 2097151});
+        extInt(11, new int[] {2097152, 268435455});
+        extInt(11, new int[] {268435456, Integer.MAX_VALUE});
+        extInt(11, new int[] {-1, -2, Integer.MIN_VALUE});
+        extInt(17, new int[] {1, 2, 3});
 
         // Long: LTF8, which has three more widths than ITF8.
-        extLong(1, new long[] {0L, 1L, 127L});
-        extLong(1, new long[] {128L, 4294967295L});
-        extLong(1, new long[] {4294967296L, Long.MAX_VALUE});
-        extLong(1, new long[] {-1L, Long.MIN_VALUE});
+        extLong(11, new long[] {0L, 1L, 127L});
+        extLong(11, new long[] {128L, 4294967295L});
+        extLong(11, new long[] {4294967296L, Long.MAX_VALUE});
+        extLong(11, new long[] {-1L, Long.MIN_VALUE});
 
         // Byte: one byte per value, and no way to see the end of the block.
-        extByte(1, new byte[] {0, 1, 127});
-        extByte(1, new byte[] {(byte) 0x80, (byte) 0xff});
-        extByte(1, new byte[] {'A'});
+        extByte(11, new byte[] {0, 1, 127});
+        extByte(11, new byte[] {(byte) 0x80, (byte) 0xff});
+        extByte(11, new byte[] {'A'});
 
         // Byte array: no length of its own, so the caller supplies one.
-        extBytes(1, new byte[][] {{1, 2, 3}, {4, 5}});
-        extBytes(1, new byte[][] {{}, {'A'}});
-        extBytes(1, new byte[][] {{(byte) 0xff, 0x00}});
+        extBytes(11, new byte[][] {{1, 2, 3}, {4, 5}});
+        extBytes(11, new byte[][] {{}, {'A'}});
+        extBytes(11, new byte[][] {{(byte) 0xff, 0x00}});
 
         // Byte array stop: a separator that the data is trusted not to contain.
-        stop(1, (byte) 0x00, new byte[][] {{1, 2, 3}, {4, 5}});
-        stop(1, (byte) 0x00, new byte[][] {{}, {}});
-        stop(1, (byte) 0x00, new byte[][] {{'A', 'B'}, {}, {'C'}});
-        stop(1, (byte) 0x09, new byte[][] {{'A', 'B'}, {'C'}});
-        stop(1, (byte) 0xff, new byte[][] {{1, 2}, {3}});
+        stop(11, (byte) 0x00, new byte[][] {{1, 2, 3}, {4, 5}});
+        stop(11, (byte) 0x00, new byte[][] {{}, {}});
+        stop(11, (byte) 0x00, new byte[][] {{'A', 'B'}, {}, {'C'}});
+        stop(11, (byte) 0x09, new byte[][] {{'A', 'B'}, {'C'}});
+        stop(11, (byte) 0xff, new byte[][] {{1, 2}, {3}});
         // The stop byte inside the data, which nothing reports.
-        stop(1, (byte) 0x00, new byte[][] {{1, 0, 2}});
-        stop(1, (byte) 0x09, new byte[][] {{'A', 0x09, 'B'}, {'C'}});
+        stop(11, (byte) 0x00, new byte[][] {{1, 0, 2}});
+        stop(11, (byte) 0x09, new byte[][] {{'A', 0x09, 'B'}, {'C'}});
 
         // Byte array len: two encodings, and they need not share a block or even a kind of block.
-        len("ext-int:1", "ext-bytes:2", new ExternalIntegerEncoding(1),
-                new ExternalByteArrayEncoding(2), new byte[][] {{1, 2, 3}, {4, 5}});
-        len("ext-int:1", "ext-bytes:1", new ExternalIntegerEncoding(1),
-                new ExternalByteArrayEncoding(1), new byte[][] {{1, 2, 3}, {4, 5}});
-        len("ext-int:1", "ext-bytes:2", new ExternalIntegerEncoding(1),
-                new ExternalByteArrayEncoding(2), new byte[][] {{}, {'A'}});
-        len("huffman:2,3", "ext-bytes:1",
+        len("ext-int:11", "ext-bytes:12", new ExternalIntegerEncoding(11),
+                new ExternalByteArrayEncoding(12), new byte[][] {{1, 2, 3}, {4, 5}});
+        len("ext-int:11", "ext-bytes:11", new ExternalIntegerEncoding(11),
+                new ExternalByteArrayEncoding(11), new byte[][] {{1, 2, 3}, {4, 5}});
+        len("ext-int:11", "ext-bytes:12", new ExternalIntegerEncoding(11),
+                new ExternalByteArrayEncoding(12), new byte[][] {{}, {'A'}});
+        len("huffman:2,3", "ext-bytes:11",
                 new CanonicalHuffmanIntegerEncoding(new int[] {2, 3}, new int[] {1, 1}),
-                new ExternalByteArrayEncoding(1), new byte[][] {{1, 2}, {3, 4, 5}});
-        len("huffman:3", "ext-bytes:1",
+                new ExternalByteArrayEncoding(11), new byte[][] {{1, 2}, {3, 4, 5}});
+        len("huffman:3", "ext-bytes:11",
                 new CanonicalHuffmanIntegerEncoding(new int[] {3}, new int[] {0}),
-                new ExternalByteArrayEncoding(1), new byte[][] {{1, 2, 3}, {4, 5, 6}});
-        len("ext-int:1", "stop:0/2", new ExternalIntegerEncoding(1),
-                new ByteArrayStopEncoding((byte) 0x00, 2), new byte[][] {{1, 2}, {3}});
+                new ExternalByteArrayEncoding(11), new byte[][] {{1, 2, 3}, {4, 5, 6}});
+        len("ext-int:11", "stop:0/12", new ExternalIntegerEncoding(11),
+                new ByteArrayStopEncoding((byte) 0x00, 12), new byte[][] {{1, 2}, {3}});
 
         // The encoding parameters, and what they carry back.
-        serExt("ext-int", "id=1", new ExternalIntegerEncoding(1),
+        serExt("ext-int", "id=11", new ExternalIntegerEncoding(11),
                 params -> ExternalIntegerEncoding.fromSerializedEncodingParams(params));
         serExt("ext-int", "id=128", new ExternalIntegerEncoding(128),
                 params -> ExternalIntegerEncoding.fromSerializedEncodingParams(params));
-        serExt("ext-byte", "id=2", new ExternalByteEncoding(2),
+        serExt("ext-byte", "id=12", new ExternalByteEncoding(12),
                 params -> ExternalByteEncoding.fromSerializedEncodingParams(params));
-        serExt("ext-long", "id=3", new ExternalLongEncoding(3),
+        serExt("ext-long", "id=13", new ExternalLongEncoding(13),
                 params -> ExternalLongEncoding.fromSerializedEncodingParams(params));
-        serExt("ext-bytes", "id=4", new ExternalByteArrayEncoding(4),
+        serExt("ext-bytes", "id=14", new ExternalByteArrayEncoding(14),
                 params -> ExternalByteArrayEncoding.fromSerializedEncodingParams(params));
-        serStop((byte) 0x00, 1);
+        serStop((byte) 0x00, 11);
         serStop((byte) 0xff, 300);
-        serLen("ext-int:1", "ext-bytes:2",
-                new ByteArrayLenEncoding(new ExternalIntegerEncoding(1),
-                        new ExternalByteArrayEncoding(2)));
+        serLen("ext-int:11", "ext-bytes:12",
+                new ByteArrayLenEncoding(new ExternalIntegerEncoding(11),
+                        new ExternalByteArrayEncoding(12)));
 
         // What each refuses, and the one that does not refuse when it might.
         errBytesUnknownLength();
-        errReadLength("ext-int", new ExternalIntegerEncoding(1));
-        errReadLength("ext-byte", new ExternalByteEncoding(1));
-        errReadLength("ext-long", new ExternalLongEncoding(1));
+        errReadLength("ext-int", new ExternalIntegerEncoding(11));
+        errReadLength("ext-byte", new ExternalByteEncoding(11));
+        errReadLength("ext-long", new ExternalLongEncoding(11));
         errStopReadLength();
         errLenReadLength();
         errBytesPastEnd();
@@ -263,7 +267,7 @@ public class CramExternalCodecDump {
     /** The byte array codec has no length of its own, so its no-argument read refuses. */
     static void errBytesUnknownLength() {
         try {
-            final ExternalByteArrayEncoding encoding = new ExternalByteArrayEncoding(1);
+            final ExternalByteArrayEncoding encoding = new ExternalByteArrayEncoding(11);
             final SliceBlocks blocks = write(encoding, Arrays.asList(new byte[] {1, 2}));
             final CRAMCodec<byte[]> reader = encoding.buildCodec(readStreams(blocks), null);
             System.out.printf("err\tbytes-unknown-length\tblock=0102\t-\t%s%n", hex(reader.read()));
@@ -284,18 +288,18 @@ public class CramExternalCodecDump {
     }
 
     static void errStopReadLength() {
-        errReadLength("stop", new ByteArrayStopEncoding((byte) 0x00, 1));
+        errReadLength("stop", new ByteArrayStopEncoding((byte) 0x00, 11));
     }
 
     static void errLenReadLength() {
-        errReadLength("len", new ByteArrayLenEncoding(new ExternalIntegerEncoding(1),
-                new ExternalByteArrayEncoding(2)));
+        errReadLength("len", new ByteArrayLenEncoding(new ExternalIntegerEncoding(11),
+                new ExternalByteArrayEncoding(12)));
     }
 
     /** More bytes asked for than the block holds. */
     static void errBytesPastEnd() {
         try {
-            final ExternalByteArrayEncoding encoding = new ExternalByteArrayEncoding(1);
+            final ExternalByteArrayEncoding encoding = new ExternalByteArrayEncoding(11);
             final SliceBlocks blocks = write(encoding, Arrays.asList(new byte[] {1, 2}));
             final CRAMCodec<byte[]> reader = encoding.buildCodec(readStreams(blocks), null);
             System.out.printf("err\tbytes-past-end\tblock=0102 length=4\t-\t%s%n",
@@ -310,7 +314,7 @@ public class CramExternalCodecDump {
     /** A byte read past the end of the block, which is not an error at all. */
     static void errBytePastEnd() {
         try {
-            final ExternalByteEncoding encoding = new ExternalByteEncoding(1);
+            final ExternalByteEncoding encoding = new ExternalByteEncoding(11);
             final SliceBlocks blocks = write(encoding, Arrays.asList((byte) 0x41));
             final CRAMCodec<Byte> reader = encoding.buildCodec(readStreams(blocks), null);
             reader.read();
@@ -324,8 +328,8 @@ public class CramExternalCodecDump {
     /** A stopped array whose block ends before a stop byte does. */
     static void errStopPastEnd() {
         try {
-            final ByteArrayStopEncoding encoding = new ByteArrayStopEncoding((byte) 0x00, 1);
-            final SliceBlocks blocks = write(new ExternalByteArrayEncoding(1),
+            final ByteArrayStopEncoding encoding = new ByteArrayStopEncoding((byte) 0x00, 11);
+            final SliceBlocks blocks = write(new ExternalByteArrayEncoding(11),
                     Arrays.asList(new byte[] {'A', 'B'}));
             final CRAMCodec<byte[]> reader = encoding.buildCodec(readStreams(blocks), null);
             final String first = hex(reader.read());
@@ -346,8 +350,14 @@ public class CramExternalCodecDump {
         return boxed;
     }
 
+    /**
+     * htsjdk 5.0.0's default header compresses RN with the name tokeniser, which refuses the empty
+     * stream every codec here leaves it; FAST compresses everything with GZIP, and a row records
+     * content after its compression is undone, so the choice changes no row.
+     */
     static SliceBlocksWriteStreams writeStreams() {
-        return new SliceBlocksWriteStreams(new CompressionHeader());
+        return new SliceBlocksWriteStreams(new CompressionHeader(new CompressionHeaderEncodingMap(
+                CRAMCompressionProfile.FAST.toStrategy())));
     }
 
     static SliceBlocksReadStreams readStreams(final SliceBlocks blocks) {
@@ -360,7 +370,7 @@ public class CramExternalCodecDump {
         for (final T value : values) {
             writer.write(value);
         }
-        return streams.flushStreamsToBlocks();
+        return streams.flushStreamsToBlocks(new CRAMCodecModelContext());
     }
 
     /** The blocks a write actually put bytes in, core first and then the externals in id order.
@@ -389,14 +399,28 @@ public class CramExternalCodecDump {
         return joiner.length() == 0 ? "-" : joiner.toString();
     }
 
-    /** The compressor the default compression header picks for each external block. */
+    /**
+     * The compressor the default compression header picks for each external block, after one ITF8
+     * on the first content id and nothing on the others. An id whose compressor refuses its
+     * content (the name tokeniser, given bytes that are not a name list) is recorded as the
+     * exception.
+     */
     static void methods() {
-        final SliceBlocks blocks = write(new ExternalIntegerEncoding(1), boxInts(new int[] {1}));
-        final List<Integer> ids = new ArrayList<>(blocks.getExternalContentIDs());
+        final CompressionHeaderEncodingMap map = new CompressionHeader().getEncodingMap();
+        final List<Integer> ids = new ArrayList<>(map.getExternalIDs());
         ids.sort(null);
         final StringJoiner joiner = new StringJoiner(";");
         for (final Integer id : ids) {
-            joiner.add(id + "=" + blocks.getExternalBlock(id).getCompressionMethod());
+            final ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            if (id.equals(ids.get(0))) {
+                stream.write(1);
+            }
+            try {
+                joiner.add(id + "=" + map.createCompressedBlockForStream(
+                        new CRAMCodecModelContext(), id, stream).getCompressionMethod());
+            } catch (final RuntimeException e) {
+                joiner.add(id + "=!" + e.getClass().getSimpleName());
+            }
         }
         System.out.printf("methods\t%s%n", joiner);
     }
