@@ -887,6 +887,8 @@ impl Bcf2Writer {
         if let Some(data) = self.lazy_data(vc) {
             return Ok(data.bytes.to_vec());
         }
+        // The block cannot be copied, so the genotypes are reached: a deferred one is parsed here.
+        vc.genotypes.try_peek()?;
         let fields = vc.calc_vcf_genotype_keys(!self.header.samples.is_empty());
         for field in &fields {
             let Some(mut writer) = self.genotypes_writers.remove(field) else {

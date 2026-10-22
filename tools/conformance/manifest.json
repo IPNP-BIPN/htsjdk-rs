@@ -646,6 +646,30 @@
       ]
     },
     {
+      "id": "vcf-deferred-genotypes",
+      "title": "When, and with whose line, a deferred genotype block is refused",
+      "status": "golden-pending",
+      "harness": "tools/vcf-conformance",
+      "why": "Decision 0048. VCFCodec parses a line's genotype columns on first access, and createGenotypeMap then runs with the codec as it stands, not as it stood when the line was read: lineNo is the counter after the line the codec read last, and parts, which the 'too many keys' message quotes for both its keys and its values, is that line's split. VCFFileReader's iterator reads one record ahead, so a tool touching record N as it is handed out is told N+1's line number and shown N+1's columns, a tool that collected every record first is told the last line's, and only a caller driving VCFCodec itself gets the record's own. The count check names the record's own contig and position with the codec's line number; the allele-index refusals are InternalCodecException and carry no line. size() and isEmpty() never parse and answer the header's sample count. A record nothing looks at is never parsed, so a malformed file copied through is written verbatim and the write succeeds, which is what Picard's SortVcf and MergeVcfs do with it. A file whose samples are not sorted is decoded at the read anyway, and that refusal, raised inside the reader, gets the reader's ', for input source:' suffix that a late one never does.",
+      "expect_rows": 38,
+      "expect_contains": [
+        "access\tstream\t1\tthrow\thtsjdk.tribble.TribbleException\tThe provided VCF file is malformed at approximately line number 10:",
+        "access\twhole\t1\tthrow\thtsjdk.tribble.TribbleException\tThe provided VCF file is malformed at approximately line number 13:",
+        "access\tcodec\t1\tthrow\thtsjdk.tribble.TribbleException\tThe provided VCF file is malformed at approximately line number 9:",
+        "write\tcopy\tok\t",
+        "read\tunsorted\tthrow\t"
+      ],
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "VcfDeferredGenotypesDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "vcf-read",
       "status": "oracle-backed",
       "title": "Reading a whole VCF file",

@@ -41,7 +41,9 @@
 //! decode results without checking loses records with nothing to show for it, which is why
 //! [`VcfFile::skipped`] is a field rather than a filter.
 
-use crate::genotype_parse::{parse_genotypes, GenotypeContext};
+use crate::genotype_parse::{
+    parse_genotypes, DeferredVcfGenotypes, GenotypeContext, VcfGenotypeSource,
+};
 use crate::genotypes_context::GenotypesContext;
 use crate::header::{HeaderLine, VcfHeader};
 use crate::header_lines::{parse_meta_line, HeaderLineError};
@@ -228,6 +230,27 @@ fn equality_key(line: &HeaderLine) -> (String, String, String) {
 /// upstream and the deferral is observable in *when* a failure appears, not in what the record
 /// holds, so a reader that decodes eagerly answers the same questions in a different order.
 pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
+    read_vcf_with(text, GenotypeParsing::Eager)
+}
+
+/// When a reader parses the genotype columns (decision 0048).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GenotypeParsing {
+    /// At the read: a malformed genotype is refused there, and no accessor can fail.
+    #[default]
+    Eager,
+    /// On first access, as `LazyGenotypesContext`: a record nothing looks at is never parsed, and
+    /// a malformed one is refused by [`GenotypesContext::try_get`] when something does. A file
+    /// whose samples are not sorted is parsed at the read anyway, as `parseVCFLine` does.
+    Deferred,
+}
+
+/// [`read_vcf`], with the genotype columns parsed as `parsing` says.
+///
+/// Deferred, the whole file is read before anything can look, so a parse names the counter and the
+/// columns of the file's last record: what htsjdk's codec holds once a `VCFFileReader` has been
+/// iterated to the end.
+pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, ReadFailure> {
     let established = match establish_header(text) {
         Ok(established) => established,
         Err(error) => {
@@ -260,6 +283,9 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
         crate::genotype_type::compare_sample_names(&pair[0], &pair[1])
             != std::cmp::Ordering::Greater
     });
+    let source = (parsing == GenotypeParsing::Deferred && samples_were_already_sorted)
+        .then(|| VcfGenotypeSource::new(header.clone(), codec_version));
+    let mut last = None;
     for line in text.lines().skip(line_number) {
         let decoded = match decode_line(line, &header, line_number, codec_version) {
             Ok(Some(decoded)) => decoded,
@@ -280,35 +306,53 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
         line_number += 1;
 
         let mut variant = decoded.variant;
-        if let Some(block) = decoded.genotype_block {
-            let context = GenotypeContext {
-                line,
-                header: &header,
-                version: codec_version,
-                contig: &variant.contig,
-                pos: variant.start,
-                line_number,
-            };
-            match parse_genotypes(&block, &variant.alleles, &context) {
-                // The parsed genotypes AND the text they came from: an untouched record is
-                // written from the text, which is `LazyGenotypesContext` (#222). Parsing here
-                // rather than on first access keeps the refusal a malformed genotype produces at
-                // the read, where every caller of this function already expects it.
-                Ok(genotypes) => {
-                    variant.genotypes = GenotypesContext::lazy(genotypes, block, samples.clone());
-                    if !samples_were_already_sorted {
-                        variant.genotypes.decode();
+        last = Some((line_number, line));
+        match (decoded.genotype_block, &source) {
+            (None, _) => {}
+            // Parsed when something first looks (decision 0048).
+            (Some(block), Some(source)) => {
+                let parser = DeferredVcfGenotypes::new(
+                    source,
+                    variant.alleles.clone(),
+                    &variant.contig,
+                    variant.start,
+                );
+                variant.genotypes = GenotypesContext::deferred_vcf(block, samples.clone(), parser);
+            }
+            (Some(block), None) => {
+                let context = GenotypeContext {
+                    line,
+                    header: &header,
+                    version: codec_version,
+                    contig: &variant.contig,
+                    pos: variant.start,
+                    line_number,
+                };
+                match parse_genotypes(&block, &variant.alleles, &context) {
+                    // The parsed genotypes AND the text they came from: an untouched record is
+                    // written from the text, which is `LazyGenotypesContext` (#222). Parsing here
+                    // rather than on first access keeps the refusal a malformed genotype produces at
+                    // the read, where every caller of this function already expects it.
+                    Ok(genotypes) => {
+                        variant.genotypes =
+                            GenotypesContext::lazy(genotypes, block, samples.clone());
+                        if !samples_were_already_sorted {
+                            variant.genotypes.decode();
+                        }
                     }
-                }
-                Err(error) => {
-                    return Err(ReadFailure {
-                        error: ReadError::Record(error),
-                        records,
-                    })
+                    Err(error) => {
+                        return Err(ReadFailure {
+                            error: ReadError::Record(error),
+                            records,
+                        })
+                    }
                 }
             }
         }
         records.push(variant);
+    }
+    if let (Some(source), Some((line_number, line))) = (&source, last) {
+        source.advance(line_number, line);
     }
 
     Ok(VcfFile {
