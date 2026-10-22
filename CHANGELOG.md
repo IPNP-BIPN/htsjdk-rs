@@ -22,6 +22,10 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 - **A CRAM template length is htslib's**, the span of both ends: a pair at 100 and 200 with
   50-base reads is 150, not 101. `record_flags::template_length` is the shared rule.
 - `ByteArrayStopCodec::read` returns a `Result`.
+- **`gkl-deflate` is 15% faster, same bytes**: 88 to 101 MB/s per core at level 5 on BAM records
+  (Apple M-series). The CRC32C hash is the CPU's instruction where it has one (Arm `crc`, x86
+  SSE4.2), and `longest_match` makes its rejections as 16-bit compares on a borrowed window, as
+  zlib's `UNALIGNED_OK` does.
 
 ### Fixed
 
