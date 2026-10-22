@@ -8,6 +8,30 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
+The reference is htsjdk 5.0.0 (decision 0047). The oracle moved first and 18 of 87 suites moved
+with it; each difference is ported and its golden re-frozen from the x86-64 runner.
+
+### Changed
+
+- **The oracle is htsjdk 5.0.0**, with its runtime dependencies pinned by sha256 and libdeflate
+  off image-wide, so every suite runs against 5.0.0 (#271).
+- **CRAM data series are on htslib's content ids**, 11 to 46, where 4.2.0 numbered them 1 to 32.
+- **A tag's compressor is a trial of GZIP against rANS Nx16 order 0**, the strictly smaller
+  winning, and every `Z` tag is tab-stopped. `negotiation::trial_choice` replaces
+  `best_compressor`, and `Compressor::Rans` is `Compressor::RansNx16`.
+- **A CRAM template length is htslib's**, the span of both ends: a pair at 100 and 200 with
+  50-base reads is 150, not 101. `record_flags::template_length` is the shared rule.
+- `ByteArrayStopCodec::read` returns a `Result`.
+
+### Fixed
+
+- **An unterminated string tag is refused as 5.0.0 refuses it**:
+  `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
+  ran off the buffer with a bare `BufferUnderflowException`.
+- **Reading past the end of an external block is `IllegalStateException`** naming the bytes
+  asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
+  naming it, where 4.2.0 returned what it had.
+
 ## [0.4.0] - 2026-10-22
 
 Speed, measured against htsjdk itself. A benchmark now times 44 operations against htsjdk 4.2.0,

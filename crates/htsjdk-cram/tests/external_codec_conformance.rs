@@ -208,7 +208,11 @@ fn the_stop_codec_splits_on_the_data_the_way_the_reference_does() {
         let mut reader = SliceReadStreams::new(&written);
         let read: Vec<String> = values
             .iter()
-            .map(|_| hex(&codec.read(&mut reader)))
+            .map(|_| {
+                hex(&codec
+                    .read(&mut reader)
+                    .expect("a stop byte ends each value"))
+            })
             .collect();
         assert_eq!(read.join(","), back, "stop {stop} {id} read back");
 
@@ -305,8 +309,8 @@ fn the_encoding_parameters_are_the_reference_bytes() {
             }
             "stop" => serialize_stop_params(number(params, "stop") as u8, number(params, "id")),
             "len" => serialize_byte_array_len_params(
-                (EncodingId::External, &serialize_external_params(1)),
-                (EncodingId::External, &serialize_external_params(2)),
+                (EncodingId::External, &serialize_external_params(11)),
+                (EncodingId::External, &serialize_external_params(12)),
             ),
             other => panic!("{other}"),
         };
@@ -325,7 +329,7 @@ fn number(params: &str, name: &str) -> i32 {
         .unwrap_or_else(|| panic!("{name} in {params}"))
 }
 
-/// Everything these codecs refuse, and the two places they do not refuse when they might.
+/// Everything these codecs refuse, and the one place they do not refuse when they might.
 #[test]
 fn the_failures_are_the_reference_failures() {
     let corpus = corpus();
@@ -341,19 +345,19 @@ fn the_failures_are_the_reference_failures() {
             .unwrap_or_default();
         let blocks = SliceBlockBytes {
             core: Vec::new(),
-            external: [(1, block)].into_iter().collect(),
+            external: [(11, block)].into_iter().collect(),
         };
         let mut reader = SliceReadStreams::new(&blocks);
         match what {
             "bytes-unknown-length" => {
-                let error = ExternalByteArrayCodec::new(1)
+                let error = ExternalByteArrayCodec::new(11)
                     .read(&mut reader)
                     .expect_err("refused");
                 assert_eq!(error.java_exception(), class);
                 assert_eq!(error.message(), message);
             }
             "bytes-past-end" => {
-                let error = ExternalByteArrayCodec::new(1)
+                let error = ExternalByteArrayCodec::new(11)
                     .read_with_length(&mut reader, 4)
                     .expect_err("refused");
                 assert_eq!(error.java_exception(), class);
@@ -361,7 +365,7 @@ fn the_failures_are_the_reference_failures() {
             }
             "len-read" => {
                 let codec =
-                    ByteArrayLenCodec::new(length_codec("ext-int:1"), bytes_codec("stop:0/2"));
+                    ByteArrayLenCodec::new(length_codec("ext-int:11"), bytes_codec("stop:0/12"));
                 let mut streams = SliceWriteStreams::new();
                 codec.write(&mut streams, &[1, 2]).expect("written");
                 let written = streams.finish();
@@ -371,20 +375,20 @@ fn the_failures_are_the_reference_failures() {
                 assert_eq!(error.java_exception(), class);
                 assert_eq!(error.message(), message);
             }
-            // The two that return rather than refuse. The dump's class column is `-` for them,
-            // and the message column carries what came back instead.
+            // The one that returns rather than refuses: a byte past the end is -1. The dump's
+            // class column is `-` for it, and the message column carries what came back.
             "byte-past-end" => {
-                let codec = ExternalByteCodec::new(1);
+                let codec = ExternalByteCodec::new(11);
                 codec.read(&mut reader);
                 assert_eq!(class, "-");
                 assert_eq!(codec.read(&mut reader).to_string(), message);
             }
             "stop-past-end" => {
-                let codec = ByteArrayStopCodec::new(0, 1);
-                let first = hex(&codec.read(&mut reader));
-                let second = hex(&codec.read(&mut reader));
-                assert_eq!(class, "-");
-                assert_eq!(format!("{first} then {second}"), message);
+                let error = ByteArrayStopCodec::new(0, 11)
+                    .read(&mut reader)
+                    .expect_err("refused");
+                assert_eq!(error.java_exception(), class);
+                assert_eq!(error.message(), message);
             }
             // `read(length)` is the array codecs' method; the port gives it only to the codecs
             // that have one, so there is nothing to call on the rest.
@@ -405,14 +409,18 @@ fn the_failures_are_the_reference_failures() {
 
 /// The compressor each external block gets is the compression header's choice, not the codec's.
 /// Nothing here is ported; the row is kept so the suite notices if the reference changes its mind.
+/// Under htsjdk 5.0.0 it is CRAM 3.1's NORMAL profile, whose name tokeniser refuses bytes that are
+/// not a list of names.
 #[test]
 fn the_block_compressors_are_recorded_but_not_ported() {
     let corpus = corpus();
     let methods = rows(&corpus, "methods");
     assert_eq!(methods.len(), 1);
     let methods = methods[0][0];
-    assert!(methods.contains("1=RANS"), "{methods}");
-    assert!(methods.contains("7=GZIP"), "{methods}");
+    assert!(methods.starts_with("11=!CRAMException;"), "{methods}");
+    assert!(methods.contains("12=FQZCOMP"), "{methods}");
+    assert!(methods.contains("15=RANSNx16"), "{methods}");
+    assert!(methods.contains("13=GZIP"), "{methods}");
     assert!(
         !methods.contains("=RAW"),
         "no external block is left raw: {methods}"

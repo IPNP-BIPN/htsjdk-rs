@@ -43,11 +43,10 @@
  */
 
 import htsjdk.samtools.cram.compression.CompressionUtils;
-import htsjdk.samtools.cram.compression.rans.ArithmeticDecoder;
 import htsjdk.samtools.cram.compression.rans.RANSParams;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Decode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Encode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Params;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Decode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Encode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Params;
 
 import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
@@ -150,10 +149,8 @@ public class CramRansOrder1Dump {
     static void emit(final String label, final byte[] input) throws Exception {
         System.out.printf("in\t%s\t%d\t%s%n", label, input.length, sha256(input));
 
-        final ByteBuffer compressed = new RANS4x8Encode()
-                .compress(CompressionUtils.wrap(input), new RANS4x8Params(RANSParams.ORDER.ONE));
-        final byte[] out = new byte[compressed.remaining()];
-        compressed.duplicate().get(out);
+        final byte[] out =
+                new RANS4x8Encode().compress(input, new RANS4x8Params(RANSParams.ORDER.ONE));
 
         System.out.printf("enc\t%s\t%d\t%s%n", label, out.length, sha256(out));
         if (out.length > 0 && out.length <= MAX_INLINE_BYTES) {
@@ -213,12 +210,9 @@ public class CramRansOrder1Dump {
         }
         System.out.printf("normdigest\t%s\t%d\t%s%n", label, contexts, digestOf(normalised));
 
-        final ByteBuffer table = CompressionUtils.allocateByteBuffer(NUMBER_OF_SYMBOLS
-                * (NUMBER_OF_SYMBOLS * 3 + 3) + 1);
+        final byte[] table = new byte[NUMBER_OF_SYMBOLS * (NUMBER_OF_SYMBOLS * 3 + 3) + 1];
         final int tableSize = writeFrequenciesOrder1(table, deepCopy(normalised));
-        final byte[] tableBytes = new byte[tableSize];
-        table.rewind();
-        table.get(tableBytes);
+        final byte[] tableBytes = Arrays.copyOf(table, tableSize);
         System.out.printf("freqtab\t%s\t%d\t%s%n", label, tableSize,
                 tableSize <= MAX_INLINE_BYTES ? hex(tableBytes) : sha256(tableBytes));
 
@@ -228,49 +222,44 @@ public class CramRansOrder1Dump {
                 0xFFFFFFFFL & blob.getInt(), 0xFFFFFFFFL & blob.getInt(),
                 0xFFFFFFFFL & blob.getInt(), 0xFFFFFFFFL & blob.getInt());
 
-        final ByteBuffer back = new RANS4x8Decode().uncompress(CompressionUtils.wrap(out));
-        final byte[] decoded = new byte[back.remaining()];
-        back.get(decoded);
+        final byte[] decoded = new RANS4x8Decode().uncompress(out);
         System.out.printf("roundtrip\t%s\t%s%n", label,
                 Arrays.equals(decoded, input) ? "ok" : "MISMATCH");
     }
 
     /** What the reader makes of a frequency table the writer would never produce. */
     static void emitZeroFrequency(final byte[] handBuiltTable) throws Exception {
+        // 5.0.0's decoder is ready at construction; the tables live in RANSDecode's arrays.
         final RANS4x8Decode decode = new RANS4x8Decode();
-        final Method initialize =
-                Class.forName("htsjdk.samtools.cram.compression.rans.RANSDecode")
-                        .getDeclaredMethod("initializeRANSDecoder");
-        initialize.setAccessible(true);
-        initialize.invoke(decode);
-
-        final Method readStats =
-                RANS4x8Decode.class.getDeclaredMethod("readStatsOrder1", ByteBuffer.class);
+        final Method readStats = RANS4x8Decode.class
+                .getDeclaredMethod("readStatsOrder1", byte[].class, int[].class);
         readStats.setAccessible(true);
-        readStats.invoke(decode, CompressionUtils.wrap(handBuiltTable));
+        readStats.invoke(decode, handBuiltTable, new int[] {0});
 
-        final Method getD = Class.forName("htsjdk.samtools.cram.compression.rans.RANSDecode")
-                .getDeclaredMethod("getD");
-        getD.setAccessible(true);
-        final ArithmeticDecoder[] decoders = (ArithmeticDecoder[]) getD.invoke(decode);
-        System.out.printf("zerofreq\t%d\t%d\t%d%n", 0, 0x41, decoders[0].frequencies[0x41]);
+        final Method getFrequencies = Class.forName("htsjdk.samtools.cram.compression.rans.RANSDecode")
+                .getDeclaredMethod("getFrequencies");
+        getFrequencies.setAccessible(true);
+        final int[][] frequencies = (int[][]) getFrequencies.invoke(decode);
+        System.out.printf("zerofreq\t%d\t%d\t%d%n", 0, 0x41, frequencies[0][0x41]);
     }
 
     /** `RANS4x8Encode.calcFrequenciesOrder1`, which is private and is the whole of the arithmetic. */
     static int[][] calcFrequenciesOrder1(final byte[] input) throws Exception {
         final Method method =
-                RANS4x8Encode.class.getDeclaredMethod("calcFrequenciesOrder1", ByteBuffer.class);
+                RANS4x8Encode.class.getDeclaredMethod("calcFrequenciesOrder1", byte[].class);
         method.setAccessible(true);
-        return (int[][]) method.invoke(null, CompressionUtils.wrap(input));
+        return (int[][]) method.invoke(null, (Object) input);
     }
 
     /** `RANS4x8Encode.writeFrequenciesOrder1`, likewise private, and likewise the point. */
-    static int writeFrequenciesOrder1(final ByteBuffer cp, final int[][] frequencies)
+    static int writeFrequenciesOrder1(final byte[] out, final int[][] frequencies)
             throws Exception {
-        final Method method = RANS4x8Encode.class
-                .getDeclaredMethod("writeFrequenciesOrder1", ByteBuffer.class, int[][].class);
+        final Method method = RANS4x8Encode.class.getDeclaredMethod(
+                "writeFrequenciesOrder1", byte[].class, int[].class, int[][].class);
         method.setAccessible(true);
-        return (int) method.invoke(null, cp, (Object) frequencies);
+        final int[] position = {0};
+        method.invoke(null, out, position, (Object) frequencies);
+        return position[0];
     }
 
     static int[][] deepCopy(final int[][] source) {

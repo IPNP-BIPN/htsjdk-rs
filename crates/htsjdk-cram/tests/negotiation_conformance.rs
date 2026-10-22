@@ -6,26 +6,27 @@
 //! The rows that justify the suite:
 //!
 //! ```text
-//! compressor  all-the-same  1000 bytes  29  29  36  RANS
+//! compressor  all-the-same  1000 bytes  29  23  RANSNx16
 //! tag         XBZ  61626300,646566676800  BYTE_ARRAY_STOP  09e058425a
 //! tag         XBB  630100000001,63020000000102  BYTE_ARRAY_LEN  0104e05842420104e0584242
 //! dictionary  same-tags-opposite-order  XAc,XBc;XBc,XAc  .;XAcXBc  indexes=1,1
 //! ```
 //!
-//! A tie between GZIP and rANS goes to rANS. A `Z` of two sizes becomes a stop-byte array whose
-//! stop byte is a tab. A `B` of two sizes under the threshold becomes a length-prefixed array whose
-//! two halves are both external on the same content id. And two records whose tags differ only in
-//! order share one dictionary entry.
+//! A tie between GZIP and rANS Nx16 goes to GZIP, the trial's first candidate, and so does an empty
+//! block, which is never trialled. Every `Z` becomes a stop-byte array whose stop byte is a tab. A
+//! `B` of two sizes under the threshold becomes a length-prefixed array whose two halves are both
+//! external on the same content id. And two records whose tags differ only in order share one
+//! dictionary entry.
 //!
 //! The gzip lengths are the reference's: htsjdk compresses with the JDK's `Deflater`, whose output
-//! length is its zlib's business and not this crate's. Every row carries all three lengths, so the
-//! rule is checked without one.
+//! length is its zlib's business and not this crate's. Every row carries both lengths, so the rule
+//! is checked without one.
 
 use std::io::Read;
 
-use htsjdk_cram::encoding_map::EncodingId;
+use htsjdk_cram::encoding_map::{DataSeries, EncodingId};
 use htsjdk_cram::negotiation::{
-    best_compressor, tag_encoding, tag_id_as_int, tag_id_dictionary, unused_byte, Compressor,
+    tag_encoding, tag_id_as_int, tag_id_dictionary, trial_choice, unused_byte, Compressor,
 };
 
 fn corpus() -> String {
@@ -65,29 +66,30 @@ fn unhex(text: &str) -> Vec<u8> {
         .collect()
 }
 
-/// The compressor, chosen by the three lengths the reference measured.
+/// The compressor a tag's trial picks on its first block, from the two lengths the reference
+/// measured.
 #[test]
 fn the_compressor_is_the_reference_choice() {
     let corpus = corpus();
     let mut compared = 0;
     let mut ties = 0;
     for row in rows(&corpus, "compressor") {
-        let (label, gzip, rans0, rans1, chosen) = (
+        let (label, data, gzip, rans, chosen) = (
             row[0],
+            row[1],
             row[2].parse::<usize>().expect("gzip length"),
-            row[3].parse::<usize>().expect("rans0 length"),
-            row[4].parse::<usize>().expect("rans1 length"),
-            row[5],
+            row[3].parse::<usize>().expect("rANS Nx16 length"),
+            row[4],
         );
-        assert_eq!(
-            best_compressor(gzip, rans0, rans1).name(),
-            chosen,
-            "compressor {label}"
-        );
-        if gzip == rans0 || gzip == rans1 {
-            // A tie between GZIP and either rANS goes to rANS, which is the order of the
-            // comparisons rather than of the compressions.
-            assert_eq!(chosen, "RANS", "compressor {label} is a tie");
+        // An empty block is not a trial: it takes the first candidate whatever the lengths say.
+        let expected = if data == "-" {
+            Compressor::Gzip
+        } else {
+            trial_choice(gzip, rans)
+        };
+        assert_eq!(expected.name(), chosen, "compressor {label}");
+        if gzip == rans {
+            assert_eq!(chosen, "GZIP", "compressor {label} is a tie");
             ties += 1;
         }
         compared += 1;
@@ -95,10 +97,10 @@ fn the_compressor_is_the_reference_choice() {
     assert_eq!(compared, 7, "compressor choices compared");
     assert_eq!(ties, 1, "of them a tie");
 
-    // And the rule stated on its own, at the boundary the corpus does not have.
-    assert_eq!(best_compressor(10, 10, 10), Compressor::Rans);
-    assert_eq!(best_compressor(9, 10, 10), Compressor::Gzip);
-    assert_eq!(best_compressor(10, 11, 10), Compressor::Rans);
+    // And the rule stated on its own.
+    assert_eq!(trial_choice(10, 10), Compressor::Gzip);
+    assert_eq!(trial_choice(10, 9), Compressor::RansNx16);
+    assert_eq!(trial_choice(9, 10), Compressor::Gzip);
 }
 
 /// A tag's encoding, from its type and the sizes of its values.
@@ -125,7 +127,7 @@ fn a_tag_gets_the_reference_encoding() {
         compared += 1;
     }
     assert_eq!(compared, 11, "tag encodings compared");
-    assert_eq!(stop_encodings, 2, "of them stop-byte arrays");
+    assert_eq!(stop_encodings, 3, "of them stop-byte arrays");
 }
 
 fn encoding_name(id: EncodingId) -> &'static str {
@@ -249,7 +251,20 @@ fn the_data_series_table_is_fixed() {
     assert_eq!(absent, ["TC", "TN", "BB", "QQ", "TM", "TV"]);
     assert_eq!(external + stop.len() + absent.len(), series.len());
 
-    // And the content ids are handed out in the table's own order, starting at one.
-    let first: Vec<&str> = series.iter().take(6).map(|row| row[3]).collect();
-    assert_eq!(first, ["01", "02", "03", "04", "05", "06"]);
+    // And every series is on the content id the port gives it. The read name's stop byte is zero,
+    // which the name tokeniser needs, where the insertion's and the soft clip's are a tab.
+    for row in &series {
+        if row[2] == "-" {
+            continue;
+        }
+        let id = DataSeries::by_canonical_name(&row[0].as_bytes().try_into().expect("two bytes"))
+            .expect("a known series")
+            .content_id();
+        let expected = match row[0] {
+            "RN" => format!("00{id:02x}"),
+            "IN" | "SC" => format!("09{id:02x}"),
+            _ => format!("{id:02x}"),
+        };
+        assert_eq!(row[3], expected, "{}: parameters", row[0]);
+    }
 }

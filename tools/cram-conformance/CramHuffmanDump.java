@@ -48,7 +48,10 @@ import htsjdk.samtools.cram.encoding.core.huffmanUtils.HuffmanBitCode;
 import htsjdk.samtools.cram.encoding.core.huffmanUtils.HuffmanCanoncialCodeGenerator;
 import htsjdk.samtools.cram.encoding.core.huffmanUtils.HuffmanParams;
 import htsjdk.samtools.cram.structure.CompressionHeader;
+import htsjdk.samtools.cram.structure.CompressionHeaderEncodingMap;
+import htsjdk.samtools.cram.structure.CRAMCompressionProfile;
 import htsjdk.samtools.cram.structure.CompressorCache;
+import htsjdk.samtools.cram.structure.CRAMCodecModelContext;
 import htsjdk.samtools.cram.structure.SliceBlocks;
 import htsjdk.samtools.cram.structure.SliceBlocksReadStreams;
 import htsjdk.samtools.cram.structure.SliceBlocksWriteStreams;
@@ -334,7 +337,8 @@ public class CramHuffmanDump {
     }
 
     static SliceBlocksWriteStreams writeStreams() {
-        return new SliceBlocksWriteStreams(new CompressionHeader());
+        return new SliceBlocksWriteStreams(new CompressionHeader(new CompressionHeaderEncodingMap(
+                CRAMCompressionProfile.FAST.toStrategy())));
     }
 
     static <T> SliceBlocks write(final CRAMEncoding<T> encoding, final List<T> values) {
@@ -343,7 +347,7 @@ public class CramHuffmanDump {
         for (final T value : values) {
             writer.write(value);
         }
-        return streams.flushStreamsToBlocks();
+        return streams.flushStreamsToBlocks(new CRAMCodecModelContext());
     }
 
     /** Write the values through the codec, take the raw core block, and read them back. */

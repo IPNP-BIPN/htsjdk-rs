@@ -117,7 +117,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build the pinned oracle image
-        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 tools/oracle
 
       - name: Fuzz the parsers a hostile file reaches first
         # picard-rs fuzzes tools through their arguments. This repository ships no tool, so what
@@ -181,7 +181,7 @@ jobs:
         # This job needs cargo as well as the image, so it stays hand-written: it asserts the
         # rates recorded in decision 0017 rather than byte equality, which is not what the
         # generated suites do.
-        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 tools/oracle
 
       - name: "Decision 0017: does the JVM number-format model still hold?"
         # The sweep is 127,803 doubles, generated rather than committed. The test asserts the
@@ -189,7 +189,7 @@ jobs:
         # JDK's own formatting both fail here rather than passing quietly.
         run: |
           docker run --rm --platform linux/amd64 \
-            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            -v "$PWD/tools/vcf-conformance":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
             'cp /harness/JavaFormatSweep.java . && javac -d . JavaFormatSweep.java \
              && java -cp . JavaFormatSweep' > /tmp/jformat_sweep.txt
           wc -l /tmp/jformat_sweep.txt
@@ -201,7 +201,7 @@ jobs:
         # measured, generated rather than committed. Every line must match.
         run: |
           docker run --rm --platform linux/amd64 \
-            -v "$PWD/tools/jmath-conformance":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            -v "$PWD/tools/jmath-conformance":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
             'cp /harness/ToStringSweep.java . && javac -d . ToStringSweep.java \
              && java -cp . ToStringSweep' > /tmp/tostring_sweep.txt
           wc -l /tmp/tostring_sweep.txt
@@ -222,7 +222,7 @@ jobs:
           grep -m1 'vendor_id' /proc/cpuinfo
 
       - name: Build the oracle image
-        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 tools/oracle
 
       - name: Regenerate the math corpus on real silicon
         run: |
@@ -232,7 +232,7 @@ jobs:
           mkdir -p /tmp/out
           docker run --rm --platform linux/amd64 \
             -v "$PWD/tools/jmath-conformance":/harness:ro -v /tmp:/j:ro -v /tmp/out:/out \
-            -w /work htsjdk-rs-oracle:4.2.0 \
+            -w /work htsjdk-rs-oracle:5.0.0 \
             'cp /harness/JMathDump.java . && javac -cp /j/commons-math3.jar -d . JMathDump.java \
              && java -cp .:/j/commons-math3.jar JMathDump /out/jmath.csv'
           wc -l /tmp/out/jmath.csv
@@ -243,7 +243,7 @@ jobs:
         # with multiplication and the deferral holds. Measured here rather than assumed.
         run: |
           docker run --rm --platform linux/amd64 \
-            -v "$PWD/tools/pow-probe":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            -v "$PWD/tools/pow-probe":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
             'cp /harness/PowSq.java . && javac -d . PowSq.java && java PowSq' | tee /tmp/powsq.txt
           grep -q 'differ=0$' /tmp/powsq.txt || {
             echo "pow(x, 2) is NOT x * x on this silicon. Histogram cannot use multiplication."
@@ -307,7 +307,7 @@ jobs:
         run: grep -m1 'model name' /proc/cpuinfo; grep -m1 'vendor_id' /proc/cpuinfo
 
       - name: Build the oracle image
-        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 tools/oracle
 
       - name: Time the port against htsjdk, on the same payloads
         # The runner asserts byte equality of every framed stream, of every BAM and VCF file the two
@@ -342,12 +342,12 @@ jobs:
           echo
 
       - name: Build the oracle image
-        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 tools/oracle
+        run: docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 tools/oracle
 
       - name: Compress on real silicon
         run: |
           docker run --rm --platform linux/amd64 \
-            -v "$PWD/tools/gkl-probe":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+            -v "$PWD/tools/gkl-probe":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
             'cp /harness/GklProbe.java . && javac -cp "$ORACLE_CP" -d . GklProbe.java \
              && java -cp "$ORACLE_CP":. GklProbe' > /tmp/gkl-real.txt
           head -3 /tmp/gkl-real.txt

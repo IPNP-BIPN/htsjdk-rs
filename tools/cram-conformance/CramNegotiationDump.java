@@ -10,11 +10,10 @@
  *
  *   - THE DATA SERIES TABLE IS FIXED, not derived from the data. Every series gets an external
  *     encoding on a content id of its own, whatever the records hold;
- *   - THE COMPRESSOR IS CHOSEN BY TRYING ALL THREE. GZIP, rANS order 0 and rANS order 1 are each
- *     run over the data and the smallest output wins;
- *   - THE TIE-BREAK IS rANS 0, THEN rANS 1, THEN GZIP, which is the order of the comparisons and
- *     not the order of the compressions. Equal sizes therefore do not pick the first one tried, and
- *     every row carries all three lengths so the rule can be checked without a gzip;
+ *   - A TAG'S COMPRESSOR IS A TRIAL. From htsjdk 5.0.0 each tag gets a TrialCompressor over GZIP
+ *     and rANS Nx16 order 0 (and BZIP2 for SA and XA), which on a first block returns the smaller
+ *     output, the first candidate on a tie. Every row carries both lengths so the rule can be
+ *     checked without a gzip;
  *   - A TAG'S ENCODING COMES FROM ITS TYPE, and for the two variable-length types from the RANGE
  *     of its values: one size and it is a length-prefixed array with a zero-bit Huffman length,
  *     several sizes and a Z becomes a stop-byte array while a B stays length-prefixed;
@@ -24,7 +23,7 @@
  * Output:
  *
  *     series\t<name>\t<type>\t<encoding>\t<params hex>
- *     compressor\t<label>\t<data hex or length>\t<gzip length>\t<rANS 0 length>\t<rANS 1 length>\t<chosen>
+ *     compressor\t<label>\t<data hex or length>\t<gzip length>\t<rANS Nx16 0 length>\t<chosen>
  *     tag\t<tag>\t<values>\t<encoding>\t<params hex>
  *     dictionary\t<label>\t<records' tags>\t<dictionary>
  *     err\t<what>\t<detail>\t<class>\t<message>
@@ -34,6 +33,10 @@
 
 import htsjdk.samtools.ValidationStringency;
 import htsjdk.samtools.cram.build.CompressionHeaderFactory;
+import htsjdk.samtools.cram.compression.ExternalCompressor;
+import htsjdk.samtools.cram.compression.TrialCompressor;
+import htsjdk.samtools.cram.compression.rans.RANSNx16Params;
+import htsjdk.samtools.cram.structure.CRAMCodecModelContext;
 import htsjdk.samtools.cram.structure.CRAMCompressionRecord;
 import htsjdk.samtools.cram.structure.CRAMEncodingStrategy;
 import htsjdk.samtools.cram.structure.CompressionHeader;
@@ -101,20 +104,25 @@ public class CramNegotiationDump {
                 Arrays.asList("XBc", "XAc")));
     }
 
-    /** The three candidates' lengths as well as the winner, because the rule is the lengths. */
+    /**
+     * Both candidates' lengths as well as the winner, because the rule is the lengths. The trial is
+     * built as CompressionHeaderFactory.getTagTrialCompressor builds it for a tag other than SA
+     * and XA, which is private; a fresh one per row is a tag's first block.
+     */
     static void compressor(final String label, final byte[] data) {
         final CRAMEncodingStrategy strategy = new CRAMEncodingStrategy();
-        final CompressionHeaderFactory factory = new CompressionHeaderFactory(strategy);
         final CompressorCache cache = new CompressorCache();
-        final int gzip = cache.getCompressorForMethod(BlockCompressionMethod.GZIP,
-                strategy.getGZIPCompressionLevel()).compress(data).length;
-        final int rans0 = cache.getCompressorForMethod(BlockCompressionMethod.RANS, 0)
-                .compress(data).length;
-        final int rans1 = cache.getCompressorForMethod(BlockCompressionMethod.RANS, 1)
-                .compress(data).length;
-        System.out.printf("compressor\t%s\t%s\t%d\t%d\t%d\t%s%n", label,
-                data.length <= 32 ? hex(data) : data.length + " bytes", gzip, rans0, rans1,
-                factory.getBestExternalCompressor(data).getMethod().name());
+        final CRAMCodecModelContext context = new CRAMCodecModelContext();
+        final ExternalCompressor gzip = cache.getCompressorForMethod(BlockCompressionMethod.GZIP,
+                strategy.getGZIPCompressionLevel());
+        final ExternalCompressor rans = cache.getCompressorForMethod(
+                BlockCompressionMethod.RANSNx16, RANSNx16Params.ORDER.ZERO.ordinal());
+        final TrialCompressor trial = new TrialCompressor(List.of(gzip, rans));
+        trial.compress(data, context);
+        System.out.printf("compressor\t%s\t%s\t%d\t%d\t%s%n", label,
+                data.length <= 32 ? hex(data) : data.length + " bytes",
+                gzip.compress(data, context).length, rans.compress(data, context).length,
+                trial.getMethod().name());
     }
 
     /** One record per value, each carrying the tag, through the whole header factory. */

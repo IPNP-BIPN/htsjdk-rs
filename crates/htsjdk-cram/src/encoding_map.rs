@@ -2,7 +2,7 @@
 //! first thing in CRAM that describes a record rather than a container.
 //!
 //! Ported from `htsjdk.samtools.cram.structure.CompressionHeaderEncodingMap`, `DataSeries`,
-//! `DataSeriesType`, `EncodingID` and `EncodingDescriptor` at htsjdk 4.2.0.
+//! `DataSeriesType`, `EncodingID` and `EncodingDescriptor` at htsjdk 5.0.0.
 //!
 //! [`crate::preservation_map`] pinned the first map. This one says, for each of the record's data
 //! series, which of the ten encodings carries it and with what parameters.
@@ -30,10 +30,11 @@
 //! A CRAM from another writer that carries them gets a log warning and the entries never reach the
 //! map, so **the reader's map can hold fewer entries than the count the file declared**.
 //!
-//! # The content ids are htsjdk's, not the specification's
+//! # The content ids are htslib's, not the specification's
 //!
-//! The spec does not prescribe them. This implementation numbers the data series 1 to 32 in enum
-//! order, and a reader has to discover them from the map rather than assume them.
+//! The spec does not prescribe them. htsjdk 5.0.0 takes htslib's `cram_DS_ID` numbering, 11 to 46
+//! (4.2.0 numbered the series 1 to 32 in enum order), and a reader has to discover them from the
+//! map rather than assume them.
 //!
 //! # An unknown encoding id is an array index
 //!
@@ -71,38 +72,38 @@ impl DataSeriesType {
 ///
 /// The content id is this implementation's choice and not the specification's.
 pub const DATA_SERIES: [(&str, DataSeriesType, i32); 32] = [
-    ("BF", DataSeriesType::Int, 1),
-    ("CF", DataSeriesType::Int, 2),
-    ("RI", DataSeriesType::Int, 3),
-    ("RL", DataSeriesType::Int, 4),
-    ("AP", DataSeriesType::Int, 5),
-    ("RG", DataSeriesType::Int, 6),
-    ("RN", DataSeriesType::ByteArray, 7),
-    ("NF", DataSeriesType::Int, 8),
-    ("MF", DataSeriesType::Int, 9),
-    ("NS", DataSeriesType::Int, 10),
-    ("NP", DataSeriesType::Int, 11),
-    ("TS", DataSeriesType::Int, 12),
-    ("TL", DataSeriesType::Int, 13),
-    ("TC", DataSeriesType::Int, 14),
-    ("TN", DataSeriesType::Int, 15),
-    ("MQ", DataSeriesType::Int, 16),
-    ("FN", DataSeriesType::Int, 17),
-    ("FP", DataSeriesType::Int, 18),
-    ("FC", DataSeriesType::Byte, 19),
-    ("BB", DataSeriesType::ByteArray, 20),
-    ("QQ", DataSeriesType::ByteArray, 21),
-    ("BA", DataSeriesType::Byte, 22),
-    ("QS", DataSeriesType::Byte, 23),
-    ("BS", DataSeriesType::Byte, 24),
-    ("IN", DataSeriesType::ByteArray, 25),
-    ("DL", DataSeriesType::Int, 26),
-    ("RS", DataSeriesType::Int, 27),
-    ("SC", DataSeriesType::ByteArray, 28),
-    ("PD", DataSeriesType::Int, 29),
-    ("HC", DataSeriesType::Int, 30),
-    ("TM", DataSeriesType::Int, 31),
-    ("TV", DataSeriesType::Int, 32),
+    ("BF", DataSeriesType::Int, 15),
+    ("CF", DataSeriesType::Int, 16),
+    ("RI", DataSeriesType::Int, 33),
+    ("RL", DataSeriesType::Int, 25),
+    ("AP", DataSeriesType::Int, 17),
+    ("RG", DataSeriesType::Int, 18),
+    ("RN", DataSeriesType::ByteArray, 11),
+    ("NF", DataSeriesType::Int, 24),
+    ("MF", DataSeriesType::Int, 21),
+    ("NS", DataSeriesType::Int, 20),
+    ("NP", DataSeriesType::Int, 23),
+    ("TS", DataSeriesType::Int, 22),
+    ("TL", DataSeriesType::Int, 32),
+    ("TC", DataSeriesType::Int, 44),
+    ("TN", DataSeriesType::Int, 39),
+    ("MQ", DataSeriesType::Int, 19),
+    ("FN", DataSeriesType::Int, 26),
+    ("FP", DataSeriesType::Int, 28),
+    ("FC", DataSeriesType::Byte, 27),
+    ("BB", DataSeriesType::ByteArray, 37),
+    ("QQ", DataSeriesType::ByteArray, 38),
+    ("BA", DataSeriesType::Byte, 30),
+    ("QS", DataSeriesType::Byte, 12),
+    ("BS", DataSeriesType::Byte, 31),
+    ("IN", DataSeriesType::ByteArray, 13),
+    ("DL", DataSeriesType::Int, 29),
+    ("RS", DataSeriesType::Int, 34),
+    ("SC", DataSeriesType::ByteArray, 14),
+    ("PD", DataSeriesType::Int, 35),
+    ("HC", DataSeriesType::Int, 36),
+    ("TM", DataSeriesType::Int, 45),
+    ("TV", DataSeriesType::Int, 46),
 ];
 
 /// `CompressionHeaderEncodingMap.DATASERIES_NOT_READ_BY_HTSJDK`: read, warned about, dropped.
@@ -375,12 +376,13 @@ fn push_itf8(value: i32, out: &mut Vec<u8>) {
 mod tests {
     use super::*;
 
-    /// The content ids are this implementation's, and they run 1 to 32 in enum order.
+    /// The content ids are htslib's: distinct, between 11 and 46, and no longer in enum order.
     #[test]
-    fn the_content_ids_are_the_ordinal_plus_one() {
-        for (ordinal, (_, _, content_id)) in DATA_SERIES.iter().enumerate() {
-            assert_eq!(*content_id, ordinal as i32 + 1);
-        }
+    fn the_content_ids_are_htslibs() {
+        let ids: std::collections::BTreeSet<i32> = DATA_SERIES.iter().map(|s| s.2).collect();
+        assert_eq!(ids.len(), DATA_SERIES.len());
+        assert_eq!((ids.first(), ids.last()), (Some(&11), Some(&46)));
+        assert_eq!(DataSeries(0).content_id(), 15, "BF");
     }
 
     /// Two series are parsed and then dropped, so the map can be smaller than its own count.

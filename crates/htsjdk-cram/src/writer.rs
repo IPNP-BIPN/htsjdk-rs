@@ -26,10 +26,11 @@ use crate::compression_header::{crc32, raw_block, raw_block_with_id, Compression
 use crate::encoding_factory::{create_encoding, DataSeriesType as FactoryType, Encoding};
 use crate::encoding_map::{DataSeries, EncodingDescriptor, EncodingId, EncodingMap};
 use crate::external_codecs::SliceWriteStreams;
+use crate::negotiation::{self, trial_choice};
 use crate::preservation_map::PreservationMap;
 use crate::read_features::{alignment_end, create_read_features, Qualities, ReadFeature, NO_CODE};
 use crate::reader::{CramError, ReferenceSource};
-use crate::record_flags::{MF_MATE_NEG_STRAND, MF_MATE_UNMAPPED};
+use crate::record_flags::{template_length, MF_MATE_NEG_STRAND, MF_MATE_UNMAPPED};
 use crate::slice_header::SliceHeader;
 use crate::substitution_matrix::{SubstitutionMatrix, SYMBOL_SPACE_SIZE};
 use crate::tag_encoding_map::TagEncodingMap;
@@ -187,24 +188,12 @@ impl TrialCompressor {
         }
         self.trials_remaining -= 1;
         if self.trials_remaining == 0 {
-            let mut best = i64::MAX;
-            let mut winner = 0;
-            for (i, &size) in self.sizes.iter().enumerate() {
-                if size < best {
-                    best = size;
-                    winner = i;
-                }
-            }
+            let winner = trial_choice(self.sizes[0], self.sizes[1]) as usize;
             self.winner = Some(winner);
             self.until_retrial = Self::SPAN;
             return results[winner].clone();
         }
-        let best = if results[1].0.len() < results[0].0.len() {
-            1
-        } else {
-            0
-        };
-        results[best].clone()
+        results[trial_choice(results[0].0.len(), results[1].0.len()) as usize].clone()
     }
 }
 
@@ -693,19 +682,11 @@ fn insert_size(first: &WriteRecord, second: &WriteRecord) -> i32 {
     {
         return 0;
     }
-    let left = first.alignment_start.min(second.alignment_start);
-    let right = first.alignment_end.max(second.alignment_end);
-    let magnitude = right.wrapping_sub(left).wrapping_add(1);
-    if first.alignment_start < second.alignment_start {
-        return magnitude;
-    }
-    if first.alignment_start > second.alignment_start {
-        return magnitude.wrapping_neg();
-    }
-    if first.bam_flags & 0x40 != 0 {
-        return magnitude;
-    }
-    magnitude.wrapping_neg()
+    template_length(
+        (first.alignment_start, first.alignment_end),
+        first.bam_flags & 0x40 != 0,
+        (second.alignment_start, second.alignment_end),
+    )
 }
 
 /// `Slice.linkMatesWithinSlice`: a pair whose stored template length is htslib's is attached.
@@ -1460,84 +1441,23 @@ fn build_tag_dictionary(slices: &mut [Vec<WriteRecord>]) -> Vec<Vec<[u8; 3]>> {
         .collect()
 }
 
-/// `buildEncodingForTag`.
+/// `buildEncodingForTag`, over every value of the tag in the container.
 fn tag_encoding<'r>(
     key: i32,
     records: impl Iterator<Item = &'r WriteRecord>,
 ) -> EncodingDescriptor {
-    let fixed = |size: i32| {
-        // ByteArrayLen(CanonicalHuffmanInteger({size}, {0}), ExternalByteArray(key)).
-        let mut huffman = itf8(1);
-        huffman.extend_from_slice(&itf8(size));
-        huffman.extend_from_slice(&itf8(1));
-        huffman.extend_from_slice(&itf8(0));
-        let external = itf8(key);
-        let mut parameters = itf8(EncodingId::Huffman as i32);
-        parameters.extend_from_slice(&itf8(huffman.len() as i32));
-        parameters.extend_from_slice(&huffman);
-        parameters.extend_from_slice(&itf8(EncodingId::External as i32));
-        parameters.extend_from_slice(&itf8(external.len() as i32));
-        parameters.extend_from_slice(&external);
-        EncodingDescriptor {
-            id: EncodingId::ByteArrayLen,
-            parameters,
+    let mut sizes = Vec::new();
+    let mut data = Vec::new();
+    for tag in records.flat_map(|record| &record.tags) {
+        if tag.key() == key {
+            sizes.push(tag.size);
+            data.extend_from_slice(&tag.value);
         }
-    };
-    match (key & 0xFF) as u8 {
-        b'A' | b'c' | b'C' => fixed(1),
-        b'I' | b'i' | b'f' => fixed(4),
-        b's' | b'S' => fixed(2),
-        b'Z' => {
-            let mut parameters = vec![b'\t'];
-            parameters.extend_from_slice(&itf8(key));
-            EncodingDescriptor {
-                id: EncodingId::ByteArrayStop,
-                parameters,
-            }
-        }
-        _ => {
-            let mut min = usize::MAX;
-            let mut max = 0usize;
-            let mut values = Vec::new();
-            for record in records {
-                for tag in &record.tags {
-                    if tag.key() == key {
-                        min = min.min(tag.size);
-                        max = max.max(tag.size);
-                        values.extend_from_slice(&tag.value);
-                    }
-                }
-            }
-            if min == max {
-                return fixed(min as i32);
-            }
-            if min > 100 {
-                let mut used = [false; 256];
-                for &b in &values {
-                    used[b as usize] = true;
-                }
-                if let Some(unused) = used.iter().position(|u| !u) {
-                    let mut parameters = vec![unused as u8];
-                    parameters.extend_from_slice(&itf8(key));
-                    return EncodingDescriptor {
-                        id: EncodingId::ByteArrayStop,
-                        parameters,
-                    };
-                }
-            }
-            // ByteArrayLen(ExternalInteger(key), ExternalByteArray(key)).
-            let external = itf8(key);
-            let mut parameters = itf8(EncodingId::External as i32);
-            parameters.extend_from_slice(&itf8(external.len() as i32));
-            parameters.extend_from_slice(&external);
-            parameters.extend_from_slice(&itf8(EncodingId::External as i32));
-            parameters.extend_from_slice(&itf8(external.len() as i32));
-            parameters.extend_from_slice(&external);
-            EncodingDescriptor {
-                id: EncodingId::ByteArrayLen,
-                parameters,
-            }
-        }
+    }
+    let encoding = negotiation::tag_encoding((key & 0xFF) as u8, key, &sizes, &data);
+    EncodingDescriptor {
+        id: encoding.id,
+        parameters: encoding.parameters,
     }
 }
 

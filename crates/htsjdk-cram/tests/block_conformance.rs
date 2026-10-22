@@ -133,9 +133,10 @@ fn the_checksum_sits_outside_the_declared_content_size() {
     assert_eq!(walked, 118, "blocks walked");
 }
 
-/// The methods a file actually uses, which is the evidence behind decision 0038's scoping.
+/// The methods a file actually uses. Under htsjdk 5.0.0 that is CRAM 3.1's: RAW, GZIP, rANS Nx16,
+/// fqzcomp for the qualities and the name tokeniser for the names, and no rANS 4x8 at all.
 #[test]
-fn an_ordinary_file_uses_raw_gzip_and_rans() {
+fn an_ordinary_file_uses_the_cram_31_codecs() {
     let corpus = corpus();
     let mut seen = 0;
     for line in corpus.lines() {
@@ -150,7 +151,10 @@ fn an_ordinary_file_uses_raw_gzip_and_rans() {
                 "a file with no records needs no entropy codec"
             );
         } else {
-            assert_eq!(methods, "0,1,4", "{label}: RAW, GZIP and rANS");
+            assert_eq!(
+                methods, "0,1,5,7,8",
+                "{label}: RAW, GZIP, rANS Nx16, fqzcomp, name tokeniser"
+            );
         }
         seen += 1;
     }

@@ -51,9 +51,9 @@
 import htsjdk.samtools.cram.compression.CompressionUtils;
 import htsjdk.samtools.cram.compression.rans.RANSEncodingSymbol;
 import htsjdk.samtools.cram.compression.rans.RANSParams;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Decode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Encode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Params;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Decode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Encode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Params;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -147,11 +147,8 @@ public class CramRansDump {
             final byte[] input = repeat("ACGT", length);
             for (final RANSParams.ORDER requested :
                     new RANSParams.ORDER[] {RANSParams.ORDER.ZERO, RANSParams.ORDER.ONE}) {
-                final ByteBuffer out = new RANS4x8Encode()
-                        .compress(CompressionUtils.wrap(input), new RANS4x8Params(requested));
-                final String written = out.remaining() == 0
-                        ? "-"
-                        : Integer.toString(out.get(0) & 0xFF);
+                final byte[] out = new RANS4x8Encode().compress(input, new RANS4x8Params(requested));
+                final String written = out.length == 0 ? "-" : Integer.toString(out[0] & 0xFF);
                 System.out.printf("orderused\t%d\t%s\t%s%n", length, requested, written);
             }
         }
@@ -183,10 +180,7 @@ public class CramRansDump {
         System.out.printf("in\t%s\t%d\t%s%n", label, input.length, sha256(input));
 
         final RANS4x8Encode encode = new RANS4x8Encode();
-        final ByteBuffer compressed =
-                encode.compress(CompressionUtils.wrap(input), new RANS4x8Params(RANSParams.ORDER.ZERO));
-        final byte[] out = new byte[compressed.remaining()];
-        compressed.duplicate().get(out);
+        final byte[] out = encode.compress(input, new RANS4x8Params(RANSParams.ORDER.ZERO));
 
         System.out.printf("enc\t%s\t%d\t%s%n", label, out.length, sha256(out));
         if (out.length > 0 && out.length <= MAX_INLINE_BYTES) {
@@ -195,7 +189,7 @@ public class CramRansDump {
         if (out.length == 0) {
             // The empty input, which produces nothing at all rather than a bare prefix.
             System.out.printf("roundtrip\t%s\t%s%n", label,
-                    new RANS4x8Decode().uncompress(CompressionUtils.wrap(out)).remaining() == 0
+                    new RANS4x8Decode().uncompress(out).length == 0
                             ? "ok" : "MISMATCH");
             return;
         }
@@ -222,11 +216,9 @@ public class CramRansDump {
         }
 
         // The frequency table as the writer writes it, and its size, which is where the blob starts.
-        final ByteBuffer table = CompressionUtils.allocateByteBuffer(256 * 3 + 1);
+        final byte[] table = new byte[256 * 3 + 1];
         final int tableSize = writeFrequenciesOrder0(table, normalised.clone());
-        final byte[] tableBytes = new byte[tableSize];
-        table.rewind();
-        table.get(tableBytes);
+        final byte[] tableBytes = Arrays.copyOf(table, tableSize);
         System.out.printf("freqtab\t%s\t%d\t%s%n", label, tableSize, hex(tableBytes));
 
         // The encoding symbols, field by field, because the fixed-point reciprocal is the part a
@@ -254,9 +246,7 @@ public class CramRansDump {
                 0xFFFFFFFFL & blob.getInt(), 0xFFFFFFFFL & blob.getInt(),
                 0xFFFFFFFFL & blob.getInt(), 0xFFFFFFFFL & blob.getInt());
 
-        final ByteBuffer back = new RANS4x8Decode().uncompress(CompressionUtils.wrap(out));
-        final byte[] decoded = new byte[back.remaining()];
-        back.get(decoded);
+        final byte[] decoded = new RANS4x8Decode().uncompress(out);
         System.out.printf("roundtrip\t%s\t%s%n", label,
                 Arrays.equals(decoded, input) ? "ok" : "MISMATCH");
     }
@@ -264,18 +254,20 @@ public class CramRansDump {
     /** `RANS4x8Encode.calcFrequenciesOrder0`, which is private and is the whole of the arithmetic. */
     static int[] calcFrequenciesOrder0(final byte[] input) throws Exception {
         final Method method =
-                RANS4x8Encode.class.getDeclaredMethod("calcFrequenciesOrder0", ByteBuffer.class);
+                RANS4x8Encode.class.getDeclaredMethod("calcFrequenciesOrder0", byte[].class);
         method.setAccessible(true);
-        return (int[]) method.invoke(null, CompressionUtils.wrap(input));
+        return (int[]) method.invoke(null, (Object) input);
     }
 
     /** `RANS4x8Encode.writeFrequenciesOrder0`, likewise private, and likewise the point. */
-    static int writeFrequenciesOrder0(final ByteBuffer cp, final int[] frequencies)
+    static int writeFrequenciesOrder0(final byte[] out, final int[] frequencies)
             throws Exception {
-        final Method method = RANS4x8Encode.class
-                .getDeclaredMethod("writeFrequenciesOrder0", ByteBuffer.class, int[].class);
+        final Method method = RANS4x8Encode.class.getDeclaredMethod(
+                "writeFrequenciesOrder0", byte[].class, int[].class, int[].class);
         method.setAccessible(true);
-        return (int) method.invoke(null, cp, frequencies);
+        final int[] position = {0};
+        method.invoke(null, out, position, frequencies);
+        return position[0];
     }
 
     /** One private field of an encoding symbol, as an unsigned 32-bit value where it is an int. */

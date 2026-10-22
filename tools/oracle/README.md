@@ -29,7 +29,7 @@ Everything is pinned: the base image by digest, every jar by sha256.
 ## Use
 
 ```sh
-docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 .
+docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 .
 ./run.sh ../bgzf-conformance/B.java goldens/bgzf.txt
 ```
 

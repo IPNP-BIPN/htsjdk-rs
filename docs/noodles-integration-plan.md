@@ -8,7 +8,7 @@ that established it, so nothing has to be rediscovered.
 
 ## 1. What this repository is, in three sentences
 
-`htsjdk-rs` is a Rust port of htsjdk 4.2.0 whose contract is **byte-identity**: the bytes it writes
+`htsjdk-rs` is a Rust port of htsjdk 5.0.0 whose contract is **byte-identity**: the bytes it writes
 are the bytes htsjdk writes, verified by an oracle. `gatk-rs` and `picard-rs` sit on top with the
 same contract against GATK 4.6.2.0 and Picard 3.4.0. Forty-one conformance suites enforce it, each
 one a Java dump run in a pinned container against a golden committed from a real x86-64 CI runner.

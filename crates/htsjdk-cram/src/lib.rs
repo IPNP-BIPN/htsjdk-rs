@@ -1,4 +1,5 @@
-//! Port of htsjdk's CRAM support, from `htsjdk.samtools.cram` (htsjdk 4.2.0).
+//! Port of htsjdk's CRAM support, from `htsjdk.samtools.cram`, measured against htsjdk 5.0.0. The
+//! 3.0 codecs were transcribed from 4.2.0, CRAM 3.1 and the writer from 5.0.0 (decision 0047).
 //!
 //! Milestone H.3, a sub-project on its own: 169 Java files covering a container model, a dozen
 //! encodings, codec negotiation and reference-based compression. It is built from the bottom, and

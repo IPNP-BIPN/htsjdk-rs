@@ -1,7 +1,8 @@
 # 0042: The reference version is pinned by the consumers, not by this repository
 
-**Status.** Accepted. Records why the target stays at htsjdk 4.2.0, and what the move costs when it
-comes. Closes #182.
+**Status.** Superseded by [0047](0047-the-reference-moves-to-htsjdk-5.0.0.md), which moves the
+reference to htsjdk 5.0.0 after picard-rs moved on its own. Recorded why the target stayed at
+htsjdk 4.2.0, and what the move would cost. Closed #182.
 
 ## The pin
 

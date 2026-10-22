@@ -1,59 +1,60 @@
 //! Codec negotiation: which encoding a writer picks for each data series, and which compressor.
 //!
 //! Ported from `htsjdk.samtools.cram.build.CompressionHeaderFactory` and
-//! `CompressionHeaderEncodingMap`'s default strategy at htsjdk 4.2.0.
+//! `CompressionHeaderEncodingMap`'s default strategy at htsjdk 5.0.0.
 //!
 //! The reader takes what a file names. The writer chooses, and the choice is what makes one CRAM of
 //! a set of records rather than another. Two things do the choosing: a fixed table for the data
 //! series, and a measurement for the tag series, which are not known until the records are.
 //!
-//! # The compressor is chosen by trying all three
+//! # A tag's compressor is a trial
 //!
-//! GZIP, rANS order 0 and rANS order 1 are each run over the data and the smallest output wins.
-//! The tie-break is the order of the *comparisons*, rANS 0 then rANS 1 then GZIP, not the order of
-//! the compressions: a thousand identical bytes compress to 29 under GZIP and 29 under rANS 0, and
-//! rANS wins.
+//! Each tag gets a `TrialCompressor` over GZIP and rANS Nx16 order 0 for the life of the writer.
+//! On the first blocks it returns the smaller output and adds both lengths to a running total;
+//! after three it keeps the candidate with the smaller total for seventy blocks, then trials
+//! again. Every comparison is the same one, [`trial_choice`]: rANS Nx16 only when strictly
+//! smaller, so a tie goes to GZIP, the first candidate. (`SA` and `XA` add BZIP2, whose writer is
+//! not ported, so the writer refuses them.)
 //!
-//! The gzip length is not something this crate can produce: htsjdk's CRAM compressor is the JDK's
-//! `Deflater`, whose output length is its zlib's business. So [`best_compressor`] takes the three
-//! lengths rather than the data, and the suite feeds it the lengths the reference measured.
+//! [`trial_choice`] takes lengths rather than data so the suite can feed it the lengths the
+//! reference measured, and not depend on this crate's gzip matching the JDK's `Deflater`.
 //!
 //! # A tag's encoding comes from its type, and from the range of its values
 //!
 //! The fixed-width types get a length-prefixed array whose length is a single-symbol Huffman code
 //! of zero bits, which writes no bits at all. The two variable-width types, `Z` and `B`, get the
-//! same when every value is the same size, and otherwise: a `Z` becomes a stop-byte array with a
-//! **tab** for the stop byte, chosen rather than searched for, so a `Z` whose text contains a tab
-//! is split by its own encoding. A `B` over a hundred bytes searches for a byte its data never
-//! uses, and falls back to a length-prefixed array whose two halves are **both external and both
-//! on the same content id**, which the reference's own comment marks with three question marks.
+//! **Every `Z` is a stop-byte array with a tab** for the stop byte, chosen rather than searched
+//! for, so a `Z` whose text contains a tab is split by its own encoding; 4.2.0 gave a `Z` whose
+//! values were all one size the fixed-size encoding instead. A `B` gets the fixed size when every
+//! value is one size; otherwise one over a hundred bytes searches for a byte its data never uses,
+//! and falls back to a length-prefixed array whose two halves are **both external and both on the
+//! same content id**.
 
 use crate::encoding_map::EncodingId;
 
-/// `BlockCompressionMethod`, as far as negotiation is concerned.
+/// A tag trial's candidates, in the order `getTagTrialCompressor` lists them, which is also their
+/// index in the trial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compressor {
     Gzip,
-    Rans,
+    RansNx16,
 }
 
 impl Compressor {
+    /// The `BlockCompressionMethod` constant's name.
     pub fn name(&self) -> &'static str {
         match self {
             Compressor::Gzip => "GZIP",
-            Compressor::Rans => "RANS",
+            Compressor::RansNx16 => "RANSNx16",
         }
     }
 }
 
-/// `getBestExternalCompressor`, given the three lengths it would have measured.
-///
-/// The comparison is `min(gzip, min(rans0, rans1))` and then three equality tests in the order
-/// rANS 0, rANS 1, GZIP, so a tie goes to rANS however it arose.
-pub fn best_compressor(gzip: usize, rans0: usize, rans1: usize) -> Compressor {
-    let smallest = gzip.min(rans0.min(rans1));
-    if smallest == rans0 || smallest == rans1 {
-        Compressor::Rans
+/// `TrialCompressor`'s comparison, between two outputs or two running totals: the first strictly
+/// smallest candidate wins.
+pub fn trial_choice<T: PartialOrd>(gzip: T, rans_nx16: T) -> Compressor {
+    if rans_nx16 < gzip {
+        Compressor::RansNx16
     } else {
         Compressor::Gzip
     }
@@ -133,14 +134,12 @@ pub fn tag_encoding(tag_type: u8, tag_id: i32, sizes: &[usize], data: &[u8]) -> 
         b'A' | b'c' | b'C' => tag_encoding_for_size(1, tag_id),
         b'I' | b'i' | b'f' => tag_encoding_for_size(4, tag_id),
         b's' | b'S' => tag_encoding_for_size(2, tag_id),
-        b'Z' | b'B' => {
+        b'Z' => tag_encoding_stop(Z_STOP_BYTE, tag_id),
+        b'B' => {
             let min = sizes.iter().copied().min().unwrap_or(0);
             let max = sizes.iter().copied().max().unwrap_or(0);
             if min == max {
                 return tag_encoding_for_size(min as i32, tag_id);
-            }
-            if tag_type == b'Z' {
-                return tag_encoding_stop(Z_STOP_BYTE, tag_id);
             }
             if min > STOP_ENCODING_MIN_SIZE {
                 let unused = unused_byte(data);

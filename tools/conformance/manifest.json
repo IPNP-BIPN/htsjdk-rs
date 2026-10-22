@@ -12,7 +12,7 @@
     "decision 0017, which asserts measured rates rather than byte equality."
   ],
   "oracle": {
-    "image": "htsjdk-rs-oracle:4.2.0",
+    "image": "htsjdk-rs-oracle:5.0.0",
     "context": "tools/oracle",
     "platform": "linux/amd64"
   },
@@ -263,7 +263,7 @@
         {
           "dump": "BinaryTagCodecReadDump",
           "golden": "crates/htsjdk-bam/tests/data/bam_tag_read.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-bam-tag-read artefact of run 31093032906, the golden-pending run of htsjdk-rs #123. 62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting inputs are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Every row carries the bytes it came from, so the golden is readable without the dump beside it. The runner's dump and this laptop's are byte-identical, which is recorded and changes nothing: decision 0008 says where a golden may come from, not how likely the two are to agree."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-bam-tag-read artefact of run 31093032906, the golden-pending run of htsjdk-rs #123. Regenerated under htsjdk 5.0.0 from run 39728635215 of htsjdk-rs #271: one row moved, the unterminated string, which 5.0.0 refuses with a SAMFormatException where 4.2.0 ran off the buffer. 62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting inputs are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Every row carries the bytes it came from, so the golden is readable without the dump beside it. The runner's dump and this laptop's are byte-identical, which is recorded and changes nothing: decision 0008 says where a golden may come from, not how likely the two are to agree."
         }
       ]
     },
@@ -1134,7 +1134,7 @@
         {
           "dump": "CramExternalCodecDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_external_codecs.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 48 rows, byte for byte what an Apple Silicon laptop produced, including the row recording which compressor the default compression header picks for each external block."
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 48 rows, byte for byte what an Apple Silicon laptop produced, including the row recording which compressor the default compression header picks for each external block. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1229,7 +1229,7 @@
         {
           "dump": "CramCompressionHeaderDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_compression_header.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 19 rows, byte for byte what an Apple Silicon laptop produced, checksums included: CRC-32 is integer arithmetic and carries no platform in it."
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 19 rows, byte for byte what an Apple Silicon laptop produced, checksums included: CRC-32 is integer arithmetic and carries no platform in it. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1261,7 +1261,7 @@
         {
           "dump": "CramRecordFlagsDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_record_flags.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 64 rows, byte for byte what an Apple Silicon laptop produced: bit arithmetic and integer division carry no platform in them."
+          "why": "From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31129701108. 64 rows, byte for byte what an Apple Silicon laptop produced: bit arithmetic and integer division carry no platform in them. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1318,7 +1318,7 @@
         {
           "dump": "CramRecordReadDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_record_read.txt.gz",
-          "why": "245 rows over eight slices, two of them added by a correction: an unmapped record followed by a mapped one, which is the only arrangement where a reader that skips the unmapped bases desynchronises, and a record whose quality scores are kept as an array. Every record row carries sixteen fields, its bases and its scores among them. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31197289078, and byte for byte what an Apple Silicon laptop produced."
+          "why": "245 rows over eight slices, two of them added by a correction: an unmapped record followed by a mapped one, which is the only arrangement where a reader that skips the unmapped bases desynchronises, and a record whose quality scores are kept as an array. Every record row carries sixteen fields, its bases and its scores among them. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31197289078, and byte for byte what an Apple Silicon laptop produced. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1344,7 +1344,7 @@
         {
           "dump": "CramRecordWriteDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_record_write.txt.gz",
-          "why": "245 rows over the same eight slices cram-record-read uses, so the two suites are the two directions of one corpus. Each record row carries seventeen fields including its features with their payloads, its bases, its quality scores and its index into the tag dictionary, which is everything the writer reads off a record. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31198211155, and byte for byte what an Apple Silicon laptop produced."
+          "why": "245 rows over the same eight slices cram-record-read uses, so the two suites are the two directions of one corpus. Each record row carries seventeen fields including its features with their payloads, its bases, its quality scores and its index into the tag dictionary, which is everything the writer reads off a record. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31198211155, and byte for byte what an Apple Silicon laptop produced. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1406,7 +1406,7 @@
         {
           "dump": "CramNegotiationDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_negotiation.txt.gz",
-          "why": "54 rows: thirty-two data series with the encoding the default strategy gives each, seven compressor choices with all three candidate lengths on every row including one tie, eleven tag encodings covering every type and both branches of the two variable-width ones, and four tag dictionaries with the index each record was given. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31205053028, and byte for byte what an Apple Silicon laptop produced. That includes the gzip lengths, so the JDK's zlib gives the same output size on both machines even though nothing here reproduces its bytes."
+          "why": "54 rows: thirty-two data series with the encoding the default strategy gives each, seven compressor choices with both trial candidates' lengths on every row including one tie, eleven tag encodings covering every type and both branches of the two variable-width ones, and four tag dictionaries with the index each record was given. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31205053028, and byte for byte what an Apple Silicon laptop produced. That includes the gzip lengths, so the JDK's zlib gives the same output size on both machines even though nothing here reproduces its bytes. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1450,7 +1450,7 @@
         {
           "dump": "CramContainerDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_container.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #107. 34 rows: 4 file definitions, 4 file-id paddings, 11 container headers as fields, the same 11 as the raw bytes they occupy, and 4 file walks. The bytes rows are what makes the field rows mean something: a field read at the wrong width shifts every field after it, so parsing the recorded bytes and rendering the result is the layout under test rather than the numbers alone."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #107. 34 rows: 4 file definitions, 4 file-id paddings, 11 container headers as fields, the same 11 as the raw bytes they occupy, and 4 file walks. The bytes rows are what makes the field rows mean something: a field read at the wrong width shifts every field after it, so parsing the recorded bytes and rendering the result is the layout under test rather than the numbers alone. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1467,7 +1467,7 @@
         {
           "dump": "CramBlockDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_block.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #108. 359 rows over five files: 118 block headers as fields, the same 118 as the raw bytes they occupy, 118 content digests, and 5 per-file method summaries. The content travels as a SHA-256 rather than as bytes because it is what the compressors produce and this suite is about the framing around it; the digest still fails if the framing put a boundary in the wrong place."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens artefact of the golden-pending run of htsjdk-rs #108. 359 rows over five files: 118 block headers as fields, the same 118 as the raw bytes they occupy, 118 content digests, and 5 per-file method summaries. The content travels as a SHA-256 rather than as bytes because it is what the compressors produce and this suite is about the framing around it; the digest still fails if the framing put a boundary in the wrong place. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1518,7 +1518,7 @@
         {
           "dump": "CramPreservationMapDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_preservation_map.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31046182377, the golden-pending run of htsjdk-rs #118. 65 rows: 5 compression header blocks by length and digest, 5 preservation maps whole in hex with their two declared sizes, 25 keys in the order they were written, 5 substitution matrices, 5 tag dictionaries and their 6 groups, 5 flag triples as the reference's own reader reported them, 5 boolean probes and 3 refusals. The probes and refusals cannot come from a file: they build compression headers by hand and wrap them in a real RAW block so they go through the same reader a file does."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-10 artefact of run 31046182377, the golden-pending run of htsjdk-rs #118. 65 rows: 5 compression header blocks by length and digest, 5 preservation maps whole in hex with their two declared sizes, 25 keys in the order they were written, 5 substitution matrices, 5 tag dictionaries and their 6 groups, 5 flag triples as the reference's own reader reported them, 5 boolean probes and 3 refusals. The probes and refusals cannot come from a file: they build compression headers by hand and wrap them in a real RAW block so they go through the same reader a file does. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1552,7 +1552,7 @@
         {
           "dump": "CramEncodingMapDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_encoding_map.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31048058704, the golden-pending run of htsjdk-rs #120. 103 rows: 32 data series with their types and content ids, 10 encoding identifiers with which may live in an external block, 2 whole maps with their declared sizes, 52 entries field by field, the 26 series htsjdk writes in write order, the 2 it reads and drops, and 4 refusals. The refusals cannot come from a file: two are names no data series has and two are encoding ids past the end of the enum, one of them negative because the read is signed."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31048058704, the golden-pending run of htsjdk-rs #120. 103 rows: 32 data series with their types and content ids, 10 encoding identifiers with which may live in an external block, 2 whole maps with their declared sizes, 52 entries field by field, the 26 series htsjdk writes in write order, the 2 it reads and drops, and 4 refusals. The refusals cannot come from a file: two are names no data series has and two are encoding ids past the end of the enum, one of them negative because the read is signed. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1569,7 +1569,7 @@
         {
           "dump": "CramTagEncodingMapDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_tag_encoding_map.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31048932788, the golden-pending run of htsjdk-rs #121. 32 rows: 9 tag ids packed and unpacked, 5 whole maps with their declared sizes, 9 entries field by field, 5 write orders and 4 answers from the collision guard. Two of the five files exist only to be compared with each other: they introduce the same three tags in opposite orders and their maps are byte-identical."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31048932788, the golden-pending run of htsjdk-rs #121. 32 rows: 9 tag ids packed and unpacked, 5 whole maps with their declared sizes, 9 entries field by field, 5 write orders and 4 answers from the collision guard. Two of the five files exist only to be compared with each other: they introduce the same three tags in opposite orders and their maps are byte-identical. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
@@ -1586,7 +1586,7 @@
         {
           "dump": "CramSliceHeaderDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_slice_header.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31049831397, the golden-pending run of htsjdk-rs #122. 51 rows over five files: 5 slice headers whole in hex and 5 more field by field, 5 declared block counts beside the blocks that actually follow, 30 decoded slice tags, 5 slice counts and the constants. The tags are decoded with the reader's own codec rather than read off the bytes, which is what showed there are six of them and not one. Two of the five files differ only in whether their records carry tags, which is what separates the digests that move from the digests that do not."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-golden-pending-11 artefact of run 31049831397, the golden-pending run of htsjdk-rs #122. 51 rows over five files: 5 slice headers whole in hex and 5 more field by field, 5 declared block counts beside the blocks that actually follow, 30 decoded slice tags, 5 slice counts and the constants. The tags are decoded with the reader's own codec rather than read off the bytes, which is what showed there are six of them and not one. Two of the five files differ only in whether their records carry tags, which is what separates the digests that move from the digests that do not. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },
