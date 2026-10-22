@@ -240,9 +240,10 @@ mod tests {
     /// A guard over a range no printable tag can enter.
     #[test]
     fn the_collision_guard_cannot_fire_for_a_printable_tag() {
-        assert!(overlaps_data_series_content_id(1));
-        assert!(overlaps_data_series_content_id(32));
-        assert!(!overlaps_data_series_content_id(33));
+        assert!(!overlaps_data_series_content_id(1));
+        assert!(overlaps_data_series_content_id(11));
+        assert!(overlaps_data_series_content_id(46));
+        assert!(!overlaps_data_series_content_id(47));
         // The smallest printable tag, three spaces.
         assert!(!overlaps_data_series_content_id(name_type_to_int(
             *b"  ", b' '

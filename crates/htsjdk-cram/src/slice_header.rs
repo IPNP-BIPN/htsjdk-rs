@@ -1,7 +1,7 @@
 //! The CRAM slice header: the last frame before CRAM becomes reads.
 //!
 //! Ported from `htsjdk.samtools.cram.structure.Slice`'s stream constructor and
-//! `createSliceHeaderBlockContent` at htsjdk 4.2.0.
+//! `createSliceHeaderBlockContent` at htsjdk 5.0.0.
 //!
 //! The compression header's three maps are pinned. A container's blocks then hold one or more
 //! slices, and each slice begins with a `MAPPED_SLICE` block whose raw content is this header.
@@ -13,12 +13,11 @@
 //! reader that counts the header block among them reads one block too few and stops before the
 //! last one.
 //!
-//! # Six tags ride in the header, and four of them digest nothing
+//! # htsjdk 5.0.0 writes no tags in the header
 //!
-//! Measured: `B1` and `S1` carry a SHA-1, `B5` and `S5` a SHA-512, and on an unmapped slice all
-//! four are the digest of the **empty string**, byte for byte identical in every file. That is 168
-//! bytes of constant per slice. Only `BD` and `SD`, four bytes apiece, move with the reads, and
-//! they do not move when only the tags change.
+//! 4.2.0 wrote six: `BD` and `SD` over the bases and the scores, and `B1`, `S1`, `B5` and `S5`,
+//! which on an unmapped slice were digests of the empty string, 168 bytes of constant per slice.
+//! 5.0.0 writes none, measured on five files; a file from another writer may still carry them.
 //!
 //! # The tag section has no length
 //!

@@ -212,9 +212,9 @@ fn unmapped() -> MateRecord {
 }
 
 /// The template length, stated on its own: zero where either end is unmapped or the two are on
-/// different references, and otherwise never zero, because of the sign that is added to it.
+/// different references, and otherwise the span of both ends, which is never zero.
 #[test]
-fn the_template_length_is_never_zero_between_two_mapped_ends() {
+fn the_template_length_is_the_span_of_both_ends() {
     let corpus = corpus();
     for row in rows(&corpus, "insert") {
         let (first, last) = (
@@ -224,15 +224,15 @@ fn the_template_length_is_never_zero_between_two_mapped_ends() {
         assert_eq!(first, -last, "{} is negated on the last", row[0]);
     }
 
-    // Two ends at the same position are one apart, not zero apart.
+    // Two 50-base ends at the same position span 50, and with neither first of pair the first is
+    // negative.
     let same = compute_insert_size(&mapped(0, 100, false), &mapped(0, 100, false));
-    assert_eq!(same, 1);
-    // And the sign follows which end comes first.
+    assert_eq!(same, -50);
+    // The sign follows which end starts first; the length is the span of both, whatever the strand.
     assert_eq!(
         compute_insert_size(&mapped(0, 200, false), &mapped(0, 100, false)),
-        -101
+        -150
     );
-    // A negative-strand end measures from its alignment end.
     assert_eq!(
         compute_insert_size(&mapped(0, 100, false), &mapped(0, 200, true)),
         150

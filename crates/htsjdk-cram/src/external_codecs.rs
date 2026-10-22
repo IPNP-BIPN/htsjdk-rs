@@ -1,7 +1,7 @@
 //! The codecs written on external blocks rather than on the core bit stream.
 //!
 //! Ported from `htsjdk.samtools.cram.encoding.external` and
-//! `htsjdk.samtools.cram.encoding.ByteArrayLenCodec` at htsjdk 4.2.0.
+//! `htsjdk.samtools.cram.encoding.ByteArrayLenCodec` at htsjdk 5.0.0.
 //!
 //! Six of the encoding map's identifiers put their data in a block of its own, named by a content
 //! id, and two more are built out of the first six. A block is bytes rather than bits, so these
@@ -15,16 +15,16 @@
 //!
 //! # External byte cannot see the end of its block
 //!
-//! It returns `(byte) stream.read()`, and at the end of a `ByteArrayInputStream` that is
+//! It returns `(byte) reader.read()`, and at the end of a `CRAMByteReader` that is
 //! `(byte) -1`. A byte of `0xFF` that is really there reads back as `-1` too, so nothing
 //! distinguishes a value from the end of the data.
 //!
 //! # Byte array stop trusts the data
 //!
 //! It appends a stop byte after each array and reads until it sees one, so an array containing
-//! that byte is written whole and read back split in two, with nothing reporting it. And a block
-//! that ends before a stop byte does is not an error either: the read ends on the end of the
-//! stream exactly as it would on a separator, and every read after that returns an empty array.
+//! that byte is written whole and read back split in two, with nothing reporting it. A block that
+//! ends before a stop byte does is refused: htsjdk 5.0.0 scans for the stop byte and names it in a
+//! `CRAMException`, where 4.2.0 ended the read on the end of the stream as on a separator.
 //!
 //! # Byte array len is a pair of codecs, but not any pair
 //!
@@ -50,9 +50,13 @@ pub enum ExternalError {
     NotImplemented,
     /// The byte array codec's `read()`, which has no length to work from.
     UnknownArrayLength,
-    /// More bytes asked for than the block holds. The reference's message is `null`: the exception
-    /// is constructed with no argument.
+    /// An integer past the end of its block. The reference's message is `null`: the exception is
+    /// constructed with no argument.
     EndOfStream,
+    /// `CRAMByteReader.readFully`: more bytes asked for than the block still holds.
+    ShortRead { wanted: usize, remaining: usize },
+    /// `ByteArrayStopCodec.read`, whose block ends before its stop byte does.
+    StopByteNotFound { stop: u8, scanned: usize },
     /// A Huffman length, which has its own refusals.
     Huffman(HuffmanError),
     /// The bit stream underneath a Huffman length.
@@ -67,6 +71,12 @@ impl ExternalError {
                 "Cannot read byte array of unknown length.".to_string()
             }
             ExternalError::EndOfStream => "null".to_string(),
+            ExternalError::ShortRead { wanted, remaining } => {
+                format!("Attempted to read {wanted} bytes but only {remaining} remain")
+            }
+            ExternalError::StopByteNotFound { stop, scanned } => format!(
+                "Stop byte 0x{stop:x} not found in external block (scanned {scanned} bytes)"
+            ),
             ExternalError::Huffman(error) => error.message(),
             ExternalError::Bits(error) => error.message(),
         }
@@ -76,6 +86,8 @@ impl ExternalError {
         match self {
             ExternalError::NotImplemented | ExternalError::UnknownArrayLength => "RuntimeException",
             ExternalError::EndOfStream => "RuntimeEOFException",
+            ExternalError::ShortRead { .. } => "IllegalStateException",
+            ExternalError::StopByteNotFound { .. } => "CRAMException",
             ExternalError::Huffman(error) => error.java_exception(),
             ExternalError::Bits(error) => error.java_exception(),
         }
@@ -166,12 +178,13 @@ impl<'a> ByteCursor<'a> {
         self.at += count;
     }
 
-    /// `InputStreamUtils.readFully`, which refuses rather than returning what it has.
+    /// `CRAMByteReader.readFully`, which refuses rather than returning what it has.
     fn read_fully(&mut self, length: usize) -> Result<&'a [u8], ExternalError> {
-        let taken = self
-            .remaining()
-            .get(..length)
-            .ok_or(ExternalError::EndOfStream)?;
+        let remaining = self.remaining();
+        let taken = remaining.get(..length).ok_or(ExternalError::ShortRead {
+            wanted: length,
+            remaining: remaining.len(),
+        })?;
         self.advance(length);
         Ok(taken)
     }
@@ -333,19 +346,20 @@ impl ByteArrayStopCodec {
         block.push(self.stop);
     }
 
-    /// Reads until the stop byte or the end of the block, whichever comes first, and reports
-    /// neither. An array holding the stop byte comes back split; a block that runs out comes back
-    /// short, and then empty for ever after.
-    pub fn read(&self, streams: &mut SliceReadStreams<'_>) -> Vec<u8> {
+    /// Reads up to the stop byte and consumes it. An array holding the stop byte comes back split,
+    /// and nothing reports that; a block that ends first is refused.
+    pub fn read(&self, streams: &mut SliceReadStreams<'_>) -> Result<Vec<u8>, ExternalError> {
         let cursor = streams.external(self.content_id);
-        let mut out = Vec::new();
-        loop {
-            let byte = cursor.read();
-            if byte == -1 || byte == i32::from(self.stop) {
-                return out;
-            }
-            out.push(byte as u8);
-        }
+        let remaining = cursor.remaining();
+        let length = remaining.iter().position(|byte| *byte == self.stop).ok_or(
+            ExternalError::StopByteNotFound {
+                stop: self.stop,
+                scanned: remaining.len(),
+            },
+        )?;
+        let value = remaining[..length].to_vec();
+        cursor.advance(length + 1);
+        Ok(value)
     }
 
     pub fn read_with_length(

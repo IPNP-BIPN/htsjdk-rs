@@ -6,15 +6,11 @@
 //!
 //! ```text
 //! blockcount  four-unmapped  0  27  27
-//! slicetag    four-unmapped  0  B1  byte[]  da39a3ee5e6b4b0d3255bfef95601890afd80709
-//! slicetag    four-unmapped  0  BD  byte[]  9efa8928
-//! slicetag    tagged         0  BD  byte[]  9efa8928
 //! ```
 //!
 //! The declared block count equals the blocks that follow the header, so a reader that counts the
-//! header among them stops one short. Four of the six slice tags are digests of the empty string
-//! and are identical in every file; only `BD` and `SD` move with the reads, and they do not move
-//! when only the record tags change.
+//! header among them stops one short. htsjdk 5.0.0 writes a slice header with no tags at all,
+//! where 4.2.0 wrote six digests.
 
 use std::io::Read;
 
@@ -158,64 +154,17 @@ fn an_unmapped_slice_has_no_start_and_no_span() {
     assert_eq!(compared, 5, "alignment contexts compared");
 }
 
-/// Four of the six slice tags are digests of the empty string, identical in every file. Only `BD`
-/// and `SD` move with the reads, and they do not move when only the record tags change.
+/// htsjdk 5.0.0 writes no slice tags. 4.2.0 wrote six byte arrays per slice, `BD` and `SD` over
+/// the bases and the scores and four digests of the empty string, 168 bytes of constant among them.
 #[test]
-fn four_of_the_six_slice_tags_digest_nothing() {
+fn a_slice_carries_no_tags() {
     let corpus = corpus();
-    let tags = rows(&corpus, "slicetag");
-    assert_eq!(tags.len(), 30, "six tags over five files");
-
-    let mut constant: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    let mut varying: std::collections::HashMap<(&str, &str), &str> =
-        std::collections::HashMap::new();
-
-    for row in &tags {
-        let (label, name, value) = (row[0], row[2], row[4]);
-        assert_eq!(row[3], "byte[]", "{name} is a byte array");
-        match name {
-            "B1" | "S1" | "B5" | "S5" => {
-                if let Some(seen) = constant.get(name) {
-                    assert_eq!(*seen, value, "{name} is the same in every file");
-                } else {
-                    constant.insert(name, value);
-                }
-            }
-            "BD" | "SD" => {
-                varying.insert((label, name), value);
-            }
-            other => panic!("{other}: an unexpected slice tag"),
-        }
+    assert!(rows(&corpus, "slicetag").is_empty(), "no slice tag rows");
+    let slices = rows(&corpus, "slice");
+    assert_eq!(slices.len(), 5);
+    for row in slices {
+        assert_eq!(row.last(), Some(&"-"), "{}: tags", row[0]);
     }
-
-    // The SHA-1 and the SHA-512 of the empty string.
-    assert_eq!(constant["B1"], "da39a3ee5e6b4b0d3255bfef95601890afd80709");
-    assert_eq!(constant["S1"], constant["B1"]);
-    assert_eq!(constant["B1"].len(), 40, "twenty bytes");
-    assert_eq!(constant["B5"].len(), 128, "sixty-four bytes");
-    assert_eq!(constant["S5"], constant["B5"]);
-
-    // Only the reads move BD and SD, and the record tags do not.
-    assert_ne!(
-        varying[&("four-unmapped", "BD")],
-        varying[&("one-unmapped", "BD")],
-        "different reads, different digest"
-    );
-    assert_eq!(
-        varying[&("four-unmapped", "BD")],
-        varying[&("tagged", "BD")],
-        "the same reads with tags added, the same digest"
-    );
-    assert_eq!(
-        varying[&("four-unmapped", "SD")],
-        varying[&("tagged", "SD")]
-    );
-
-    // 168 bytes of constant per slice.
-    let constant_bytes =
-        (constant["B1"].len() + constant["S1"].len() + constant["B5"].len() + constant["S5"].len())
-            / 2;
-    assert_eq!(constant_bytes, 168);
 }
 
 /// One slice per file in this corpus, which is what makes the block counts comparable.

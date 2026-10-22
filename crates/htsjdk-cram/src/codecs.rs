@@ -158,7 +158,7 @@ pub fn read_byte_array(
 ) -> Result<Vec<u8>, ReadError> {
     Ok(match (encoding, length) {
         (Encoding::ByteArrayStop { stop, content_id }, None) => {
-            ByteArrayStopCodec::new(*stop, *content_id).read(streams)
+            ByteArrayStopCodec::new(*stop, *content_id).read(streams)?
         }
         (Encoding::ByteArrayStop { stop, content_id }, Some(length)) => {
             ByteArrayStopCodec::new(*stop, *content_id).read_with_length(streams, length)?

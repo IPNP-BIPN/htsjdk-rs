@@ -1,6 +1,6 @@
 //! The three flag words a CRAM record carries, and the mate chain that fills two of them.
 //!
-//! Ported from `htsjdk.samtools.cram.structure.CRAMCompressionRecord` at htsjdk 4.2.0: its flag
+//! Ported from `htsjdk.samtools.cram.structure.CRAMCompressionRecord` at htsjdk 5.0.0: its flag
 //! predicates, `restoreMateInfo`, `setNextMate`, `computeInsertSize` and `setToDetachedState`.
 //!
 //! A BAM record has one flag word. A CRAM record has three: the BAM flags it will become, a CRAM
@@ -27,8 +27,9 @@
 //!
 //! # The template length is computed once and negated once
 //!
-//! On the first and the last of the chain. Every record between them keeps whatever it was
-//! constructed with, which for a triple measured 250, 0 and -250.
+//! On the first and the last of the chain, as htslib computes it: the span of both ends, so a pair
+//! at 100 and 200 with 50-base reads is 150 where 4.2.0 said 101. Every record between them keeps
+//! whatever it was constructed with, which for a triple measured 250, 0 and -250.
 
 /// `CF_QS_PRESERVED_AS_ARRAY`.
 pub const CF_QS_PRESERVED_AS_ARRAY: i32 = 0x1;
@@ -221,11 +222,10 @@ pub fn restore_mate_info(records: &mut [MateRecord]) {
     records[last].template_size = -template_length;
 }
 
-/// `computeInsertSize`.
+/// `computeInsertSize`, htsjdk 5.0.0's, which is htslib's.
 ///
-/// Zero if either end is unmapped or the two are on different references. Otherwise the distance
-/// between the two 5' ends plus a sign, so the shortest template is 1 and never 0. A
-/// negative-strand record measures from its alignment end.
+/// Zero if either end is unmapped or the two are on different references. Otherwise
+/// [`template_length`] over the two ends; 4.2.0 measured between the 5' ends instead.
 pub fn compute_insert_size(first: &MateRecord, last: &MateRecord) -> i32 {
     if first.flags.is_segment_unmapped()
         || last.flags.is_segment_unmapped()
@@ -233,24 +233,23 @@ pub fn compute_insert_size(first: &MateRecord, last: &MateRecord) -> i32 {
     {
         return 0;
     }
+    template_length(
+        (first.alignment_start, first.alignment_end),
+        first.flags.is_first_segment(),
+        (last.alignment_start, last.alignment_end),
+    )
+}
 
-    let first_five_prime = if first.flags.is_negative_strand() {
-        first.alignment_end
+/// The span from the leftmost mapped base to the rightmost, both included: positive for the end
+/// that starts first, negative for the other, and on equal starts positive for the first of pair.
+/// Each end is `(alignment start, alignment end)`.
+pub fn template_length(first: (i32, i32), first_is_first_segment: bool, last: (i32, i32)) -> i32 {
+    let left = first.0.min(last.0);
+    let right = first.1.max(last.1);
+    let magnitude = right.wrapping_sub(left).wrapping_add(1);
+    if first.0 < last.0 || (first.0 == last.0 && first_is_first_segment) {
+        magnitude
     } else {
-        first.alignment_start
-    };
-    let last_five_prime = if last.flags.is_negative_strand() {
-        last.alignment_end
-    } else {
-        last.alignment_start
-    };
-
-    let adjustment = if last_five_prime >= first_five_prime {
-        1
-    } else {
-        -1
-    };
-    last_five_prime
-        .wrapping_sub(first_five_prime)
-        .wrapping_add(adjustment)
+        magnitude.wrapping_neg()
+    }
 }
