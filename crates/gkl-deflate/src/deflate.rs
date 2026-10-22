@@ -195,7 +195,36 @@ enum Hash {
 
 /// The CRC-32C the SSE4.2 `crc32` instruction computes: reflected, polynomial 0x1EDC6F41, and no
 /// final inversion. `_mm_crc32_u32(0, val)` processes `val`'s four bytes least-significant first.
+#[inline]
 fn crc32c_u32(val: u32) -> u32 {
+    // The instruction where the CPU has it: Arm's `crc32cw` is the same CRC as SSE4.2's.
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("crc") {
+        // SAFETY: the CPU was just found to have the instruction.
+        return unsafe { crc32c_u32_arm(val) };
+    }
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("sse4.2") {
+        // SAFETY: the CPU was just found to have the instruction.
+        return unsafe { crc32c_u32_x86(val) };
+    }
+    crc32c_u32_table(val)
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "crc")]
+unsafe fn crc32c_u32_arm(val: u32) -> u32 {
+    std::arch::aarch64::__crc32cw(0, val)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+unsafe fn crc32c_u32_x86(val: u32) -> u32 {
+    std::arch::x86_64::_mm_crc32_u32(0, val)
+}
+
+/// [`crc32c_u32`] without the instruction.
+fn crc32c_u32_table(val: u32) -> u32 {
     // Slicing-by-4: the same value as feeding the four bytes through the bitwise CRC.
     CRC32C[3][(val & 0xFF) as usize]
         ^ CRC32C[2][((val >> 8) & 0xFF) as usize]
@@ -257,6 +286,7 @@ fn crc32c_u32_is_the_bitwise_crc() {
         v = v.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         assert_eq!(crc32c_u32(v), bitwise(v));
         assert_eq!(crc32c_u32(v & 0x00FF_FFFF), bitwise(v & 0x00FF_FFFF));
+        assert_eq!(crc32c_u32_table(v), bitwise(v));
     }
 }
 
@@ -363,12 +393,8 @@ impl<'a> Deflater<'a> {
         match self.hash {
             Hash::Multiplicative => self.update_hash(self.window[str_pos + MIN_MATCH - 1]),
             Hash::Crc32c { three_byte } => {
-                let mut val = u32::from_le_bytes([
-                    self.window[str_pos],
-                    self.window[str_pos + 1],
-                    self.window[str_pos + 2],
-                    self.window[str_pos + 3],
-                ]);
+                let mut val =
+                    u32::from_le_bytes(self.window[str_pos..str_pos + 4].try_into().unwrap());
                 if three_byte {
                     val &= 0x00FF_FFFF;
                 }
@@ -478,6 +504,8 @@ impl<'a> Deflater<'a> {
         let limit = self.strstart.saturating_sub(MAX_DIST);
         let scan = self.strstart;
         let strend = self.strstart + MAX_MATCH;
+        let (window, prev) = (&self.window[..], &self.prev[..]);
+        let mut match_start = None;
 
         // Already sitting on a good match: spend a quarter of the budget looking for a better one.
         if self.prev_length >= self.config.good_length {
@@ -488,37 +516,42 @@ impl<'a> Deflater<'a> {
             nice_match = self.lookahead;
         }
 
+        // The cheap rejections zlib makes before comparing anything: the last byte of the current
+        // best and the one past it, then the first two bytes, each pair one 16-bit compare as
+        // `UNALIGNED_OK` makes it. A best of 0 has no last byte, so only the one past it is asked.
+        let pair = |at: usize| u16::from_le_bytes([window[at], window[at + 1]]);
+        let end_of = |best_len: usize| best_len.saturating_sub(1);
+        let mut scan_end = pair(scan + end_of(best_len));
+        let scan_start = pair(scan);
         loop {
             let m = cur_match;
-            // The three cheap rejections zlib makes before comparing anything: the byte one past
-            // the current best, the byte at the best, and the first two bytes.
-            if self.window[m + best_len] != self.window[scan + best_len]
-                || (best_len > 0
-                    && self.window[m + best_len - 1] != self.window[scan + best_len - 1])
-                || self.window[m] != self.window[scan]
-                || self.window[m + 1] != self.window[scan + 1]
-            {
-                // fall through to the chain step
+            let end_matches = if best_len == 0 {
+                window[m] == window[scan]
             } else {
+                pair(m + best_len - 1) == scan_end
+            };
+            if end_matches && pair(m) == scan_start {
                 // scan[2] == match[2] is implied by the hash, so the comparison starts at 3 and
                 // stops at the first differing byte or at strend, eight bytes at a time.
-                let len = 3 + common_prefix(
-                    &self.window[scan + 3..strend],
-                    &self.window[m + 3..m + MAX_MATCH],
-                );
+                let len =
+                    3 + common_prefix(&window[scan + 3..strend], &window[m + 3..m + MAX_MATCH]);
                 if len > best_len {
-                    self.match_start = cur_match;
+                    match_start = Some(cur_match);
                     best_len = len;
                     if len >= nice_match {
                         break;
                     }
+                    scan_end = pair(scan + end_of(best_len));
                 }
             }
-            cur_match = self.prev[cur_match & W_MASK] as usize;
+            cur_match = prev[cur_match & W_MASK] as usize;
             chain_length -= 1;
             if cur_match <= limit || chain_length == 0 {
                 break;
             }
+        }
+        if let Some(start) = match_start {
+            self.match_start = start;
         }
 
         if best_len <= self.lookahead {
