@@ -24,7 +24,8 @@
 //! legal and answers with no bases. `stop > size` is "past end of contig". A start below one is
 //! not checked at all: it is the caller's job, and `GATKTool` does it.
 
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{self, Read, Seek, SeekFrom};
 
 /// One line of the `.fai`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,7 +164,7 @@ impl<R: Read + Seek> IndexedFasta<R> {
 
         // The whole span in one read, terminators included, straight into the answer, then the
         // terminators closed up in place: htsjdk reads the span through one channel read too,
-        // where a read per line costs a syscall each.
+        // where a read per line costs a syscall each. From a `PositionalFile` the seek is free.
         let mut target = vec![0u8; (offset(stop) - first + 1) as usize];
         self.source
             .seek(SeekFrom::Start(entry.location + first))
@@ -187,9 +188,67 @@ impl<R: Read + Seek> IndexedFasta<R> {
     }
 }
 
-impl IndexedFasta<std::fs::File> {
+/// A file read at explicit offsets, which is how `IndexedFastaSequenceFile` reads a FASTA: one
+/// `FileChannel.read(buffer, position)` per query.
+///
+/// `seek` only records where the next read starts, and `read` reads there with one positional read
+/// (`pread`, or `seek_read` on Windows) and moves the recorded position past what it read. A
+/// `File` would make an `lseek` call before every query's read, which is a syscall per query and,
+/// on a virtual machine, most of the cost of a short one.
+#[derive(Debug)]
+pub struct PositionalFile {
+    file: File,
+    position: u64,
+}
+
+impl PositionalFile {
+    pub fn new(file: File) -> Self {
+        Self { file, position: 0 }
+    }
+
+    pub fn into_inner(self) -> File {
+        self.file
+    }
+}
+
+impl Read for PositionalFile {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        #[cfg(unix)]
+        let n = std::os::unix::fs::FileExt::read_at(&self.file, buf, self.position)?;
+        #[cfg(windows)]
+        let n = std::os::windows::fs::FileExt::seek_read(&self.file, buf, self.position)?;
+        #[cfg(not(any(unix, windows)))]
+        let n = {
+            self.file.seek(SeekFrom::Start(self.position))?;
+            self.file.read(buf)?
+        };
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for PositionalFile {
+    fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+        let position = match to {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+            SeekFrom::End(delta) => self.file.metadata()?.len().checked_add_signed(delta),
+        };
+        let position = position.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid seek to a negative or overflowing position",
+            )
+        })?;
+        self.position = position;
+        Ok(position)
+    }
+}
+
+impl IndexedFasta<PositionalFile> {
     /// The FASTA at `path` with the `.fai` beside it, which is
-    /// `ReferenceSequenceFileFactory.getReferenceSequenceFile` with `requireIndex`.
+    /// `ReferenceSequenceFileFactory.getReferenceSequenceFile` with `requireIndex`, read at
+    /// explicit offsets as htsjdk reads it (see [`PositionalFile`]).
     pub fn open(path: &std::path::Path) -> Result<Self, FastaIndexError> {
         let index_path = {
             let mut name = path.as_os_str().to_os_string();
@@ -199,9 +258,9 @@ impl IndexedFasta<std::fs::File> {
         let text = std::fs::read_to_string(&index_path)
             .map_err(|error| FastaIndexError::Io(format!("{}: {error}", index_path.display())))?;
         let index = FastaIndex::parse(&text)?;
-        let file = std::fs::File::open(path)
+        let file = File::open(path)
             .map_err(|error| FastaIndexError::Io(format!("{}: {error}", path.display())))?;
-        Ok(IndexedFasta::new(file, index))
+        Ok(IndexedFasta::new(PositionalFile::new(file), index))
     }
 }
 
@@ -209,6 +268,85 @@ impl IndexedFasta<std::fs::File> {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    /// A file in the temporary directory, removed when dropped.
+    struct TempFile(std::path::PathBuf);
+
+    impl TempFile {
+        fn new(name: &str, contents: &[u8]) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("htsjdk-rs-{}-{name}", std::process::id()));
+            std::fs::write(&path, contents).expect("writes");
+            TempFile(path)
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Every query a contig allows, read at offsets from a file and through `Seek` from memory,
+    /// with LF and with CRLF terminators.
+    #[test]
+    fn a_positional_file_answers_every_query_as_a_cursor_does() {
+        for (name, text, fai) in [
+            (
+                "lf.fa",
+                ">chr1\nACGTAC\nGTACGT\nAC\n>chr2\nTTTTTT\nGG\n",
+                "chr1\t14\t6\t6\t7\nchr2\t8\t29\t6\t7\n",
+            ),
+            (
+                "crlf.fa",
+                ">chr1\r\nACGTAC\r\nGTACGT\r\nAC\r\n>chr2\r\nTTTTTT\r\nGG\r\n",
+                "chr1\t14\t7\t6\t8\nchr2\t8\t34\t6\t8\n",
+            ),
+        ] {
+            let file = TempFile::new(name, text.as_bytes());
+            let index = FastaIndex::parse(fai).expect("the index parses");
+            let mut memory =
+                IndexedFasta::new(Cursor::new(text.as_bytes().to_vec()), index.clone());
+            let mut disk = IndexedFasta::new(
+                PositionalFile::new(File::open(&file.0).expect("opens")),
+                index.clone(),
+            );
+            for entry in &index.entries {
+                for start in 1..=entry.size as i64 + 1 {
+                    for stop in start - 1..=entry.size as i64 {
+                        assert_eq!(
+                            disk.query(&entry.name, start, stop),
+                            memory.query(&entry.name, start, stop),
+                            "{name} {}:{start}-{stop}",
+                            entry.name
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_positional_file_seeks_as_a_file_does() {
+        let file = TempFile::new("seek.bin", b"0123456789");
+        let mut f = PositionalFile::new(File::open(&file.0).expect("opens"));
+        let mut two = [0u8; 2];
+        assert_eq!(f.seek(SeekFrom::Start(3)).unwrap(), 3);
+        f.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"34");
+        assert_eq!(f.seek(SeekFrom::Current(1)).unwrap(), 6);
+        f.read_exact(&mut two).unwrap();
+        assert_eq!(&two, b"67");
+        assert_eq!(f.seek(SeekFrom::End(-1)).unwrap(), 9);
+        assert_eq!(f.read(&mut two).unwrap(), 1);
+        assert_eq!(f.read(&mut two).unwrap(), 0, "past the end reads nothing");
+        assert!(f.seek(SeekFrom::Current(-20)).is_err());
+        assert_eq!(
+            f.stream_position().unwrap(),
+            10,
+            "a refused seek moves nothing"
+        );
+    }
 
     /// Two contigs, six bases per line, LF terminators.
     fn fixture() -> (Cursor<Vec<u8>>, FastaIndex) {
