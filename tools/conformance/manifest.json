@@ -1406,7 +1406,7 @@
         {
           "dump": "CramNegotiationDump",
           "golden": "crates/htsjdk-cram/tests/data/cram_negotiation.txt.gz",
-          "why": "54 rows: thirty-two data series with the encoding the default strategy gives each, seven compressor choices with all three candidate lengths on every row including one tie, eleven tag encodings covering every type and both branches of the two variable-width ones, and four tag dictionaries with the index each record was given. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31205053028, and byte for byte what an Apple Silicon laptop produced. That includes the gzip lengths, so the JDK's zlib gives the same output size on both machines even though nothing here reproduces its bytes. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
+          "why": "54 rows: thirty-two data series with the encoding the default strategy gives each, seven compressor choices with both trial candidates' lengths on every row including one tie, eleven tag encodings covering every type and both branches of the two variable-width ones, and four tag dictionaries with the index each record was given. From the pinned container on a real x86-64 runner, published as the golden-pending artefact of run 31205053028, and byte for byte what an Apple Silicon laptop produced. That includes the gzip lengths, so the JDK's zlib gives the same output size on both machines even though nothing here reproduces its bytes. Regenerated under htsjdk 5.0.0 from run 39729700778 of htsjdk-rs #271."
         }
       ]
     },

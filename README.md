@@ -22,10 +22,13 @@ cross-check oracle.
 
 ## Reference version
 
-Ported from htsjdk `4.2.0`, the version pinned by GATK 4.6.2.0's `build.gradle`. GATK 4.7.0.0
-pins htsjdk 5.0.0, and the target stays here until the tool ports are done: all three
-repositories name one set of pins, and moving one alone reproduces a combination nobody ships
-([decision 0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md)).
+Measured against htsjdk `5.0.0`, the version GATK 4.7.0.0 and Picard 3.5.0 pin. Most modules were
+transcribed from 4.2.0 and say so; every suite now runs against 5.0.0, and the 18 behaviours that
+moved are ported
+([decision 0047](docs/decisions/0047-the-reference-moves-to-htsjdk-5.0.0.md), which supersedes the
+pin of [0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md)).
+gatk-rs, still at GATK 4.6.2.0, pins this repository by revision and keeps 4.2.0's behaviour
+until it moves that pin.
 
 ## Scope
 
@@ -65,7 +68,9 @@ tools/benchmark/run.sh 64 3
 ```
 
 The figures come from the `benchmark` job, which runs it on a real x86-64 runner; a run on a
-developer machine goes through an emulated container and measures the emulator. Both sides are
+developer machine goes through an emulated container and measures the emulator. The tables below
+were measured before decision 0047, against the 4.2.0 container, and have not been re-run against
+5.0.0. Both sides are
 library calls, not command-line tools: htsjdk 4.2.0 on JDK 17 with its defaults, the port at the
 same commit, allocating through mimalloc as picard-rs does (each crate's `mimalloc` feature sets
 it as the benches' global allocator; the libraries themselves leave the allocator to the binary).
@@ -246,9 +251,10 @@ compiler will never catch any of them.
 | [0025](docs/decisions/0025-fdlibm-is-portable-and-is-the-worse-stand-in-for-the-intrinsic.md) | FDLIBM is portable, and it is the *worse* stand-in for `Math.exp` |
 | [0040](docs/decisions/0040-the-format-corpus-came-back-green.md) | The format corpus came back green, so the 99.73% is the oracle's number (closes 0022) |
 | [0041](docs/decisions/0041-a-patch-sent-upstream-is-not-a-dependency-removed.md) | A patch sent upstream is not a dependency removed: Milestone U closed from this side |
-| [0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md) | The reference version is pinned by the consumers: 4.2.0 until the tool ports are done |
+| [0042](docs/decisions/0042-the-reference-version-is-pinned-by-the-consumers-not-by-this-repository.md) | The reference version is pinned by the consumers: 4.2.0 until the tool ports are done (superseded by 0047) |
 | [0043](docs/decisions/0043-gkl-passes-levels-one-and-two-through.md) | GKL passes levels 1 and 2 through to ISA-L, correcting 0031 |
 | [0044](docs/decisions/0044-strictmath-log-is-fdlibm-and-is-not-math-log.md) | `StrictMath.log` is FDLIBM, and it is not `Math.log`: 186 corpus points tell them apart |
+| [0047](docs/decisions/0047-the-reference-moves-to-htsjdk-5.0.0.md) | The reference moves to htsjdk 5.0.0: 18 of 87 suites moved, each ported |
 
 ## What "finished" means
 
@@ -286,8 +292,8 @@ push like everything else.
 
 | Repo | Ports | Depends on |
 |---|---|---|
-| `htsjdk-rs` | htsjdk 4.2.0 | (none) |
-| `picard-rs` | Picard 3.4.0 | `htsjdk-rs` |
+| `htsjdk-rs` | htsjdk 5.0.0 | (none) |
+| `picard-rs` | Picard 3.5.0 | `htsjdk-rs` |
 | `gatk-rs` | GATK 4.6.2.0 | `picard-rs`, `htsjdk-rs` |
 
 The topology mirrors upstream, including the direction of the dependencies.

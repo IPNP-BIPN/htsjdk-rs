@@ -1,6 +1,6 @@
 //! The `MD` and `NM` alignment tags.
 //!
-//! Ports `htsjdk.samtools.util.SequenceUtil.calculateMdAndNmTags` at tag 4.2.0: given a read's
+//! Ports `htsjdk.samtools.util.SequenceUtil.calculateMdAndNm` at htsjdk 5.0.0: given a read's
 //! alignment and the reference bases it covers, compute the `MD` string (the mismatch/deletion
 //! description) and the `NM` edit distance. `SetNmMdAndUqTags`, `ValidateSamFile`, and the alignment
 //! mergers all lean on this; it is the reference-walking core they share.
@@ -8,7 +8,8 @@
 //! The walk is faithful to htsjdk down to its quirks: a base compares equal via the IUPAC-aware
 //! [`bases_equal`](crate::sequence::bases_equal) table (a no-call read base, byte `0`, counts as a
 //! match); a run past the end of the reference stops the walk mid-block; and a deletion emits `^`
-//! then the deleted reference bases. `NM` counts mismatches plus every inserted and deleted base.
+//! then the deleted reference bases, stopping at the end of the reference as 5.0.0 does (4.2.0
+//! indexed past it and threw). `NM` counts mismatches plus every inserted and deleted base.
 
 use crate::cigar::{Cigar, Op};
 use crate::sequence::bases_equal;
