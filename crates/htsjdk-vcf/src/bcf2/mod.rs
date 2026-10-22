@@ -45,6 +45,13 @@ pub struct Bcf2Error {
     pub message: String,
 }
 
+/// A deferred genotype block's refusal, thrown on through a writer that reached it.
+impl From<crate::genotypes_context::GenotypeError> for Bcf2Error {
+    fn from(error: crate::genotypes_context::GenotypeError) -> Self {
+        Self::new(error.class, error.message)
+    }
+}
+
 impl Bcf2Error {
     pub fn new(class: &'static str, message: impl Into<String>) -> Self {
         Self {

@@ -22,11 +22,11 @@ use std::time::Instant;
 use htsjdk_bgzf::{decompress_all, BgzfWriter};
 use htsjdk_tribble::bed::{decode as decode_bed, StartOffset};
 use htsjdk_tribble::tabix::{FeatureRef, TabixFormat, TabixIndexCreator};
-use htsjdk_vcf::bcf2::codec::read_bcf;
+use htsjdk_vcf::bcf2::codec::read_bcf_with;
 use htsjdk_vcf::bcf2::writer::{Bcf2Writer, Origin};
 use htsjdk_vcf::encoder::VcfEncoder;
 use htsjdk_vcf::indexed_writer::{write_vcf_indexed, SequenceEntry};
-use htsjdk_vcf::reader::{read_vcf, VcfFile};
+use htsjdk_vcf::reader::{read_vcf_with, GenotypeParsing, VcfFile};
 use htsjdk_vcf::vcf_file::write_vcf;
 
 struct Bench {
@@ -60,8 +60,14 @@ impl Bench {
     }
 }
 
+/// Read as htsjdk reads, the genotype columns parsed on first access (decision 0048): a write
+/// that needs them parses them inside its own timing, as `BCF2Writer.add` does.
 fn read(path: &Path) -> VcfFile {
-    read_vcf(&std::fs::read_to_string(path).expect("reads")).expect("parses")
+    read_vcf_with(
+        &std::fs::read_to_string(path).expect("reads"),
+        GenotypeParsing::Deferred,
+    )
+    .expect("parses")
 }
 
 /// The dictionary of `vcf-bench`'s corpus, whose one `##contig` line this is.
@@ -104,7 +110,13 @@ fn main() {
     let file = b.time(
         "bcf_read",
         || (),
-        |()| read_bcf(&std::fs::read(&bcf).expect("reads")).expect("decodes"),
+        |()| {
+            read_bcf_with(
+                &std::fs::read(&bcf).expect("reads"),
+                GenotypeParsing::Deferred,
+            )
+            .expect("decodes")
+        },
     );
     let encoder = VcfEncoder::new(&file.header);
     let mut text = file.header.write();
@@ -156,7 +168,11 @@ fn main() {
         || (),
         |()| {
             let text = decompress_all(&std::fs::read(&gz).expect("reads")).expect("inflates");
-            read_vcf(std::str::from_utf8(&text).expect("text")).expect("parses")
+            read_vcf_with(
+                std::str::from_utf8(&text).expect("text"),
+                GenotypeParsing::Deferred,
+            )
+            .expect("parses")
         },
     );
     std::fs::write(
