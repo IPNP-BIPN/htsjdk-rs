@@ -263,7 +263,7 @@
         {
           "dump": "BinaryTagCodecReadDump",
           "golden": "crates/htsjdk-bam/tests/data/bam_tag_read.txt.gz",
-          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-bam-tag-read artefact of run 31093032906, the golden-pending run of htsjdk-rs #123. 62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting inputs are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Every row carries the bytes it came from, so the golden is readable without the dump beside it. The runner's dump and this laptop's are byte-identical, which is recorded and changes nothing: decision 0008 says where a golden may come from, not how likely the two are to agree."
+          "why": "From the pinned container on a real x86-64 runner, published as the candidate-goldens-bam-tag-read artefact of run 31093032906, the golden-pending run of htsjdk-rs #123. Regenerated under htsjdk 5.0.0 from run 39728635215 of htsjdk-rs #271: one row moved, the unterminated string, which 5.0.0 refuses with a SAMFormatException where 4.2.0 ran off the buffer. 62 rows built from bytes the dump lays out itself rather than from a file htsjdk wrote, because the two most interesting inputs are ones htsjdk never writes: an 'I' holding a small value and an 'H' at all. Every row carries the bytes it came from, so the golden is readable without the dump beside it. The runner's dump and this laptop's are byte-identical, which is recorded and changes nothing: decision 0008 says where a golden may come from, not how likely the two are to agree."
         }
       ]
     },

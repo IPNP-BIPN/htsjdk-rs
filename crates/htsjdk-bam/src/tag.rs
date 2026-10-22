@@ -426,6 +426,9 @@ pub enum TagReadError {
     UnrecognizedArrayType(u8),
     /// `BufferUnderflowException`, which carries no message.
     BufferUnderflow,
+    /// `SAMFormatException: Null-terminated string tag value is not null terminated.`, which
+    /// htsjdk 5.0.0's `readNullTerminatedString` raises where 4.2.0 ran off the buffer.
+    UnterminatedString,
     /// `NegativeArraySizeException`, whose message is the length itself.
     NegativeArraySize(i32),
     /// `NumberFormatException` out of `StringUtil.hexStringToBytes`, for an `H` value.
@@ -447,6 +450,9 @@ impl TagReadError {
                 format!("Unrecognized tag array type: {}", as_java_char(*c))
             }
             TagReadError::BufferUnderflow => String::new(),
+            TagReadError::UnterminatedString => {
+                "Null-terminated string tag value is not null terminated.".into()
+            }
             TagReadError::NegativeArraySize(n) => n.to_string(),
             TagReadError::OddHexLength(s) => format!(
                 "Hex representation of byte string does not have even number of hex chars: {s}"
@@ -460,9 +466,9 @@ impl TagReadError {
     /// The Java exception it arrives as, which is not always htsjdk's own.
     pub fn java_exception(&self) -> &'static str {
         match self {
-            TagReadError::UnrecognizedType(_) | TagReadError::UnrecognizedArrayType(_) => {
-                "SAMFormatException"
-            }
+            TagReadError::UnrecognizedType(_)
+            | TagReadError::UnrecognizedArrayType(_)
+            | TagReadError::UnterminatedString => "SAMFormatException",
             TagReadError::BufferUnderflow => "BufferUnderflowException",
             TagReadError::NegativeArraySize(_) => "NegativeArraySizeException",
             TagReadError::OddHexLength(_) | TagReadError::NotAHexDigit(_) => {
@@ -531,12 +537,12 @@ impl Cursor<'_> {
         Ok(f32::from_le_bytes(self.take(4)?.try_into().expect("four")))
     }
 
-    /// `readNullTerminatedString`, whose scan for the terminator is what runs off the end.
+    /// `readNullTerminatedString`, which refuses a value its buffer ends inside.
     fn null_terminated(&mut self) -> Result<String, TagReadError> {
         let end = self.bytes[self.at..]
             .iter()
             .position(|b| *b == 0)
-            .ok_or(TagReadError::BufferUnderflow)?;
+            .ok_or(TagReadError::UnterminatedString)?;
         // `StringUtil.bytesToString` is the inverse of `stringToBytes`: one char per byte, so a
         // byte of 0xE9 is U+00E9 and not the two bytes UTF-8 would have wanted.
         let text = self.bytes[self.at..self.at + end]
@@ -1037,7 +1043,11 @@ mod tests {
                 TagReadError::UnrecognizedArrayType(b'q'),
                 "Unrecognized tag array type: q",
             ),
-            (block("XX", b'Z', b"ab"), TagReadError::BufferUnderflow, ""),
+            (
+                block("XX", b'Z', b"ab"),
+                TagReadError::UnterminatedString,
+                "Null-terminated string tag value is not null terminated.",
+            ),
             (b"XX".to_vec(), TagReadError::BufferUnderflow, ""),
             (
                 block("XX", b'B', &[b'c', 0xFF, 0xFF, 0xFF, 0xFF]),
