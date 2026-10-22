@@ -208,7 +208,7 @@ differently does not decode.** `VCFEncoder` copies the unparsed text verbatim, c
 reordered, so the write succeeds. The port's `unparsed_for` decodes in that case, which is an
 existing difference from htsjdk, not one this change introduces; picard-rs already works around
 it with its own copy of the block (`Record::lazy_genotypes`), which therefore has to stay. Left for
-its own change.
+its own change: #275, which removes `unparsed_for`.
 
 **How the tools report it** (the same file through the pinned oracles):
 
