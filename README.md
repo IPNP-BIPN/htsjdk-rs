@@ -78,24 +78,27 @@ golden records the deflater its dump chose. The BGZF, BAM and VCF rows below the
 zlib with zlib, the port's `Deflater::Jdk`; the CRAM rows run htsjdk with libdeflate on, its
 default, because the port's CRAM writer deflates its GZIP blocks as 5.0.0 does by default.
 
-Every table below is one run, [39750271670](https://github.com/IPNP-BIPN/htsjdk-rs/actions/runs/39750271670),
-on an AMD EPYC 9V45, median of three. GitHub's runners are not one machine, so compare ratios
-across runs, never rates. Each answer is freed after its clock stops, as the JVM's collector frees
-htsjdk's outside the timed region.
+Every table below is three runs of the same commit, [39752603417](https://github.com/IPNP-BIPN/htsjdk-rs/actions/runs/39752603417)
+(AMD EPYC 9V74), [39753783551](https://github.com/IPNP-BIPN/htsjdk-rs/actions/runs/39753783551) and
+[39753793628](https://github.com/IPNP-BIPN/htsjdk-rs/actions/runs/39753793628) (EPYC 7763), each a median
+of three repetitions. GitHub's runners are not one machine, and one run on one of them can mislead
+by a factor of two on the rows that allocate most, so each row shows the run whose ratio is the
+median of the three, its rates, and the range of the ratio over all three. Each answer is freed
+after its clock stops, as the JVM's collector frees htsjdk's outside the timed region.
 
 ### BGZF
 
 64 MB payloads, **after** the run asserted that every framed stream the two sides wrote was
 byte-identical on all ten keys:
 
-| operation | payload | level | htsjdk | port | ratio |
-|---|---|---:|---:|---:|---:|
-| deflate | text | 1 | 1,293 MB/s | 2,885 MB/s | 2.23x |
-| deflate | text | 5 | 427 MB/s | 1,209 MB/s | 2.83x |
-| deflate | random | 5 | 50.6 MB/s | 157 MB/s | 3.10x |
-| inflate | text | 1 | 1,229 MB/s | 18,965 MB/s | 15.43x |
-| inflate | text | 5 | 2,204 MB/s | 8,134 MB/s | 3.69x |
-| inflate | random | 5 | 370 MB/s | 1,456 MB/s | 3.94x |
+| operation | payload | level | htsjdk | port | ratio | range |
+|---|---|---:|---:|---:|---:|---:|
+| deflate | text | 1 | 742 MB/s | 1,618 MB/s | 2.18x | 2.10 to 2.21 |
+| deflate | text | 5 | 184 MB/s | 585 MB/s | 3.18x | 2.57 to 3.26 |
+| deflate | random | 5 | 44.0 MB/s | 131 MB/s | 2.97x | 2.93 to 2.98 |
+| inflate | text | 1 | 1,660 MB/s | 14,882 MB/s | 8.96x | 8.76 to 9.90 |
+| inflate | text | 5 | 1,721 MB/s | 6,394 MB/s | 3.72x | 3.42 to 3.92 |
+| inflate | random | 5 | 272 MB/s | 940 MB/s | 3.46x | 3.24 to 3.86 |
 
 Deflate is stock zlib on both sides at every level here, so the bytes match by construction. The
 `gkl-deflate` crate, a Rust port of Intel GKL's deflater that GATK installs in htsjdk's place, is
@@ -110,14 +113,14 @@ thread. The bytes, and for a damaged stream the error, are the serial ones.
 (23 MB), **after** the run asserted that the BAM and both VCFs the two sides wrote were
 byte-identical. Rates are over the same bytes and records for both columns.
 
-| path | htsjdk | port | ratio |
-|---|---:|---:|---:|
-| BAM read, every record decoded | 265 MB/s, 869,000 records/s | 548 MB/s, 1,796,000 records/s | 2.07x |
-| BAM write | 31 MB/s, 103,000 records/s | 96 MB/s, 313,000 records/s | 3.04x |
-| VCF read, genotypes left lazy | 70 MB/s, 603,000 records/s | 85 MB/s, 725,000 records/s | 1.20x |
-| VCF read, genotypes decoded | 38 MB/s, 323,000 records/s | 87 MB/s, 750,000 records/s | 2.32x |
-| VCF write, records copied through | 57 MB/s, 492,000 records/s | 158 MB/s, 1,351,000 records/s | 2.75x |
-| VCF write, genotypes read first | 27 MB/s, 235,000 records/s | 84 MB/s, 723,000 records/s | 3.08x |
+| path | htsjdk | port | ratio | range |
+|---|---:|---:|---:|---:|
+| BAM read, every record decoded | 182 MB/s, 596,000 records/s | 349 MB/s, 1,145,000 records/s | 1.92x | 1.92 to 1.99 |
+| BAM write | 25 MB/s, 82,000 records/s | 89 MB/s, 291,000 records/s | 3.53x | 3.01 to 3.62 |
+| VCF read, genotypes left lazy | 72 MB/s, 615,000 records/s | 55 MB/s, 469,000 records/s | 0.76x | 0.65 to 0.84 |
+| VCF read, genotypes decoded | 31 MB/s, 264,000 records/s | 54 MB/s, 460,000 records/s | 1.74x | 1.67 to 1.87 |
+| VCF write, records copied through | 75 MB/s, 643,000 records/s | 200 MB/s, 1,718,000 records/s | 2.67x | 2.01 to 2.90 |
+| VCF write, genotypes read first | 31 MB/s, 270,000 records/s | 58 MB/s, 501,000 records/s | 1.86x | 1.51 to 2.05 |
 
 htsjdk reads the BAM with `EAGERLY_DECODE` and `SILENT` validation, the closest it has to the
 port's reader, which decodes every field and validates nothing. Its default `STRICT` would add a
@@ -134,8 +137,8 @@ htsjdk's `LazyGenotypesContext`, and reproducing it made copying records through
 times faster as a side effect of making it correct.
 
 The BAM record codec alone, in memory with no BGZF, has no htsjdk column because htsjdk's codec
-writes into a stream rather than answering with bytes: 1,107 MB/s and 3,627,000 records/s to
-decode, 706 MB/s and 2,314,000 records/s to encode.
+writes into a stream rather than answering with bytes: 706 MB/s and 2,315,252 records/s to
+decode, 475 MB/s and 1,558,163 records/s to encode (the median run of each).
 
 ### Every other operation
 
@@ -147,59 +150,70 @@ what is compared is a rendering of it (records as SAM, sequences as name, length
 answers). **idx**: identical except the indexed file's path and modification time, which name the
 file rather than describe it.
 
-| operation | check | over | htsjdk | port | ratio |
-|---|---|---|---:|---:|---:|
-| SAM write | bytes | 153 MB of SAM, 400,000 records | 121 MB/s | 148 MB/s | 1.22x |
-| SAM read | decoded | same | 155 MB/s | 629 MB/s | 4.07x |
-| sort, queryname | decoded | 400,000 records | 2,466,000 rec/s | 4,488,000 rec/s | 1.82x |
-| sort, coordinate (from queryname order) | decoded | same | 2,844,000 rec/s | 5,655,000 rec/s | 1.99x |
-| BAI from a sorted BAM | bytes | 75 MB of BAM | 109 MB/s | 159 MB/s | 1.46x |
-| SBI writer, 10 M offsets | bytes | 76 MB of offsets | 4,284 MB/s | 15,336 MB/s | 3.58x |
-| BAM reheader, block copy, file to file | bytes | 75 MB of BAM | 242 MB/s | 259 MB/s | 1.07x |
-| BAM gather, block copy, file to file | bytes | 226 MB of BAM | 194 MB/s | 196 MB/s | 1.01x |
-| FASTQ write | bytes | 128 MB of FASTQ | 151 MB/s | 200 MB/s | 1.33x |
-| FASTQ read | decoded | same | 652 MB/s | 2,297 MB/s | 3.52x |
-| FASTA write with `.fai` and `.dict` | bytes | 64 MB of bases | 20.4 MB/s | 164 MB/s | 8.05x |
-| FASTA read | decoded | same | 870 MB/s | 1,438 MB/s | 1.65x |
-| indexed FASTA, 200,000 queries of 151 bp | decoded | 29 MB of bases | 127 MB/s | 109 MB/s | 0.86x |
-| MD and NM | decoded | 400,000 reads | 586,000 rec/s | 1,213,000 rec/s | 2.07x |
-| interval list write | bytes | 500,000 intervals | 126 MB/s | 212 MB/s | 1.68x |
-| interval list read | decoded | same | 21.4 MB/s | 417 MB/s | 19.53x |
-| interval list `sorted()` | decoded | same | 1,825,000 rec/s | 4,735,000 rec/s | 2.59x |
-| interval list `uniqued()` | decoded | same | 1,516,000 rec/s | 4,575,000 rec/s | 3.02x |
-| `OverlapDetector`, 50,000 targets, 100,000 queries | decoded | 150,000 intervals | 4,974,000 rec/s | 13,646,000 rec/s | 2.74x |
-| liftover, chain load and 200,000 intervals | decoded | 200,000 intervals | 180,000 rec/s | 2,003,000 rec/s | 11.13x |
-| CRAM 3.1 write | bytes | 200,000 records | 122,000 rec/s | 136,000 rec/s | 1.11x |
-| CRAM 3.1 read | decoded | same | 143,000 rec/s | 144,000 rec/s | 1.01x |
-| rANS 4x8 order 0, compress / uncompress | bytes / decoded | 29 MB of qualities | 336 / 316 MB/s | 360 / 475 MB/s | 1.07x / 1.50x |
-| rANS 4x8 order 1, compress / uncompress | bytes / decoded | same | 220 / 227 MB/s | 275 / 280 MB/s | 1.25x / 1.24x |
-| rANS Nx16 order 0, compress / uncompress | bytes / decoded | same | 304 / 257 MB/s | 390 / 368 MB/s | 1.28x / 1.43x |
-| rANS Nx16 order 1, compress / uncompress | bytes / decoded | same | 193 / 212 MB/s | 256 / 230 MB/s | 1.33x / 1.08x |
-| range coder order 0, compress / uncompress | bytes / decoded | same | 45 / 46 MB/s | 55 / 52 MB/s | 1.22x / 1.13x |
-| range coder order 1, compress / uncompress | bytes / decoded | same | 54 / 45 MB/s | 71 / 61 MB/s | 1.31x / 1.36x |
-| name tokeniser, compress / uncompress | bytes / decoded | 4.6 MB of names | 31 / 94 MB/s | 50 / 83 MB/s | 1.58x / 0.88x |
-| fqzcomp, compress / uncompress | bytes / decoded | 29 MB of qualities | 28 / 27 MB/s | 34 / 31 MB/s | 1.20x / 1.13x |
-| metrics file write | bytes | 200,000 rows, two histograms | 31.1 MB/s | 84.6 MB/s | 2.72x |
-| BCF write | bytes | 23 MB of VCF, 200,000 records | 20.9 MB/s | 43.5 MB/s | 2.08x |
-| BCF read | decoded | same | 93.0 MB/s | 201 MB/s | 2.16x |
-| VCF write with `.idx` on the fly | idx | same | 82.5 MB/s | 124 MB/s | 1.50x |
-| `.vcf.gz` write with `.tbi` | bytes | same | 26.4 MB/s | 31.0 MB/s | 1.17x |
-| `.vcf.gz` read | decoded | same | 69.9 MB/s | 84.0 MB/s | 1.20x |
-| BED decode | decoded | 21 MB, 500,000 lines | 50.0 MB/s | 318 MB/s | 6.35x |
+| operation | check | over | htsjdk | port | ratio | range |
+|---|---|---|---:|---:|---:|---:|
+| SAM write | bytes | 153 MB of SAM, 400,000 records | 129 MB/s | 144 MB/s | 1.12x | 1.02 to 1.40 |
+| SAM read | decoded | same | 146 MB/s | 504 MB/s | 3.45x | 3.36 to 3.48 |
+| sort, queryname | decoded | 400,000 records | 2,286,000 rec/s | 4,581,000 rec/s | 2.00x | 1.99 to 2.16 |
+| sort, coordinate (from queryname order) | decoded | same | 1,767,000 rec/s | 4,888,000 rec/s | 2.77x | 2.04 to 3.67 |
+| BAI from a sorted BAM | bytes | 75 MB of BAM | 91.4 MB/s | 110 MB/s | 1.21x | 1.15 to 1.28 |
+| SBI writer, 10 M offsets | bytes | 76 MB of offsets | 3,302 MB/s | 11,765 MB/s | 3.56x | 3.54 to 3.62 |
+| BAM reheader, block copy, file to file | bytes | 75 MB of BAM | 1,252 MB/s | 1,477 MB/s | 1.18x | 0.90 to 1.37 |
+| BAM gather, block copy, file to file | bytes | 226 MB of BAM | 410 MB/s | 376 MB/s | 0.92x | 0.92 to 0.96 |
+| FASTQ write | bytes | 128 MB of FASTQ | 344 MB/s | 421 MB/s | 1.22x | 1.20 to 1.36 |
+| FASTQ read | decoded | same | 650 MB/s | 1,359 MB/s | 2.09x | 2.03 to 2.86 |
+| FASTA write with `.fai` and `.dict` | bytes | 64 MB of bases | 18.0 MB/s | 254 MB/s | 14.12x | 8.18 to 14.20 |
+| FASTA read | decoded | same | 806 MB/s | 996 MB/s | 1.24x | 1.23 to 1.27 |
+| indexed FASTA, 200,000 queries of 151 bp | decoded | 29 MB of bases | 95.6 MB/s | 112 MB/s | 1.17x | 1.16 to 1.18 |
+| MD and NM | decoded | 400,000 reads | 540,000 rec/s | 948,000 rec/s | 1.75x | 1.56 to 1.81 |
+| interval list write | bytes | 500,000 intervals | 214 MB/s | 338 MB/s | 1.58x | 1.55 to 1.60 |
+| interval list read | decoded | same | 15.7 MB/s | 222 MB/s | 14.10x | 13.63 to 15.06 |
+| interval list `sorted()` | decoded | same | 1,199,000 rec/s | 3,095,000 rec/s | 2.58x | 2.38 to 2.66 |
+| interval list `uniqued()` | decoded | same | 1,331,000 rec/s | 3,984,000 rec/s | 2.99x | 2.88 to 3.05 |
+| `OverlapDetector`, 50,000 targets, 100,000 queries | decoded | 150,000 intervals | 2,531,000 rec/s | 8,190,000 rec/s | 3.24x | 2.68 to 3.58 |
+| liftover, chain load and 200,000 intervals | decoded | 200,000 intervals | 122,000 rec/s | 997,000 rec/s | 8.19x | 7.37 to 9.09 |
+| CRAM 3.1 write | bytes | 200,000 records | 83,000 rec/s | 90,000 rec/s | 1.08x | 1.06 to 1.12 |
+| CRAM 3.1 read | decoded | same | 124,000 rec/s | 119,000 rec/s | 0.96x | 0.94 to 1.01 |
+| rANS 4x8 order 0, compress | bytes | 29 MB of qualities | 215 MB/s | 223 MB/s | 1.04x | 1.03 to 1.09 |
+| rANS 4x8 order 0, uncompress | decoded | same | 234 MB/s | 339 MB/s | 1.45x | 1.43 to 1.46 |
+| rANS 4x8 order 1, compress | bytes | same | 159 MB/s | 210 MB/s | 1.32x | 1.29 to 1.38 |
+| rANS 4x8 order 1, uncompress | decoded | same | 178 MB/s | 217 MB/s | 1.22x | 1.19 to 1.22 |
+| rANS Nx16 order 0, compress | bytes | same | 211 MB/s | 306 MB/s | 1.45x | 1.42 to 1.47 |
+| rANS Nx16 order 0, uncompress | decoded | same | 170 MB/s | 278 MB/s | 1.64x | 1.61 to 1.67 |
+| rANS Nx16 order 1, compress | bytes | same | 104 MB/s | 133 MB/s | 1.28x | 0.89 to 1.49 |
+| rANS Nx16 order 1, uncompress | decoded | same | 127 MB/s | 145 MB/s | 1.14x | 1.05 to 1.15 |
+| range coder order 0, compress | bytes | same | 30.0 MB/s | 41.9 MB/s | 1.40x | 1.28 to 1.50 |
+| range coder order 0, uncompress | decoded | same | 33.1 MB/s | 41.6 MB/s | 1.26x | 1.25 to 1.29 |
+| range coder order 1, compress | bytes | same | 41.5 MB/s | 64.9 MB/s | 1.57x | 1.53 to 1.62 |
+| range coder order 1, uncompress | decoded | same | 32.6 MB/s | 46.7 MB/s | 1.43x | 1.37 to 1.48 |
+| name tokeniser, compress | bytes | 4.6 MB of names | 17.0 MB/s | 25.3 MB/s | 1.49x | 1.28 to 1.55 |
+| name tokeniser, uncompress | decoded | same | 54.5 MB/s | 46.1 MB/s | 0.85x | 0.84 to 0.93 |
+| fqzcomp, compress | bytes | 29 MB of qualities | 18.6 MB/s | 23.0 MB/s | 1.24x | 1.21 to 1.29 |
+| fqzcomp, uncompress | decoded | same | 22.5 MB/s | 26.9 MB/s | 1.20x | 1.16 to 1.20 |
+| metrics file write | bytes | 200,000 rows, two histograms | 38.4 MB/s | 69.1 MB/s | 1.80x | 1.76 to 2.12 |
+| BCF write | bytes | 23 MB of VCF, 200,000 records | 21.6 MB/s | 32.9 MB/s | 1.53x | 1.51 to 1.94 |
+| BCF read | decoded | same | 137 MB/s | 137 MB/s | 1.00x | 0.99 to 1.53 |
+| VCF write with `.idx` on the fly | idx | same | 69.5 MB/s | 130 MB/s | 1.87x | 1.86 to 2.55 |
+| `.vcf.gz` write with `.tbi` | bytes | same | 22.1 MB/s | 25.4 MB/s | 1.15x | 1.13 to 1.21 |
+| `.vcf.gz` read | decoded | same | 104 MB/s | 69.5 MB/s | 0.67x | 0.66 to 0.95 |
+| BED decode | decoded | 21 MB, 500,000 lines | 28.0 MB/s | 175 MB/s | 6.27x | 5.83 to 7.23 |
 
 CRAM is compared byte for byte: both sides write CRAM 3.1 with 5.0.0's NORMAL profile, fqzcomp
 for the qualities and the name tokeniser for the names, and both name the file the same, since the
 name is the file definition's 20-byte id. Both read the port's file back, `MD` restored on both
 sides.
 
-The rows where htsjdk is still ahead:
+The rows where htsjdk is ahead or level:
 
-* **Indexed FASTA** (0.86x): a query seeks, then reads its span in one read into the answer. htsjdk
-  reads with one positional read, so the port pays one `lseek` more per query, which on this VM is
-  most of the difference. A positional read needs `IndexedFasta` to stop being generic over any
-  `Read + Seek`, or `open` to return another type than `IndexedFasta<File>`, which gatk-rs names.
-* **Name tokeniser decompression** (0.88x): htsjdk 5.0.0's decoder is twice as fast as 4.2.0's,
+* **VCF read with genotypes left lazy** (0.76x) and **`.vcf.gz` read** (0.67x), which is the same
+  parse after an inflate: the port's reader parses every genotype up front, where htsjdk keeps the
+  sample columns as text until something asks. With the genotypes decoded the port is ahead (1.74x).
+  Deferring the parse would move where a malformed genotype is refused, from the read to the first
+  look, so it is a decision about the API and not a speed change.
+* **BCF read** (1.00x, 0.99 to 1.53): the same choice, for BCF's genotype block.
+* **Name tokeniser decompression** (0.85x): htsjdk 5.0.0's decoder is twice as fast as 4.2.0's,
   which the port beat; not profiled yet.
+* **BAM gather** (0.92x) and **CRAM read** (0.96x): within a few percent, not profiled.
 
 ## Bit-identity contract
 
