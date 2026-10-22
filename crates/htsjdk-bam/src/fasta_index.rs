@@ -147,9 +147,8 @@ impl<R: Read + Seek> IndexedFasta<R> {
             return Err(FastaIndexError::PastEndOfContig);
         }
         let length = (stop - start + 1).max(0) as usize;
-        let mut target = Vec::with_capacity(length);
         if length == 0 {
-            return Ok(target);
+            return Ok(Vec::new());
         }
 
         let bases_per_line = entry.bases_per_line.max(1);
@@ -162,22 +161,27 @@ impl<R: Read + Seek> IndexedFasta<R> {
         };
         let first = offset(start);
 
-        // The whole span in one read, terminators included, then the terminators dropped: htsjdk
-        // reads the span through one channel read too, where a read per line costs a syscall each.
-        let mut raw = vec![0u8; (offset(stop) - first + 1) as usize];
+        // The whole span in one read, terminators included, straight into the answer, then the
+        // terminators closed up in place: htsjdk reads the span through one channel read too,
+        // where a read per line costs a syscall each.
+        let mut target = vec![0u8; (offset(stop) - first + 1) as usize];
         self.source
             .seek(SeekFrom::Start(entry.location + first))
             .map_err(|error| FastaIndexError::Io(error.to_string()))?;
         self.source
-            .read_exact(&mut raw)
+            .read_exact(&mut target)
             .map_err(|error| FastaIndexError::Io(error.to_string()))?;
-        let mut at = 0;
-        let mut column = (first % bytes_per_line) as usize;
-        while at < raw.len() {
-            let run = (bases_per_line as usize - column).min(raw.len() - at);
-            target.extend_from_slice(&raw[at..at + run]);
-            at += run + terminator;
-            column = 0;
+        if terminator > 0 {
+            let (mut from, mut to) = (0, 0);
+            let mut column = (first % bytes_per_line) as usize;
+            while from < target.len() {
+                let run = (bases_per_line as usize - column).min(target.len() - from);
+                target.copy_within(from..from + run, to);
+                to += run;
+                from += run + terminator;
+                column = 0;
+            }
+            target.truncate(to);
         }
         Ok(target)
     }
