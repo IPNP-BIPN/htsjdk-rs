@@ -20,7 +20,7 @@
 //! into another, so the result's attribute order is the hash order those two maps give, starting
 //! from the order the codec's maps gave: see [`super::java_hash`].
 
-use super::java_hash::{order_through, Fill};
+use super::java_hash::{order_into, order_of, spread, string_hash, Fill};
 use super::Bcf2Error;
 use crate::attributes::parse_vcf_double;
 use crate::genotypes_context::GenotypesContext;
@@ -40,15 +40,21 @@ pub struct Compound<'a> {
 /// GRCh38 header carries thousands of contig lines, and every field of every record looks here.
 #[derive(Debug, Clone, Default)]
 pub struct FieldIndex {
-    first: std::collections::HashMap<(String, String), usize>,
+    /// Line key (`INFO`, `FORMAT`), then ID, so a lookup borrows both and allocates nothing.
+    first: std::collections::HashMap<String, std::collections::HashMap<String, usize>>,
 }
 
 impl FieldIndex {
     pub fn new(header: &VcfHeader) -> Self {
-        let mut first = std::collections::HashMap::new();
+        let mut first: std::collections::HashMap<String, std::collections::HashMap<String, usize>> =
+            std::collections::HashMap::new();
         for (i, line) in header.lines.iter().enumerate() {
             if let HeaderLine::Compound { key, id, .. } = line {
-                first.entry((key.clone(), id.clone())).or_insert(i);
+                first
+                    .entry(key.clone())
+                    .or_default()
+                    .entry(id.clone())
+                    .or_insert(i);
             }
         }
         Self { first }
@@ -62,7 +68,7 @@ impl FieldIndex {
         key: &str,
         wanted: &str,
     ) -> Option<Compound<'a>> {
-        let &i = self.first.get(&(key.to_string(), wanted.to_string()))?;
+        let &i = self.first.get(key)?.get(wanted)?;
         match &header.lines[i] {
             line @ HeaderLine::Compound {
                 id,
@@ -284,11 +290,49 @@ fn decode_attributes(
 
 /// Reorder `attributes` through the given maps.
 pub fn reorder(attributes: &[(String, Value)], fills: &[Fill]) -> Vec<(String, Value)> {
-    let keys: Vec<String> = attributes.iter().map(|(k, _)| k.clone()).collect();
-    order_through(&keys, fills)
+    let keys: Vec<&str> = attributes.iter().map(|(k, _)| k.as_str()).collect();
+    order_of(&keys, fills)
         .into_iter()
         .map(|i| attributes[i].clone())
         .collect()
+}
+
+/// [`reorder`] of attributes the caller is done with, moved rather than copied, and for an INFO
+/// column of the usual size without a single allocation: the order is worked out in stack
+/// buffers and applied in place.
+pub(crate) fn reorder_owned(
+    mut attributes: Vec<(String, Value)>,
+    fills: &[Fill],
+) -> Vec<(String, Value)> {
+    const SMALL: usize = 16;
+    let n = attributes.len();
+    if n > SMALL {
+        let keys: Vec<&str> = attributes.iter().map(|(k, _)| k.as_str()).collect();
+        let order = order_of(&keys, fills);
+        let mut slots: Vec<Option<(String, Value)>> = attributes.into_iter().map(Some).collect();
+        return order
+            .into_iter()
+            .map(|i| slots[i].take().expect("each key once"))
+            .collect();
+    }
+    let mut keys = [""; SMALL];
+    let mut hashes = [0u32; SMALL];
+    for (i, (key, _)) in attributes.iter().enumerate() {
+        keys[i] = key.as_str();
+        hashes[i] = spread(string_hash(key));
+    }
+    let mut order = [0usize; SMALL];
+    let kept = order_into(&keys[..n], &hashes[..n], fills, &mut order);
+    // `new[i] = old[order[i]]` in place: follow each source past the slots already filled.
+    for i in 0..kept {
+        let mut from = order[i];
+        while from < i {
+            from = order[from];
+        }
+        attributes.swap(i, from);
+    }
+    attributes.truncate(kept);
+    attributes
 }
 
 /// The maps a VCF line's INFO passes through before a tool sees it: `parseInfo`'s
@@ -335,6 +379,34 @@ pub fn fully_decode_indexed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The moving reorder against the copying one, through both of its paths and with repeats.
+    #[test]
+    fn reorder_owned_orders_as_reorder_does() {
+        let mut seed = 5u64;
+        let mut next = move |bound: u64| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) % bound
+        };
+        for _ in 0..300 {
+            let n = next(30) as usize;
+            let attributes: Vec<(String, Value)> = (0..n)
+                .map(|i| (format!("K{}", next(40)), Value::Int(i as i64)))
+                .collect();
+            for fills in [
+                &[Fill::PutSized(n), Fill::PutAll][..],
+                &[Fill::Put, Fill::PutSized(10), Fill::PutAll][..],
+            ] {
+                assert_eq!(
+                    reorder_owned(attributes.clone(), fills),
+                    reorder(&attributes, fills),
+                    "{attributes:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn likelihood_counts() {

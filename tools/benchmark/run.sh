@@ -70,8 +70,9 @@ docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v 
    && java -cp .:\$ORACLE_CP CodecBench /out $REPS" | tee "$OUT/java-codec.txt"
 
 # Everything else, on the files the two programs above left behind (corpus.bam, corpus.vcf) and on
-# inputs each bench generates. The port goes first because htsjdk reads several of its outputs;
-# `cram-bench ... read` goes last because it reads the CRAM 3.0 file htsjdk just wrote.
+# inputs each bench generates. The port goes first because htsjdk reads several of its outputs.
+# CramBench runs with libdeflate on, 5.0.0's default, which the image turns off for goldens: the
+# port's CRAM writer deflates its GZIP blocks as 5.0.0 does by default.
 echo "== the other operations, the port"
 docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/bam-ops-bench /out $REPS $MB > /out/ops-bam.txt \
@@ -83,10 +84,10 @@ docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v 
   -w /work htsjdk-rs-oracle:5.0.0 \
   "cp /harness/*OpsBench.java /harness/CramBench.java /harness/MetricsBench.java . \
    && javac -cp \$ORACLE_CP -d . *OpsBench.java CramBench.java MetricsBench.java \
-   && for c in BamOpsBench VcfOpsBench CramBench MetricsBench; do \
-        java -cp .:\$ORACLE_CP \$c /out $REPS || exit 1; done" > "$OUT/ops-java.txt"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
-  "/out/amd64/release/cram-bench /out $REPS 200000 read > /out/ops-cram-read.txt"
+   && for c in BamOpsBench VcfOpsBench MetricsBench; do \
+        java -cp .:\$ORACLE_CP \$c /out $REPS || exit 1; done \
+   && java -Dsamjdk.use_libdeflate=true -cp .:\$ORACLE_CP CramBench /out $REPS" \
+  > "$OUT/ops-java.txt"
 
 echo "== bytes first"
 python3 - "$OUT" <<'PY'

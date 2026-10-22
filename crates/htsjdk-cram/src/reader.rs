@@ -81,7 +81,7 @@ impl ReferenceSource for NoReference {
 /// `ReferenceSequenceFileFactory` hands back an unindexed file when there is no `.fai`, and
 /// `findBasesByName` answers nothing for one, so a FASTA without its index finds no sequence.
 pub struct FastaReference {
-    fasta: Option<htsjdk_bam::fasta_index::IndexedFasta<std::fs::File>>,
+    fasta: Option<htsjdk_bam::fasta_index::IndexedFasta<htsjdk_bam::fasta_index::PositionalFile>>,
     cache: HashMap<String, Arc<Vec<u8>>>,
 }
 

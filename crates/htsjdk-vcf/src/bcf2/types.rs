@@ -110,6 +110,14 @@ impl Bcf2Type {
         match self {
             Bcf2Type::Missing => Err(Bcf2Error::illegal_argument("Cannot read MISSING type")),
             Bcf2Type::Int8 | Bcf2Type::Char => Ok(cursor.byte() as i8 as i32),
+            // The whole word at once where the block holds it; byte by byte at its end, where a
+            // missing byte reads as `0xFF`.
+            Bcf2Type::Int16 if cursor.remaining() >= 2 => {
+                Ok(i16::from_le_bytes(cursor.take::<2>()) as i32)
+            }
+            Bcf2Type::Int32 | Bcf2Type::Float if cursor.remaining() >= 4 => {
+                Ok(i32::from_le_bytes(cursor.take::<4>()))
+            }
             Bcf2Type::Int16 => {
                 let b2 = cursor.byte() as i32;
                 let b1 = cursor.byte() as i32;
@@ -151,6 +159,15 @@ impl<'a> Cursor<'a> {
         Self { bytes, at: 0 }
     }
 
+    /// The next `N` bytes, which the caller has checked are there.
+    fn take<const N: usize>(&mut self) -> [u8; N] {
+        let out = self.bytes[self.at..self.at + N]
+            .try_into()
+            .expect("checked by the caller");
+        self.at += N;
+        out
+    }
+
     /// `(byte) (read() & 0xFF)`: `0xFF` once the block is exhausted.
     pub fn byte(&mut self) -> u8 {
         match self.bytes.get(self.at) {
@@ -164,6 +181,14 @@ impl<'a> Cursor<'a> {
 
     /// `read(byte[])`: as many as are left, and zeroes after them in the destination, which a
     /// fresh Java array holds.
+    /// The next `n` bytes, borrowed, where the block holds them all; `None` leaves the cursor
+    /// where it was, for [`Self::bytes`]'s padded copy.
+    pub fn slice(&mut self, n: usize) -> Option<&'a [u8]> {
+        let out = self.bytes.get(self.at..self.at.checked_add(n)?)?;
+        self.at += n;
+        Some(out)
+    }
+
     pub fn bytes(&mut self, n: usize) -> Vec<u8> {
         let end = (self.at + n).min(self.bytes.len());
         let mut out = self.bytes[self.at..end].to_vec();

@@ -15,6 +15,7 @@
 //! all, would produce a valid VCF that differs from htsjdk's on exactly those inputs.
 
 use std::fmt;
+use std::sync::Arc;
 
 /// `.`
 pub const NO_CALL_STRING: &str = ".";
@@ -60,9 +61,12 @@ impl fmt::Display for AlleleError {
 /// Equality follows htsjdk's: the reference flag is part of it. Two alleles with the same bases
 /// and different reference status are different alleles, which matters because `VCFEncoder`
 /// looks genotype alleles up in a map keyed by allele to find their GT index.
+///
+/// The bases are shared, not owned: every genotype of a record holds copies of the record's own
+/// alleles, so a clone is a reference count rather than an allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Allele {
-    bases: Vec<u8>,
+    bases: Arc<[u8]>,
     is_ref: bool,
     is_no_call: bool,
     is_symbolic: bool,
@@ -146,12 +150,7 @@ impl Allele {
                 return Err(AlleleError::NoCallAsReference);
             }
             // htsjdk represents a no-call as *no bases*, not as a '.' base.
-            return Ok(Self {
-                bases: Vec::new(),
-                is_ref: false,
-                is_no_call: true,
-                is_symbolic: false,
-            });
+            return Ok(Self::no_call());
         }
         if would_be_star(bases) && is_ref {
             return Err(AlleleError::SpanDelAsReference);
@@ -161,11 +160,12 @@ impl Allele {
         if is_symbolic && is_ref {
             return Err(AlleleError::SymbolicAsReference);
         }
-        let bases: Vec<u8> = if is_symbolic {
-            bases.to_vec()
-        } else {
-            bases.to_ascii_uppercase()
-        };
+        let mut bases: Arc<[u8]> = Arc::from(bases);
+        if !is_symbolic {
+            Arc::get_mut(&mut bases)
+                .expect("just made")
+                .make_ascii_uppercase();
+        }
 
         if !acceptable_bases(&bases, is_ref) {
             return Err(AlleleError::UnacceptableBases(
@@ -187,8 +187,10 @@ impl Allele {
 
     /// `Allele.NO_CALL`.
     pub fn no_call() -> Self {
+        // One empty buffer for every no-call, which a genotype builds per missing allele.
+        static EMPTY: std::sync::LazyLock<Arc<[u8]>> = std::sync::LazyLock::new(|| Arc::from([]));
         Self {
-            bases: Vec::new(),
+            bases: Arc::clone(&EMPTY),
             is_ref: false,
             is_no_call: true,
             is_symbolic: false,

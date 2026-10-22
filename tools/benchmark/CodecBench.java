@@ -15,6 +15,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * The reference side of the BAM and VCF rows: htsjdk reading and writing the very files the port's
@@ -39,7 +40,7 @@ public class CodecBench {
     for (int r = 0; r < reps; r++) {
       long t0 = System.nanoTime();
       op.run();
-      System.out.printf("java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
+      System.out.printf(Locale.ROOT, "java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
     }
   }
 
@@ -72,7 +73,7 @@ public class CodecBench {
       header = in.getFileHeader();
       for (SAMRecord rec : in) records.add(rec);
     }
-    System.out.printf("java_bam_records=%d%n", records.size());
+    System.out.printf(Locale.ROOT, "java_bam_records=%d%n", records.size());
 
     // htsjdk's own defaults: the JDK deflater at level 5, no index, no async writer.
     File out = new File(dir, "java_out.bam");
@@ -117,7 +118,7 @@ public class CodecBench {
     time("vcf_read_lazy", () -> readVcf(corpus, false));
     time("vcf_read_decoded", () -> readVcf(corpus, true));
 
-    System.out.printf("java_vcf_records=%d%n", readVcf(corpus, false).size());
+    System.out.printf(Locale.ROOT, "java_vcf_records=%d%n", readVcf(corpus, false).size());
     for (String mode : new String[] {"copy", "touched"}) {
       File out = new File(dir, "java_" + mode + ".vcf");
       boolean decode = mode.equals("touched");

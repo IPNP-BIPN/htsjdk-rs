@@ -33,6 +33,9 @@ pub struct SbiIndexWriter {
     offsets: Vec<u64>,
     previous: Option<u64>,
     record_count: u64,
+    /// The next `record_count` that is a multiple of `granularity`, so `process_record` compares
+    /// rather than divides. With a granularity of zero it stays at zero: only the first is kept.
+    next_kept: u64,
 }
 
 impl SbiIndexWriter {
@@ -42,13 +45,21 @@ impl SbiIndexWriter {
             offsets: Vec::new(),
             previous: None,
             record_count: 0,
+            next_kept: 0,
         }
     }
 
     /// `processRecord(virtualOffset)`: an offset is kept every `granularity` records, starting with
     /// the first.
+    ///
+    /// Inlined: it runs once per record of the BAM being indexed and keeps one offset in
+    /// thousands, so the caller's loop is where the work it skips can be skipped.
+    #[inline]
     pub fn process_record(&mut self, virtual_offset: u64) -> Result<(), String> {
-        let take = self.record_count.is_multiple_of(self.granularity);
+        let take = self.record_count == self.next_kept;
+        if take {
+            self.next_kept = self.record_count.saturating_add(self.granularity);
+        }
         self.record_count += 1;
         if take {
             self.write_virtual_offset(virtual_offset)?;
@@ -57,6 +68,7 @@ impl SbiIndexWriter {
     }
 
     /// `writeVirtualOffset`, including its refusal.
+    #[cold]
     fn write_virtual_offset(&mut self, virtual_offset: u64) -> Result<(), String> {
         if let Some(previous) = self.previous {
             if previous > virtual_offset {
