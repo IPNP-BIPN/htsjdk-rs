@@ -6,9 +6,9 @@ Generates golden vectors from the official htsjdk jar for
 ## Run
 
 ```sh
-curl -sSLO https://repo1.maven.org/maven2/com/github/samtools/htsjdk/4.2.0/htsjdk-4.2.0.jar
+curl -sSLO https://repo1.maven.org/maven2/com/github/samtools/htsjdk/5.0.0/htsjdk-5.0.0.jar
 # sha256 52c9eb1a568d8261767ebf888d6ebafa60911bd44e0c9242d413fbff1d1e2398
-javac -cp htsjdk-4.2.0.jar -d . B.java && java -cp .:htsjdk-4.2.0.jar B
+javac -cp htsjdk-5.0.0.jar -d . B.java && java -cp .:htsjdk-5.0.0.jar B
 ```
 
 Paste the emitted rows into the `GOLDEN` table.

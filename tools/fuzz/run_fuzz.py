@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-IMAGE = "htsjdk-rs-oracle:4.2.0"
+IMAGE = "htsjdk-rs-oracle:5.0.0"
 
 # The inputs worth having whatever the seed does: every ITF8 and LTF8 width boundary, the empty
 # input, and the shapes a CRAI line can take.

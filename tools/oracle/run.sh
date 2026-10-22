@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-IMAGE="${ORACLE_IMAGE:-htsjdk-rs-oracle:4.2.0}"
+IMAGE="${ORACLE_IMAGE:-htsjdk-rs-oracle:5.0.0}"
 PLATFORM=linux/amd64
 
 if [ $# -lt 1 ]; then

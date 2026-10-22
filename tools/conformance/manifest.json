@@ -12,7 +12,7 @@
     "decision 0017, which asserts measured rates rather than byte equality."
   ],
   "oracle": {
-    "image": "htsjdk-rs-oracle:4.2.0",
+    "image": "htsjdk-rs-oracle:5.0.0",
     "context": "tools/oracle",
     "platform": "linux/amd64"
   },

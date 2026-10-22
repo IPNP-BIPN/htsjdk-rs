@@ -16,8 +16,8 @@ See `../../docs/decisions/0028-gkl-is-igzip-below-seven-and-zlib-above.md`.
 ## Run
 
 ```sh
-docker build --platform linux/amd64 -t htsjdk-rs-oracle:4.2.0 ../oracle
-docker run --rm --platform linux/amd64 -v "$PWD":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+docker build --platform linux/amd64 -t htsjdk-rs-oracle:5.0.0 ../oracle
+docker run --rm --platform linux/amd64 -v "$PWD":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
   'cp /harness/GklProbe.java . && javac -cp "$ORACLE_CP" -d . GklProbe.java \
    && java -cp "$ORACLE_CP":. GklProbe'
 ```

@@ -37,12 +37,12 @@ docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rus
 
 echo "== htsjdk, in the pinned container"
 docker run --rm --platform linux/amd64 \
-  -v "$PWD/tools/benchmark":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+  -v "$PWD/tools/benchmark":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
   "cp /harness/BgzfBench.java . && javac -cp \$ORACLE_CP -d . BgzfBench.java \
    && java -cp .:\$ORACLE_CP BgzfBench $MB $REPS" | tee "$OUT/java.txt"
 
 echo "== the port, in the same container"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/bgzf-bench $MB $REPS" | tee "$OUT/rust.txt"
 
 # The record codec, which #78 names as the second path under everything: every read filter and
@@ -51,7 +51,7 @@ docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4
 # encoded, which is what makes a speed change reviewable. With a directory it also writes that
 # corpus as a BAM file and times reading and rewriting the whole file, which htsjdk can do too.
 echo "== the record codec, in the same container"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/record-bench 400000 $REPS /out" | tee "$OUT/records.txt"
 
 # The VCF codec, #78's third path. The two write rows are the two the library has rather than two
@@ -59,13 +59,13 @@ docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4
 # record whose genotypes were read is rebuilt column by column. Every tool that copies records pays
 # the first and every tool that inspects them pays the second.
 echo "== the VCF codec, in the same container"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/vcf-bench 200000 $REPS 4 /out" | tee "$OUT/vcf.txt"
 
 # htsjdk on the files the two programs above just wrote, writing its own output next to theirs.
 echo "== htsjdk's BAM and VCF codecs, on the same files"
 docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v "$OUT":/out \
-  -w /work htsjdk-rs-oracle:4.2.0 \
+  -w /work htsjdk-rs-oracle:5.0.0 \
   "cp /harness/CodecBench.java . && javac -cp \$ORACLE_CP -d . CodecBench.java \
    && java -cp .:\$ORACLE_CP CodecBench /out $REPS" | tee "$OUT/java-codec.txt"
 
@@ -73,19 +73,19 @@ docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v 
 # inputs each bench generates. The port goes first because htsjdk reads several of its outputs;
 # `cram-bench ... read` goes last because it reads the CRAM 3.0 file htsjdk just wrote.
 echo "== the other operations, the port"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/bam-ops-bench /out $REPS $MB > /out/ops-bam.txt \
    && /out/amd64/release/vcf-ops-bench /out $REPS > /out/ops-vcf.txt \
    && /out/amd64/release/cram-bench /out $REPS 200000 > /out/ops-cram.txt \
    && /out/amd64/release/metrics-bench /out $REPS > /out/ops-metrics.txt"
 echo "== the other operations, htsjdk"
 docker run --rm --platform linux/amd64 -v "$PWD/tools/benchmark":/harness:ro -v "$OUT":/out \
-  -w /work htsjdk-rs-oracle:4.2.0 \
+  -w /work htsjdk-rs-oracle:5.0.0 \
   "cp /harness/*OpsBench.java /harness/CramBench.java /harness/MetricsBench.java . \
    && javac -cp \$ORACLE_CP -d . *OpsBench.java CramBench.java MetricsBench.java \
    && for c in BamOpsBench VcfOpsBench CramBench MetricsBench; do \
         java -cp .:\$ORACLE_CP \$c /out $REPS || exit 1; done" > "$OUT/ops-java.txt"
-docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$OUT":/out -w /out htsjdk-rs-oracle:5.0.0 \
   "/out/amd64/release/cram-bench /out $REPS 200000 read > /out/ops-cram-read.txt"
 
 echo "== bytes first"

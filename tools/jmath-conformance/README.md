@@ -6,7 +6,7 @@ Generates the corpus that `crates/jmath` is validated against.
 
 ```sh
 docker run --rm --platform linux/amd64 \
-  -v "$PWD":/harness:ro -v <jars>:/j:ro -v <out>:/out -w /work htsjdk-rs-oracle:4.2.0 \
+  -v "$PWD":/harness:ro -v <jars>:/j:ro -v <out>:/out -w /work htsjdk-rs-oracle:5.0.0 \
   'cp /harness/JMathDump.java . && javac -cp /j/commons-math3-3.6.1.jar -d . JMathDump.java \
    && java -cp .:/j/commons-math3-3.6.1.jar JMathDump /out/jmath.csv'
 gzip -9 jmath.csv

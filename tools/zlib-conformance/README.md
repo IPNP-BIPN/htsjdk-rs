@@ -20,7 +20,7 @@ By hand, both halves print the same lines and `diff` is the whole comparison:
 
 ```sh
 # Reference side, in the pinned container (Z2: 7 payloads x 10 levels)
-docker run --rm --platform linux/amd64 -v "$PWD":/harness:ro -w /work htsjdk-rs-oracle:4.2.0 \
+docker run --rm --platform linux/amd64 -v "$PWD":/harness:ro -w /work htsjdk-rs-oracle:5.0.0 \
   'cp /harness/Z2.java . && javac -d . Z2.java && java -cp . Z2' > /tmp/z_java.txt
 
 # Rust side (zlib backend, as pinned in the decision record)
