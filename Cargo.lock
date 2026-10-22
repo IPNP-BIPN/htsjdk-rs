@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "gkl-deflate"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "isal-sys",
@@ -289,7 +289,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "htsjdk-bam"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "htsjdk-bgzf",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-bgzf"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "gkl-deflate",
@@ -316,7 +316,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-cram"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bzip2",
  "flate2",
@@ -331,14 +331,14 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-diff"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "htsjdk-bgzf",
 ]
 
 [[package]]
 name = "htsjdk-metrics"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "jmath",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-tribble"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "htsjdk-bam",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "htsjdk-vcf"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
  "htsjdk-bgzf",
@@ -405,7 +405,7 @@ dependencies = [
 
 [[package]]
 name = "jmath"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "flate2",
 ]

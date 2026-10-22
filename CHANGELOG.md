@@ -8,11 +8,63 @@ follow semantic versioning, because 0.x is what an unreleased port is.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-22
+
+Speed, measured against htsjdk itself. A benchmark now times 44 operations against htsjdk 4.2.0,
+each only after both sides wrote the same output, and the rows htsjdk was ahead on were made faster
+without moving a byte. picard-rs v0.2.0's speed-ups rest on these.
+
 ### Added
 
+- `BgzfWriter` deflates full blocks on every core (rayon) and writes them in order, with the
+  serial writer's bytes for every deflater and level: a block's payload depends only on its own
+  bytes, the level and the deflater, and the block boundaries do not move. `parallel(false)` turns
+  it off (#249, #257).
 - `reheader::block_copy_to` and `gather_bam_files_to`: the block copy and the gather from seekable
   inputs to a writer, in constant memory, with the bytes of `block_copy_with` and
   `gather_bam_files_with`, which now run through them. `ReheaderError::Write` is a failed write.
+  picard-rs's GatherBamFiles goes from 703 MB to 4 MB on the benchmark BAM (#258).
+- `reheader::reheader_bam_to`, the same for a reheader; `reheader_bam_with` copies once instead of
+  twice, and block copies move 1 MiB at a time (#269).
+- **A benchmark of every operation against htsjdk 4.2.0, outputs first** (#266, #268, #269): BGZF,
+  BAM, VCF and 44 more rows across every crate, run in the pinned container on x86-64. `run.sh`
+  fails on any output difference before it prints a rate. The README's Throughput section is
+  rebuilt from one run. The bench binaries allocate through mimalloc, as picard-rs does, through
+  an opt-in `mimalloc` feature on each crate; the libraries do not choose an allocator.
+
+### Changed
+
+- `BgzfWriter::file_pointer` takes `&mut self` and returns `io::Result<u64>`: it writes the blocks
+  in flight before answering, so the offset stays exact. `BamWriter` asks only when indexing.
+- **Faster, same bytes.** Each change carries a test against the code it replaced. Ratios are
+  against htsjdk on one x86-64 run (#269), before and after:
+  - `decompress_all` walks the block headers, then inflates the blocks on every core: BGZF inflate
+    0.96x to 2.94x (text, level 5), BAM read 0.74x to 2.20x, FASTQ read 0.70x to 3.19x.
+  - `OverlapDetector` answers from a per-contig index sorted by start, built lazily, in insertion
+    order: 0.04x to 3.97x.
+  - `IntervalList::sorted` looks each contig up once and `uniqued` moves rather than clones: sort
+    0.58x to 3.94x, uniq 0.63x to 4.16x. `IndexedFasta::query` reads the span in one read (0.33x
+    to 0.86x), and `calculate_md_and_nm` writes its counts in place (0.64x to 1.84x).
+  - `gkl-deflate` hashes with a slicing-by-4 CRC32C and compares matches eight bytes at a time:
+    10% fewer cycles for picard-rs's CleanSam, below Picard's own (#265).
+  - A base maps to its nibble through a table, which doubles BAM record encoding (#263). A VCF
+    genotype block is read without copying it (#264). The phred error table is built once, which
+    was most of the fingerprint tools' CPU (#262).
+  - VCF header lines are deduplicated with a set: 4.34 s to 35 ms on a header with 3,400 contig
+    lines (#254). BCF2 looks header lines up by ID once per header (#253).
+- `noodles-bam` 0.97.0, `noodles-sam` 0.92.0 and `noodles-vcf` 0.95.0, used by the test oracles
+  only; `libz-sys` 1.1.30, `libdeflate-sys` 1.26.1 and `sha2` 0.11.1.
+
+### Fixed
+
+- **A BAM record nothing was set on is written from the bytes it was read from**, as htsjdk's
+  `BAMRecord` does: the tags keep the file's order and integer types. picard-rs's SortSam on a
+  samtools BAM differed from Picard in 643 of 2,994 records before this (#256).
+- **`COMPRESSION_LEVEL=0` under GKL stores each block**, as Picard does, instead of panicking (#255).
+- **A record whose alleles repeat is refused**, as `VariantContext.makeAlleles` does, with
+  htsjdk's message (#267).
+- `gkl-deflate` no longer panics on overflow in a debug build when the window slides with the last
+  match below it; release builds already wrapped, so no byte changes.
 
 ## [0.3.0] - 2026-10-17
 
@@ -22,10 +74,6 @@ and a speed bound that gatk-rs's tools reached.
 
 ### Added
 
-- `BgzfWriter` deflates full blocks on every core (rayon) and writes them in order, with the
-  serial writer's bytes for every deflater and level: a block's payload depends only on its own
-  bytes, the level and the deflater, and the block boundaries do not move. `parallel(false)` turns
-  it off.
 - `jmath::to_string`: `Double.toString` and `Float.toString` as Java 17 prints them, including
   where they are not the shortest decimal. Reconstructed from the oracle's measured behaviour, not
   from the JDK's GPL-2.0 source (decision 0046).
@@ -41,15 +89,8 @@ and a speed bound that gatk-rs's tools reached.
   and `TabixIndex::write` that take the level and the deflater; the existing functions keep
   their signatures (#248).
 
-### Changed
-
-- `BgzfWriter::file_pointer` takes `&mut self` and returns `io::Result<u64>`: it writes the blocks
-  in flight before answering, so the offset stays exact. `BamWriter` asks only when indexing.
-
 ### Fixed
 
-- `gkl-deflate` no longer panics on overflow in a debug build when the window slides with the last
-  match below it; release builds already wrapped, so no byte changes.
 - `FormatUtil` formatting now matches on all 41,678 corpus values (was 99.84%, 66 quarantined),
   the SAM text writer on all 67 records (`Float.MIN_VALUE` is `1.4E-45`), and `%f` / `%e` on all
   127,803 swept doubles (was 99.85%). Nothing formatting-related is licence-blocked any more.
