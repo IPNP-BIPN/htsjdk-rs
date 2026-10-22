@@ -630,6 +630,29 @@
       ]
     },
     {
+      "id": "vcf-lazy-writer-samples",
+      "title": "A copied record's genotype columns under a writer whose samples are not the file's",
+      "status": "golden-pending",
+      "harness": "tools/vcf-conformance",
+      "why": "VCFEncoder writes a LazyGenotypesContext's text verbatim without consulting the writer's header, so a record nothing looked at keeps its own sample columns, in its own order and number, under a header naming them in another order, a subset, a superset, other names, or no samples at all. A record that was looked at is decoded and written by sample name in the header's order instead, with a missing genotype for a sample the record lacks. A file whose samples are not sorted is decoded at the read by parseVCFLine, so its records take the decoded path even untouched, which is MergeVcfs with inputs whose sample columns are ordered differently. Each case is read with VCFFileReader and written with VariantContextWriter, copied and touched.",
+      "expect_rows": 16,
+      "expect_contains": [
+        "write\tsorted\ts1,s0\tcopy\tok\t",
+        "FORMAT\\ts1\\ts0\\nchr1\\t100\\t.\\tA\\tT\\t50\\tPASS\\tDP=10\\tGT:GQ:DP\\t0/1:60:10\\t1/1:70:20\\n",
+        "write\tsorted\t\tcopy\tok\t",
+        "write\tunsorted\ts0,s1\tcopy\tok\t"
+      ],
+      "compare": {
+        "mode": "lines"
+      },
+      "cases": [
+        {
+          "dump": "VcfLazyWriterSamplesDump",
+          "golden": null
+        }
+      ]
+    },
+    {
       "id": "vcf-lazy-genotypes",
       "title": "What the genotype columns are written from, and what changes it",
       "status": "oracle-backed",

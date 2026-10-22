@@ -167,8 +167,11 @@ impl<'a> VcfEncoder<'a> {
         // A record read from a file and never looked at is written from the file's own text, FORMAT
         // column included, so its key order is the INPUT's rather than the recomputed one. That is
         // `isLazyWithData()` in the reference, and it is the difference between
-        // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222).
-        if let Some(unparsed) = vc.genotypes.unparsed_for(&self.header.samples) {
+        // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222). The header's samples are not
+        // consulted: the text is copied under a reordered, subset, superset or sites-only header
+        // alike, columns as the file had them. A file whose samples are not sorted never gets
+        // here untouched, because the read decodes it, as `parseVCFLine` does.
+        if let Some(unparsed) = vc.genotypes.unparsed() {
             out.push('\t');
             out.push_str(unparsed);
             return Ok(());
