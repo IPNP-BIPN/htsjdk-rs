@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.Locale;
 
 /**
  * The reference side of `vcf-ops-bench`: htsjdk on the same inputs, writing `java_<op><suffix>`
@@ -40,7 +41,7 @@ public class VcfOpsBench {
       List<VariantContext> records = input == null ? null : read(input);
       long t0 = System.nanoTime();
       op.run(records);
-      System.out.printf("java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
+      System.out.printf(Locale.ROOT, "java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
     }
     return out;
   }

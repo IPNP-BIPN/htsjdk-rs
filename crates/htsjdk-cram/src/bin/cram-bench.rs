@@ -4,22 +4,20 @@
 //! which is what makes reference compression do work. It is written as a BAM for htsjdk to read
 //! and as a FASTA with its `.fai` for both sides to compress against.
 //!
-//! CRAM write is checked on decoded records, not bytes: this port writes htsjdk 5.0.0's CRAM 3.1
-//! and the container's htsjdk 4.2.0 writes CRAM 3.0, so each side decodes its own file and the two
-//! renderings as SAM must be identical. htsjdk 4.2.0 cannot read CRAM 3.1 ("CRAM version 3.1 is not
-//! supported"), so CRAM read is both sides decoding htsjdk's CRAM 3.0 file, in a second invocation
-//! with `read` that runs after `CramBench.java` has written it. In both checks the port's records
-//! lose the `MD` tag its reader generated: htsjdk 5.0.0's reader restores `MD` and `NM` where a
-//! record lacks them, as htslib does, and 4.2.0's does not. The corpus carries its own `NM`.
+//! CRAM write is checked byte for byte: both sides write CRAM 3.1 with htsjdk 5.0.0's NORMAL
+//! profile, deflating GZIP blocks with libdeflate, 5.0.0's default (the container turns it off for
+//! goldens, and `run.sh` turns it back on for `CramBench`). Both name the file `cram_write.cram`,
+//! since the name is the file definition's 20-byte id. CRAM read is both sides decoding the port's
+//! file, checked as SAM.
 //!
 //! Each codec is timed both ways over the corpus's own streams cut into 1 MiB blocks, the size a
 //! CRAM slice's blocks run to. Compression is checked byte for byte; decompression decodes the
-//! port's streams and is checked against the input. fqzcomp is decompression only: htsjdk 4.2.0's
-//! `FQZCompEncode.compress` throws "FQZComp compression is not implemented".
+//! port's streams and is checked against the input. fqzcomp also takes each block's record lengths
+//! and flags, which are written beside the blocks for `CramBench`.
 //!
 //! The output protocol is `bam-ops-bench`'s.
 //!
-//! Usage: cram-bench dir reps [records]   then   cram-bench dir reps records read
+//! Usage: cram-bench dir reps [records]
 
 /// The allocator picard-rs links, so the rows measure the library as it ships there.
 #[cfg(feature = "mimalloc")]
@@ -157,17 +155,6 @@ fn main() {
         .map(|a| a.parse().expect("records"))
         .unwrap_or(200_000);
     let b = Bench { dir, reps };
-    if args.next().as_deref() == Some("read") {
-        let fasta = b.dir.join("cram_ref.fasta");
-        let size = std::fs::metadata(b.dir.join("port_cram_write.sam"))
-            .expect("exists")
-            .len();
-        b.op("cram_read", size as usize, count, "decoded", ".sam");
-        let input = b.dir.join("java_cram_write.cram");
-        let (h, decoded) = b.time("cram_read", || read_cram(&input, &fasta));
-        write_check(&b.path("cram_read", ".sam"), &h, decoded);
-        return;
-    }
 
     let mut rng = Lcg(8080);
     let reference: Vec<u8> = (0..CONTIG_LENGTH)
@@ -216,80 +203,62 @@ fn read_cram(path: &Path, fasta: &Path) -> (SamHeader, Vec<BamRecord>) {
 
 fn cram(b: &Bench, header: &SamHeader, records: &[BamRecord], fasta: &Path) {
     let size = write_sam(header, records).expect("renders").len();
-    b.op("cram_write", size, records.len(), "decoded", ".sam");
+    b.op("cram_write", size, records.len(), "bytes", ".cram");
     let out = b.path("cram_write", ".cram");
     b.time("cram_write", || {
         let mut reference = FastaReference::open(fasta);
-        let cram = write_cram(header, records, "port_cram_write.cram", &mut reference)
-            .expect("compresses");
+        let cram =
+            write_cram(header, records, "cram_write.cram", &mut reference).expect("compresses");
         std::fs::write(&out, cram).expect("writes");
     });
-    let (h, decoded) = read_cram(&out, fasta);
-    write_check(&b.path("cram_write", ".sam"), &h, decoded);
-}
 
-/// The decoded records as SAM, less the `MD` the port's reader generated (see the module doc).
-fn write_check(path: &Path, header: &SamHeader, mut records: Vec<BamRecord>) {
-    for r in &mut records {
-        r.tags.remove(Tag::new(b"MD"));
-    }
-    std::fs::write(path, write_sam(header, &records).expect("renders")).expect("writes");
+    b.op("cram_read", size, records.len(), "decoded", ".sam");
+    let (h, decoded) = b.time("cram_read", || read_cram(&out, fasta));
+    std::fs::write(
+        b.path("cram_read", ".sam"),
+        write_sam(&h, &decoded).expect("renders"),
+    )
+    .expect("writes");
 }
 
 const BLOCK: usize = 1 << 20;
 
-/// A codec direction: one block in, one block out.
-type Transform<'a> = &'a dyn Fn(&[u8]) -> Vec<u8>;
+/// A codec direction: the block's index and the block in, one block out.
+type Transform<'a> = &'a dyn Fn(usize, &[u8]) -> Vec<u8>;
+
+fn frame(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for p in parts {
+        out.extend_from_slice(&(p.len() as u32).to_le_bytes());
+        out.extend_from_slice(p);
+    }
+    out
+}
 
 /// One codec over a stream, both ways. `blocks` are what the codec is handed; the port's
 /// compressed blocks are framed as `u32` length + bytes in `port_<codec>_compress.bin`, which is
-/// what both sides decompress. `same_encoder` is false where the port follows a later htsjdk
-/// encoder than the container's, whose bytes legitimately differ.
-fn codec(
-    b: &Bench,
-    name: &str,
-    same_encoder: bool,
-    blocks: &[Vec<u8>],
-    compress: Option<Transform>,
-    uncompress: Transform,
-    compressed: Option<Vec<Vec<u8>>>,
-) {
+/// what both sides decompress.
+fn codec(b: &Bench, name: &str, blocks: &[Vec<u8>], compress: Transform, uncompress: Transform) {
     let size: usize = blocks.iter().map(Vec::len).sum();
-    let frame = |parts: &[Vec<u8>]| {
-        let mut out = Vec::new();
-        for p in parts {
-            out.extend_from_slice(&(p.len() as u32).to_le_bytes());
-            out.extend_from_slice(p);
-        }
-        out
-    };
-    let packed = match compress {
-        Some(compress) => {
-            let op = format!("{name}_compress");
-            if same_encoder {
-                b.op(&op, size, blocks.len(), "bytes", ".bin");
-            } else {
-                // The check is htsjdk decoding these streams back to the input (`.dec`).
-                b.op(&op, size, blocks.len(), "decoded", ".dec");
-                std::fs::write(b.path(&op, ".dec"), frame(blocks)).expect("writes");
-            }
-            let packed = b.time(&op, || {
-                blocks.iter().map(|x| compress(x)).collect::<Vec<_>>()
-            });
-            std::fs::write(b.path(&op, ".bin"), frame(&packed)).expect("writes");
-            packed
-        }
-        None => {
-            let packed = compressed.expect("a stream to decompress");
-            std::fs::write(b.path(&format!("{name}_compress"), ".bin"), frame(&packed))
-                .expect("writes");
-            packed
-        }
-    };
+    let op = format!("{name}_compress");
+    b.op(&op, size, blocks.len(), "bytes", ".bin");
+    let packed = b.time(&op, || {
+        blocks
+            .iter()
+            .enumerate()
+            .map(|(i, x)| compress(i, x))
+            .collect::<Vec<_>>()
+    });
+    std::fs::write(b.path(&op, ".bin"), frame(&packed)).expect("writes");
+
     let op = format!("{name}_uncompress");
     b.op(&op, size, blocks.len(), "decoded", ".bin");
     let unpacked = b.time(&op, || {
-        packed.iter().map(|x| uncompress(x)).collect::<Vec<_>>()
+        packed
+            .iter()
+            .enumerate()
+            .map(|(i, x)| uncompress(i, x))
+            .collect::<Vec<_>>()
     });
     assert_eq!(unpacked, blocks, "{name} round trips");
     std::fs::write(b.path(&op, ".bin"), frame(&unpacked)).expect("writes");
@@ -302,71 +271,23 @@ fn codecs(b: &Bench, records: &[BamRecord]) {
         .collect();
     let quality_blocks: Vec<Vec<u8>> = quals.chunks(BLOCK).map(<[u8]>::to_vec).collect();
 
-    let rans0 = |x: &[u8]| rans::compress(x, rans::Order::Zero).expect("compresses");
-    let rans1 = |x: &[u8]| rans::compress(x, rans::Order::One).expect("compresses");
-    let unrans = |x: &[u8]| rans::uncompress(x).expect("decompresses");
-    codec(
-        b,
-        "rans4x8_o0",
-        true,
-        &quality_blocks,
-        Some(&rans0),
-        &unrans,
-        None,
-    );
-    codec(
-        b,
-        "rans4x8_o1",
-        true,
-        &quality_blocks,
-        Some(&rans1),
-        &unrans,
-        None,
-    );
+    let rans0 = |_, x: &[u8]| rans::compress(x, rans::Order::Zero).expect("compresses");
+    let rans1 = |_, x: &[u8]| rans::compress(x, rans::Order::One).expect("compresses");
+    let unrans = |_, x: &[u8]| rans::uncompress(x).expect("decompresses");
+    codec(b, "rans4x8_o0", &quality_blocks, &rans0, &unrans);
+    codec(b, "rans4x8_o1", &quality_blocks, &rans1, &unrans);
 
-    let nx0 = |x: &[u8]| rans_nx16::compress(x, 0);
-    let nx1 = |x: &[u8]| rans_nx16::compress(x, 1);
-    let unnx = |x: &[u8]| rans_nx16::uncompress(x).expect("decompresses");
-    codec(
-        b,
-        "ransnx16_o0",
-        true,
-        &quality_blocks,
-        Some(&nx0),
-        &unnx,
-        None,
-    );
-    codec(
-        b,
-        "ransnx16_o1",
-        true,
-        &quality_blocks,
-        Some(&nx1),
-        &unnx,
-        None,
-    );
+    let nx0 = |_, x: &[u8]| rans_nx16::compress(x, 0);
+    let nx1 = |_, x: &[u8]| rans_nx16::compress(x, 1);
+    let unnx = |_, x: &[u8]| rans_nx16::uncompress(x).expect("decompresses");
+    codec(b, "ransnx16_o0", &quality_blocks, &nx0, &unnx);
+    codec(b, "ransnx16_o1", &quality_blocks, &nx1, &unnx);
 
-    let range0 = |x: &[u8]| range::compress(x, 0).expect("compresses");
-    let range1 = |x: &[u8]| range::compress(x, 1).expect("compresses");
-    let unrange = |x: &[u8]| range::uncompress(x).expect("decompresses");
-    codec(
-        b,
-        "range_o0",
-        true,
-        &quality_blocks,
-        Some(&range0),
-        &unrange,
-        None,
-    );
-    codec(
-        b,
-        "range_o1",
-        true,
-        &quality_blocks,
-        Some(&range1),
-        &unrange,
-        None,
-    );
+    let range0 = |_, x: &[u8]| range::compress(x, 0).expect("compresses");
+    let range1 = |_, x: &[u8]| range::compress(x, 1).expect("compresses");
+    let unrange = |_, x: &[u8]| range::uncompress(x).expect("decompresses");
+    codec(b, "range_o0", &quality_blocks, &range0, &unrange);
+    codec(b, "range_o1", &quality_blocks, &range1, &unrange);
 
     // Read names, NUL-terminated as a CRAM block holds them, ten thousand to a block.
     let name_blocks: Vec<Vec<u8>> = records
@@ -380,44 +301,34 @@ fn codecs(b: &Bench, records: &[BamRecord]) {
             block
         })
         .collect();
-    // htsjdk 5.0.0's encoder, which codes names differently from the container's 4.2.0.
-    let names = |x: &[u8]| name_tokeniser::compress(x, 0).expect("compresses");
-    let unnames = |x: &[u8]| name_tokeniser::uncompress(x, 0).expect("decompresses");
-    codec(
-        b,
-        "name_tok",
-        false,
-        &name_blocks,
-        Some(&names),
-        &unnames,
-        None,
-    );
+    let names = |_, x: &[u8]| name_tokeniser::compress(x, 0).expect("compresses");
+    let unnames = |_, x: &[u8]| name_tokeniser::uncompress(x, 0).expect("decompresses");
+    codec(b, "name_tok", &name_blocks, &names, &unnames);
 
-    // fqzcomp, per block of whole records: the record lengths are part of its input.
-    let per_block = BLOCK / READ_LENGTH;
-    let mut fqz_blocks = Vec::new();
-    let mut fqz_packed = Vec::new();
-    for chunk in records.chunks(per_block) {
-        let data: Vec<u8> = chunk
+    // fqzcomp, per block of whole records: their lengths and flags are part of its input, and go
+    // to `CramBench` as little-endian `i32` arrays framed like the blocks.
+    let chunks: Vec<&[BamRecord]> = records.chunks(BLOCK / READ_LENGTH).collect();
+    let fqz_blocks: Vec<Vec<u8>> = chunks
+        .iter()
+        .map(|c| {
+            c.iter()
+                .flat_map(|r| r.base_qualities.iter().copied())
+                .collect()
+        })
+        .collect();
+    let ints = |f: &dyn Fn(&BamRecord) -> i32| -> Vec<Vec<i32>> {
+        chunks.iter().map(|c| c.iter().map(f).collect()).collect()
+    };
+    let lengths = ints(&|r| r.base_qualities.len() as i32);
+    let flags = ints(&|r| r.flags as i32);
+    for (name, values) in [("lengths", &lengths), ("flags", &flags)] {
+        let parts: Vec<Vec<u8>> = values
             .iter()
-            .flat_map(|r| r.base_qualities.iter().copied())
+            .map(|v| v.iter().flat_map(|x| x.to_le_bytes()).collect())
             .collect();
-        let lengths: Vec<i32> = chunk
-            .iter()
-            .map(|r| r.base_qualities.len() as i32)
-            .collect();
-        let flags: Vec<i32> = chunk.iter().map(|r| r.flags as i32).collect();
-        fqz_packed.push(fqzcomp::compress(&data, &lengths, Some(&flags)));
-        fqz_blocks.push(data);
+        std::fs::write(b.dir.join(format!("fqzcomp_{name}.bin")), frame(&parts)).expect("writes");
     }
-    let unfqz = |x: &[u8]| fqzcomp::uncompress(x).expect("decompresses");
-    codec(
-        b,
-        "fqzcomp",
-        true,
-        &fqz_blocks,
-        None,
-        &unfqz,
-        Some(fqz_packed),
-    );
+    let fqz = |i: usize, x: &[u8]| fqzcomp::compress(x, &lengths[i], Some(&flags[i]));
+    let unfqz = |_, x: &[u8]| fqzcomp::uncompress(x).expect("decompresses");
+    codec(b, "fqzcomp", &fqz_blocks, &fqz, &unfqz);
 }

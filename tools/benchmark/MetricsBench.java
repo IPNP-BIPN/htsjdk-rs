@@ -3,6 +3,7 @@ import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.metrics.StringHeader;
 import htsjdk.samtools.util.Histogram;
 import java.io.File;
+import java.util.Locale;
 
 /**
  * The reference side of `metrics-bench`: htsjdk's `MetricsFile` writing the same beans and
@@ -51,7 +52,7 @@ public class MetricsBench {
     for (int r = 0; r < reps; r++) {
       long t0 = System.nanoTime();
       write(out);
-      System.out.printf("java_metrics_write_run%d_secs=%.6f%n", r, (System.nanoTime() - t0) / 1e9);
+      System.out.printf(Locale.ROOT, "java_metrics_write_run%d_secs=%.6f%n", r, (System.nanoTime() - t0) / 1e9);
     }
   }
 }

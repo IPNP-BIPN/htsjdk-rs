@@ -8,18 +8,19 @@ import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.ValidationStringency;
 import htsjdk.samtools.cram.compression.CompressionUtils;
 import htsjdk.samtools.cram.compression.fqzcomp.FQZCompDecode;
+import htsjdk.samtools.cram.compression.fqzcomp.FQZCompEncode;
 import htsjdk.samtools.cram.compression.nametokenisation.NameTokenisationDecode;
 import htsjdk.samtools.cram.compression.nametokenisation.NameTokenisationEncode;
 import htsjdk.samtools.cram.compression.range.RangeDecode;
 import htsjdk.samtools.cram.compression.range.RangeEncode;
 import htsjdk.samtools.cram.compression.range.RangeParams;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Decode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Encode;
+import htsjdk.samtools.cram.compression.rans.RANS4x8Params;
+import htsjdk.samtools.cram.compression.rans.RANSNx16Decode;
+import htsjdk.samtools.cram.compression.rans.RANSNx16Encode;
+import htsjdk.samtools.cram.compression.rans.RANSNx16Params;
 import htsjdk.samtools.cram.compression.rans.RANSParams;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Decode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Encode;
-import htsjdk.samtools.cram.compression.rans.rans4x8.RANS4x8Params;
-import htsjdk.samtools.cram.compression.rans.ransnx16.RANSNx16Decode;
-import htsjdk.samtools.cram.compression.rans.ransnx16.RANSNx16Encode;
-import htsjdk.samtools.cram.compression.rans.ransnx16.RANSNx16Params;
 import htsjdk.samtools.cram.ref.ReferenceSource;
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
@@ -32,10 +33,13 @@ import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
+import java.util.Locale;
 
 /**
- * The reference side of `cram-bench`: htsjdk 4.2.0's CRAM writer and reader on the same reads and
- * reference, and its CRAM 3.1 codecs on the same blocks.
+ * The reference side of `cram-bench`: htsjdk 5.0.0's CRAM 3.1 writer and reader on the same reads
+ * and reference, and its CRAM 3.1 codecs on the same blocks. Run with `-Dsamjdk.use_libdeflate=true`,
+ * 5.0.0's default, which the oracle image turns off for its goldens: the port's CRAM writer deflates
+ * its GZIP blocks the way 5.0.0 does by default.
  *
  * Usage: CramBench dir reps
  */
@@ -48,7 +52,7 @@ public class CramBench {
     for (int r = 0; r < reps; r++) {
       long t0 = System.nanoTime();
       op.call();
-      System.out.printf("java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
+      System.out.printf(Locale.ROOT, "java_%s_run%d_secs=%.6f%n", name, r, (System.nanoTime() - t0) / 1e9);
     }
     return out;
   }
@@ -88,21 +92,21 @@ public class CramBench {
     File out = java("cram_write", ".cram");
     time("cram_write", () -> {
       try (OutputStream os = new BufferedOutputStream(new FileOutputStream(out))) {
-        CRAMFileWriter w = new CRAMFileWriter(os, new ReferenceSource(fasta), h, out.getName());
+        // The name is the file definition's 20-byte id; the port writes the same one.
+        CRAMFileWriter w = new CRAMFileWriter(os, new ReferenceSource(fasta), h, "cram_write.cram");
         for (SAMRecord rec : records) w.addAlignment(rec);
         w.close();
       }
       return null;
     });
-    writeSam(java("cram_write", ".sam"), h, read(out, fasta));
 
-    // htsjdk 4.2.0 cannot read the port's CRAM 3.1, so both sides read this CRAM 3.0 file.
-    List<SAMRecord> decoded = time("cram_read", () -> read(out, fasta));
+    List<SAMRecord> decoded = time("cram_read", () -> read(port("cram_write", ".cram"), fasta));
     writeSam(java("cram_read", ".sam"), header, decoded);
   }
 
+  /** One codec direction: the block's index and the block in, one block out. */
   interface Codec {
-    byte[] apply(byte[] in) throws Exception;
+    byte[] apply(int index, byte[] in) throws Exception;
   }
 
   static byte[] bytes(ByteBuffer b) {
@@ -135,7 +139,7 @@ public class CramBench {
 
   static List<byte[]> each(List<byte[]> in, Codec codec) throws Exception {
     List<byte[]> out = new ArrayList<>();
-    for (byte[] x : in) out.add(codec.apply(x));
+    for (int i = 0; i < in.size(); i++) out.add(codec.apply(i, in.get(i)));
     return out;
   }
 
@@ -146,14 +150,19 @@ public class CramBench {
   static void codec(String name, Codec compress, Codec uncompress) throws Exception {
     List<byte[]> packed = unframe(port(name + "_compress", ".bin"));
     List<byte[]> plain = unframe(port(name + "_uncompress", ".bin"));
-    if (compress != null) {
-      frame(java(name + "_compress", ".bin"), time(name + "_compress", () -> each(plain, compress)));
-      // Where the port follows a later encoder, the check is this htsjdk decoding its streams.
-      if (port(name + "_compress", ".dec").exists()) {
-        frame(java(name + "_compress", ".dec"), each(packed, uncompress));
-      }
-    }
+    frame(java(name + "_compress", ".bin"), time(name + "_compress", () -> each(plain, compress)));
     frame(java(name + "_uncompress", ".bin"), time(name + "_uncompress", () -> each(packed, uncompress)));
+  }
+
+  /** The per-block `i32` arrays `cram-bench` writes beside the fqzcomp blocks. */
+  static List<int[]> ints(String name) throws Exception {
+    List<int[]> out = new ArrayList<>();
+    for (byte[] part : unframe(new File(dir, "fqzcomp_" + name + ".bin"))) {
+      int[] values = new int[part.length / 4];
+      ByteBuffer.wrap(part).order(ByteOrder.LITTLE_ENDIAN).asIntBuffer().get(values);
+      out.add(values);
+    }
+    return out;
   }
 
   public static void main(String[] args) throws Exception {
@@ -162,28 +171,30 @@ public class CramBench {
     cram();
 
     codec("rans4x8_o0",
-        x -> bytes(new RANS4x8Encode().compress(CompressionUtils.wrap(x),
-            new RANS4x8Params(RANSParams.ORDER.ZERO))),
-        x -> bytes(new RANS4x8Decode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> new RANS4x8Encode().compress(x, new RANS4x8Params(RANSParams.ORDER.ZERO)),
+        (i, x) -> new RANS4x8Decode().uncompress(x));
     codec("rans4x8_o1",
-        x -> bytes(new RANS4x8Encode().compress(CompressionUtils.wrap(x),
-            new RANS4x8Params(RANSParams.ORDER.ONE))),
-        x -> bytes(new RANS4x8Decode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> new RANS4x8Encode().compress(x, new RANS4x8Params(RANSParams.ORDER.ONE)),
+        (i, x) -> new RANS4x8Decode().uncompress(x));
     codec("ransnx16_o0",
-        x -> bytes(new RANSNx16Encode().compress(CompressionUtils.wrap(x), new RANSNx16Params(0))),
-        x -> bytes(new RANSNx16Decode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> new RANSNx16Encode().compress(x, new RANSNx16Params(0)),
+        (i, x) -> new RANSNx16Decode().uncompress(x));
     codec("ransnx16_o1",
-        x -> bytes(new RANSNx16Encode().compress(CompressionUtils.wrap(x), new RANSNx16Params(1))),
-        x -> bytes(new RANSNx16Decode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> new RANSNx16Encode().compress(x, new RANSNx16Params(1)),
+        (i, x) -> new RANSNx16Decode().uncompress(x));
     codec("range_o0",
-        x -> bytes(new RangeEncode().compress(CompressionUtils.wrap(x), new RangeParams(0))),
-        x -> bytes(new RangeDecode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> bytes(new RangeEncode().compress(CompressionUtils.wrap(x), new RangeParams(0))),
+        (i, x) -> bytes(new RangeDecode().uncompress(CompressionUtils.wrap(x))));
     codec("range_o1",
-        x -> bytes(new RangeEncode().compress(CompressionUtils.wrap(x), new RangeParams(1))),
-        x -> bytes(new RangeDecode().uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> bytes(new RangeEncode().compress(CompressionUtils.wrap(x), new RangeParams(1))),
+        (i, x) -> bytes(new RangeDecode().uncompress(CompressionUtils.wrap(x))));
     codec("name_tok",
-        x -> bytes(new NameTokenisationEncode().compress(CompressionUtils.wrap(x), false, (byte) 0)),
-        x -> new NameTokenisationDecode().uncompress(CompressionUtils.wrap(x), (byte) 0));
-    codec("fqzcomp", null, x -> bytes(FQZCompDecode.uncompress(CompressionUtils.wrap(x))));
+        (i, x) -> bytes(new NameTokenisationEncode().compress(CompressionUtils.wrap(x), false, (byte) 0)),
+        (i, x) -> new NameTokenisationDecode().uncompress(CompressionUtils.wrap(x), (byte) 0));
+    List<int[]> lengths = ints("lengths");
+    List<int[]> flags = ints("flags");
+    codec("fqzcomp",
+        (i, x) -> bytes(new FQZCompEncode().compress(CompressionUtils.wrap(x), lengths.get(i), flags.get(i))),
+        (i, x) -> bytes(FQZCompDecode.uncompress(CompressionUtils.wrap(x))));
   }
 }

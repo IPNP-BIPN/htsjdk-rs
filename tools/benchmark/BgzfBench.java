@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.security.MessageDigest;
+import java.util.Locale;
 
 /**
  * The reference side of the I/O floor benchmark: htsjdk's BGZF writer and reader, timed on the
@@ -74,7 +75,7 @@ public class BgzfBench {
 
     for (int p = 0; p < payloads.length; p++) {
       byte[] input = payloads[p];
-      System.out.printf("payload_%s_md5=%s%n", names[p], md5(input, input.length));
+      System.out.printf(Locale.ROOT, "payload_%s_md5=%s%n", names[p], md5(input, input.length));
       for (int level : new int[] {1, 5, 6, 9}) {
         byte[] framed = null;
         // The first run is thrown away: it pays the JIT, and the port has no equivalent cost.
