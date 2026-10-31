@@ -89,6 +89,11 @@ pub fn parse_genotypes(
     }
 
     let keys: Vec<&str> = parts[0].split(':').collect();
+    // What is left after the typed fields, so that a genotype is not left with room for four.
+    let extended_keys = keys
+        .iter()
+        .filter(|key| !matches!(**key, "GT" | "FT" | "GQ" | "AD" | "PL" | "GL" | "DP"))
+        .count();
     let mut genotypes = Vec::with_capacity(parts.len() - 1);
     // `PlIsSet` is per record, not per sample: a PL in one sample suppresses the GL conversion in
     // every sample after it.
@@ -137,6 +142,7 @@ pub fn parse_genotypes(
         }
 
         let mut genotype = Genotype::new(sample, Vec::new());
+        genotype.extended.reserve_exact(extended_keys);
         let mut gt_position: i64 = -1;
 
         for (index, key) in keys.iter().enumerate() {
@@ -248,7 +254,8 @@ fn parse_genotype_alleles(
     contig: &str,
     pos: i64,
 ) -> Result<Vec<Allele>, RecordError> {
-    let mut result = Vec::new();
+    // Diploid nearly always, where the first `push` of an empty `Vec` would make room for four.
+    let mut result = Vec::with_capacity(2);
     for token in gt.split(PHASING_TOKENS).filter(|t| !t.is_empty()) {
         result.push(one_allele(token, alleles, contig, pos)?);
     }

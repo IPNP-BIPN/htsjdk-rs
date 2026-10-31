@@ -28,3 +28,4 @@ flate2.workspace = true
 noodles-vcf = "0.95"
 noodles-core = "0.21"
 htsjdk-tribble = { path = "../htsjdk-tribble" }
+htsjdk-bam = { path = "../htsjdk-bam" }
