@@ -44,7 +44,8 @@ const PHASING_TOKENS: [char; 3] = ['/', '|', '\\'];
 /// Everything the genotype layer needs from the record around it.
 ///
 /// `line` is there for one reason: the "too many keys" message quotes the **site** columns
-/// rather than the genotype ones, so reproducing it needs the record's own tokens.
+/// rather than the genotype ones, so reproducing it needs the tokens of the line the codec split
+/// last: the record's own when the block is parsed at the read, a later one when it is deferred.
 #[derive(Clone, Copy)]
 pub struct GenotypeContext<'a> {
     pub line: &'a str,
@@ -53,6 +54,95 @@ pub struct GenotypeContext<'a> {
     pub contig: &'a str,
     pub pos: i64,
     pub line_number: usize,
+}
+
+/// The codec a deferred genotype block is parsed by, shared by every record of one file: the
+/// header, the version, and where the codec stands.
+///
+/// `createGenotypeMap` runs with the codec's state at the moment of the first access, not at the
+/// record's: `lineNo` is the counter after the line the codec read last, and `parts`, which the
+/// "too many keys" message quotes, is that line's split. A reader moves the cursor with
+/// [`Self::advance`] as htsjdk's would, which for `VCFFileReader` is one record ahead of the one
+/// handed out (decision 0048).
+#[derive(Debug)]
+pub struct VcfGenotypeSource {
+    header: VcfHeader,
+    version: VcfVersion,
+    cursor: std::sync::RwLock<Cursor>,
+}
+
+#[derive(Debug, Default)]
+struct Cursor {
+    line_number: usize,
+    line: String,
+}
+
+impl VcfGenotypeSource {
+    pub fn new(header: VcfHeader, version: VcfVersion) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            header,
+            version,
+            cursor: Default::default(),
+        })
+    }
+
+    /// The codec has decoded `line`, and its counter is now `line_number`.
+    pub fn advance(&self, line_number: usize, line: &str) {
+        let mut cursor = self
+            .cursor
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cursor.line_number = line_number;
+        cursor.line.clear();
+        cursor.line.push_str(line);
+    }
+}
+
+/// `LazyVCFGenotypesParser`: what one record's block is parsed with on first access. The alleles,
+/// contig and start are captured when the line is read, as the parser captures them.
+#[derive(Debug, Clone)]
+pub struct DeferredVcfGenotypes {
+    source: std::sync::Arc<VcfGenotypeSource>,
+    alleles: Vec<Allele>,
+    contig: String,
+    pos: i64,
+}
+
+impl DeferredVcfGenotypes {
+    pub fn new(
+        source: &std::sync::Arc<VcfGenotypeSource>,
+        alleles: Vec<Allele>,
+        contig: &str,
+        pos: i64,
+    ) -> Self {
+        Self {
+            source: std::sync::Arc::clone(source),
+            alleles,
+            contig: contig.to_string(),
+            pos,
+        }
+    }
+
+    /// `parse(data)`, which is `createGenotypeMap` with the codec as it stands now.
+    pub(crate) fn parse(
+        &self,
+        block: &str,
+    ) -> Result<Vec<Genotype>, crate::genotypes_context::GenotypeError> {
+        let cursor = self
+            .source
+            .cursor
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let context = GenotypeContext {
+            line: &cursor.line,
+            header: &self.source.header,
+            version: self.source.version,
+            contig: &self.contig,
+            pos: self.pos,
+            line_number: cursor.line_number,
+        };
+        parse_genotypes(block, &self.alleles, &context).map_err(Into::into)
+    }
 }
 
 /// `AbstractVCFCodec.createGenotypeMap`.

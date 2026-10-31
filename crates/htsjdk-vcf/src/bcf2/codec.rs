@@ -14,6 +14,7 @@ use super::{id_lines, make_dictionary, sample_names_in_order, Bcf2Error, LazyDat
 use crate::allele::Allele;
 use crate::genotypes_context::GenotypesContext;
 use crate::header::{HeaderLine, LineType, VcfHeader};
+use crate::reader::GenotypeParsing;
 use crate::variant::{Genotype, Value, VariantContext, NO_LOG10_PERROR};
 
 /// `MAX_HEADER_SIZE`.
@@ -280,6 +281,148 @@ impl Bcf2ReadFailure {
     }
 }
 
+fn dictionary_string(dictionary: &[String], offset: i32) -> Result<&str, Bcf2Error> {
+    dictionary
+        .get(usize::try_from(offset).unwrap_or(usize::MAX))
+        .map(String::as_str)
+        .ok_or_else(|| Bcf2Error::index_out_of_bounds(offset as i64, dictionary.len()))
+}
+
+/// `getDictionaryString()`: the dictionary entry a field names, as its index.
+fn read_dictionary_offset(dictionary: &[String], d: &mut Decoder) -> Result<usize, Bcf2Error> {
+    let descriptor = d.read_type_descriptor();
+    let size = d.decode_number_of_elements(descriptor)?;
+    // The one shape an offset has: a single integer, read without building a `Typed`.
+    if size == 1 {
+        if let Ok(t @ (Bcf2Type::Int8 | Bcf2Type::Int16 | Bcf2Type::Int32)) = type_for(descriptor) {
+            let offset = d.decode_int(t)?;
+            if offset != t.missing_bytes() {
+                return dictionary_string(dictionary, offset).map(|_| offset as usize);
+            }
+        } else {
+            return dictionary_offset_of(dictionary, d.decode_typed_value_sized(descriptor, size)?);
+        }
+        return dictionary_offset_of(dictionary, Typed::Null);
+    }
+    dictionary_offset_of(dictionary, d.decode_typed_value_sized(descriptor, size)?)
+}
+
+/// `getDictionaryString()` on a decoded value, with its refusals.
+fn dictionary_offset_of(dictionary: &[String], value: Typed) -> Result<usize, Bcf2Error> {
+    match value {
+        Typed::Int(offset) => dictionary_string(dictionary, offset).map(|_| offset as usize),
+        Typed::Null => Err(Bcf2Error::null_pointer(
+            "Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \
+             \"htsjdk.variant.bcf2.BCF2Decoder.decodeTypedValue()\" is null",
+        )),
+        other => Err(Bcf2Error::class_cast(other.class(), "java.lang.Integer")),
+    }
+}
+
+/// What `BCF2LazyGenotypesDecoder` reads from its codec, shared by every record of one file: the
+/// header's samples and the string dictionary.
+#[derive(Debug)]
+pub struct BcfGenotypeSource {
+    samples: Vec<String>,
+    dictionary: Vec<String>,
+}
+
+impl BcfGenotypeSource {
+    /// `BCF2LazyGenotypesDecoder.parse`.
+    fn decode(
+        &self,
+        alleles: &[Allele],
+        n_fields: i32,
+        bytes: &[u8],
+    ) -> Result<Vec<Genotype>, Bcf2Error> {
+        let mut d = Decoder::new(bytes);
+        let mut gbs: Vec<Genotype> = self
+            .samples
+            .iter()
+            .map(|s| Genotype::new(s, Vec::new()))
+            .collect();
+        for _ in 0..n_fields {
+            let field = self.dictionary[read_dictionary_offset(&self.dictionary, &mut d)?].as_str();
+            let descriptor = d.read_type_descriptor();
+            let n = d.decode_number_of_elements(descriptor)?;
+            match field {
+                "GT" => decode_gt(alleles, &mut d, descriptor, n, &mut gbs)?,
+                "FT" => {
+                    for gb in gbs.iter_mut() {
+                        gb.filters = match d.decode_typed_value_sized(descriptor, n)? {
+                            Typed::Null => None,
+                            Typed::Str(s) => Some(s),
+                            other => {
+                                return Err(Bcf2Error::tribble(format!(
+                                    "BUG: expected encoding of field {field} inconsistent with \
+                                     the value observed in the decoded value ({})",
+                                    other.class()
+                                )))
+                            }
+                        };
+                    }
+                }
+                "DP" | "GQ" => {
+                    for gb in gbs.iter_mut() {
+                        let v = d.decode_int_or(descriptor, -1)?;
+                        let v = if v == -1 { None } else { Some(v) };
+                        if field == "DP" {
+                            gb.dp = v;
+                        } else {
+                            gb.gq = v;
+                        }
+                    }
+                }
+                "AD" | "PL" => {
+                    let t = type_for(descriptor)?;
+                    for gb in gbs.iter_mut() {
+                        let v = d.decode_int_array(n, t)?;
+                        if field == "AD" {
+                            gb.ad = v;
+                        } else {
+                            gb.pl = v;
+                        }
+                    }
+                }
+                _ => {
+                    for gb in gbs.iter_mut() {
+                        let value = match d.decode_typed_value_sized(descriptor, n)? {
+                            Typed::Null => continue,
+                            Typed::List(mut items) if items.len() == 1 => items.remove(0),
+                            v => v,
+                        };
+                        let value = value.into_value();
+                        match gb.extended.iter_mut().find(|(k, _)| *k == field) {
+                            Some(slot) => slot.1 = value,
+                            None => gb.extended.push((field.to_string(), value)),
+                        }
+                    }
+                }
+            }
+        }
+        Ok(gbs)
+    }
+}
+
+/// `BCF2LazyGenotypesDecoder`: one record's genotype block, decoded on first access.
+#[derive(Debug, Clone)]
+pub struct DeferredBcfGenotypes {
+    source: Arc<BcfGenotypeSource>,
+    alleles: Vec<Allele>,
+}
+
+impl DeferredBcfGenotypes {
+    /// `parse(data)`.
+    pub(crate) fn parse(
+        &self,
+        data: &LazyData,
+    ) -> Result<Vec<Genotype>, crate::genotypes_context::GenotypeError> {
+        self.source
+            .decode(&self.alleles, data.n_genotype_fields, &data.bytes)
+            .map_err(Into::into)
+    }
+}
+
 /// `BCF2Codec` after `readHeader`.
 struct Codec {
     header: VcfHeader,
@@ -288,6 +431,8 @@ struct Codec {
     header_version: Option<crate::header_parse::VcfVersion>,
     contig_names: Vec<String>,
     dictionary: Vec<String>,
+    /// The samples and the dictionary again, shared with every deferred genotype block.
+    genotype_source: Arc<BcfGenotypeSource>,
     /// Per dictionary entry, whether the FORMAT-then-INFO line `getMetaDataForField` finds for it
     /// is a Flag, or `None` where there is no such line. Worked out once per header rather than by
     /// name for every field of every record.
@@ -310,50 +455,12 @@ impl Codec {
     }
 
     fn dictionary_string(&self, offset: i32) -> Result<&str, Bcf2Error> {
-        self.dictionary
-            .get(usize::try_from(offset).unwrap_or(usize::MAX))
-            .map(String::as_str)
-            .ok_or_else(|| Bcf2Error::index_out_of_bounds(offset as i64, self.dictionary.len()))
-    }
-
-    /// `getDictionaryString()`: the offset read as an `Integer`.
-    /// [`Self::read_dictionary_offset`]'s entry, borrowed for a caller that only compares it.
-    fn read_dictionary_str(&self, d: &mut Decoder) -> Result<&str, Bcf2Error> {
-        self.read_dictionary_offset(d)
-            .map(|i| self.dictionary[i].as_str())
+        dictionary_string(&self.dictionary, offset)
     }
 
     /// The dictionary entry a field names, as its index, with `getDictionaryString`'s refusals.
     fn read_dictionary_offset(&self, d: &mut Decoder) -> Result<usize, Bcf2Error> {
-        let descriptor = d.read_type_descriptor();
-        let size = d.decode_number_of_elements(descriptor)?;
-        // The one shape an offset has: a single integer, read without building a `Typed`.
-        if size == 1 {
-            if let Ok(t @ (Bcf2Type::Int8 | Bcf2Type::Int16 | Bcf2Type::Int32)) =
-                type_for(descriptor)
-            {
-                let offset = d.decode_int(t)?;
-                if offset != t.missing_bytes() {
-                    return self.dictionary_string(offset).map(|_| offset as usize);
-                }
-            } else {
-                return self.dictionary_offset_of(d.decode_typed_value_sized(descriptor, size)?);
-            }
-            return self.dictionary_offset_of(Typed::Null);
-        }
-        self.dictionary_offset_of(d.decode_typed_value_sized(descriptor, size)?)
-    }
-
-    /// `getDictionaryString()` on a decoded value, with its refusals.
-    fn dictionary_offset_of(&self, value: Typed) -> Result<usize, Bcf2Error> {
-        match value {
-            Typed::Int(offset) => self.dictionary_string(offset).map(|_| offset as usize),
-            Typed::Null => Err(Bcf2Error::null_pointer(
-                "Cannot invoke \"java.lang.Integer.intValue()\" because the return value of \
-                 \"htsjdk.variant.bcf2.BCF2Decoder.decodeTypedValue()\" is null",
-            )),
-            other => Err(Bcf2Error::class_cast(other.class(), "java.lang.Integer")),
-        }
+        read_dictionary_offset(&self.dictionary, d)
     }
 
     /// The sites block: the record without its genotypes, and the genotype field count.
@@ -519,99 +626,35 @@ impl Codec {
         mut vc: VariantContext,
         n_format_fields: i32,
         genotypes: &[u8],
+        parsing: GenotypeParsing,
     ) -> Result<VariantContext, Bcf2Error> {
         if !self.header.samples.is_empty() {
-            let decoded = self.decode_genotypes(&vc, n_format_fields, genotypes)?;
-            vc.genotypes = if self.samples_sorted {
-                GenotypesContext::lazy_bcf(
-                    decoded,
-                    LazyData {
-                        header: self.lazy_header.clone(),
-                        n_genotype_fields: n_format_fields,
-                        bytes: Arc::from(genotypes),
-                    },
-                )
+            let data = || LazyData {
+                header: self.lazy_header.clone(),
+                n_genotype_fields: n_format_fields,
+                bytes: Arc::from(genotypes),
+            };
+            vc.genotypes = if !self.samples_sorted {
+                GenotypesContext::new(self.genotype_source.decode(
+                    &vc.alleles,
+                    n_format_fields,
+                    genotypes,
+                )?)
+            } else if parsing == GenotypeParsing::Deferred {
+                let parser = DeferredBcfGenotypes {
+                    source: Arc::clone(&self.genotype_source),
+                    alleles: vc.alleles.clone(),
+                };
+                GenotypesContext::deferred_bcf(data(), parser, self.header.samples.len())
             } else {
-                GenotypesContext::new(decoded)
+                GenotypesContext::lazy_bcf(
+                    self.genotype_source
+                        .decode(&vc.alleles, n_format_fields, genotypes)?,
+                    data(),
+                )
             };
         }
         Ok(vc)
-    }
-
-    /// `BCF2LazyGenotypesDecoder.parse`.
-    fn decode_genotypes(
-        &self,
-        vc: &VariantContext,
-        n_fields: i32,
-        bytes: &[u8],
-    ) -> Result<Vec<Genotype>, Bcf2Error> {
-        let mut d = Decoder::new(bytes);
-        let mut gbs: Vec<Genotype> = self
-            .header
-            .samples
-            .iter()
-            .map(|s| Genotype::new(s, Vec::new()))
-            .collect();
-        for _ in 0..n_fields {
-            let field = self.read_dictionary_str(&mut d)?;
-            let descriptor = d.read_type_descriptor();
-            let n = d.decode_number_of_elements(descriptor)?;
-            match field {
-                "GT" => decode_gt(&vc.alleles, &mut d, descriptor, n, &mut gbs)?,
-                "FT" => {
-                    for gb in gbs.iter_mut() {
-                        gb.filters = match d.decode_typed_value_sized(descriptor, n)? {
-                            Typed::Null => None,
-                            Typed::Str(s) => Some(s),
-                            other => {
-                                return Err(Bcf2Error::tribble(format!(
-                                    "BUG: expected encoding of field {field} inconsistent with \
-                                     the value observed in the decoded value ({})",
-                                    other.class()
-                                )))
-                            }
-                        };
-                    }
-                }
-                "DP" | "GQ" => {
-                    for gb in gbs.iter_mut() {
-                        let v = d.decode_int_or(descriptor, -1)?;
-                        let v = if v == -1 { None } else { Some(v) };
-                        if field == "DP" {
-                            gb.dp = v;
-                        } else {
-                            gb.gq = v;
-                        }
-                    }
-                }
-                "AD" | "PL" => {
-                    let t = type_for(descriptor)?;
-                    for gb in gbs.iter_mut() {
-                        let v = d.decode_int_array(n, t)?;
-                        if field == "AD" {
-                            gb.ad = v;
-                        } else {
-                            gb.pl = v;
-                        }
-                    }
-                }
-                _ => {
-                    for gb in gbs.iter_mut() {
-                        let value = match d.decode_typed_value_sized(descriptor, n)? {
-                            Typed::Null => continue,
-                            Typed::List(mut items) if items.len() == 1 => items.remove(0),
-                            v => v,
-                        };
-                        let value = value.into_value();
-                        match gb.extended.iter_mut().find(|(k, _)| *k == field) {
-                            Some(slot) => slot.1 = value,
-                            None => gb.extended.push((field.to_string(), value)),
-                        }
-                    }
-                }
-            }
-        }
-        Ok(gbs)
     }
 }
 
@@ -810,10 +853,15 @@ fn read_header(bytes: &[u8]) -> Result<(Codec, usize), Bcf2Error> {
                 .map(|meta| meta.line_type == LineType::Flag)
         })
         .collect();
+    let genotype_source = Arc::new(BcfGenotypeSource {
+        samples: header.samples.clone(),
+        dictionary: dictionary.clone(),
+    });
     Ok((
         Codec {
             fields,
             is_flag,
+            genotype_source,
             header,
             codec_version,
             header_version,
@@ -835,6 +883,11 @@ pub fn read_bcf_header(bytes: &[u8]) -> Result<VcfHeader, Bcf2Error> {
 
 /// Read a whole BCF file, uncompressed, as `VCFFileReader` iterates it.
 pub fn read_bcf(bytes: &[u8]) -> Result<Bcf2File, Bcf2ReadFailure> {
+    read_bcf_with(bytes, GenotypeParsing::Eager)
+}
+
+/// [`read_bcf`], with the genotype blocks decoded as `parsing` says (decision 0048).
+pub fn read_bcf_with(bytes: &[u8], parsing: GenotypeParsing) -> Result<Bcf2File, Bcf2ReadFailure> {
     let (mut codec, mut at) = read_header(bytes).map_err(|error| Bcf2ReadFailure {
         error,
         records: Vec::new(),
@@ -868,7 +921,7 @@ pub fn read_bcf(bytes: &[u8]) -> Result<Bcf2File, Bcf2ReadFailure> {
             // The sites block is decoded before the genotype block is read.
             let (vc, n_format_fields) = codec.decode_sites(sites)?;
             let genotypes = block(genotypes_at, genotypes_size)?;
-            let vc = codec.attach_genotypes(vc, n_format_fields, genotypes)?;
+            let vc = codec.attach_genotypes(vc, n_format_fields, genotypes, parsing)?;
             Ok((vc, genotypes_at + genotypes_size as usize))
         })();
         match result {
