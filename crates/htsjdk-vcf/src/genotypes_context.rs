@@ -54,8 +54,9 @@
 //!
 //! A file whose samples are not sorted is parsed at the read either way, as `parseVCFLine` does.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::cell::UnsafeCell;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use crate::variant::Genotype;
 
@@ -130,12 +131,130 @@ enum Genotypes {
     Deferred(Box<Deferred>),
 }
 
-#[derive(Debug, Clone)]
+///
+/// The parser holds a copy of the record's alleles and is no use once it has run, so its answer
+/// takes its place: a record parsed costs what an eagerly read one does, and this box. `DONE` is set
+/// once. Before it `slot` is reached only under `LOCKED`, and after it nothing writes `slot` through
+/// `&self`, so the answer is read with no lock. `std::sync::Mutex` allocates on some platforms for
+/// each one locked; nothing waits here but a thread reading the same record's genotypes in the same
+/// instant, so spinning is enough. Nothing under the lock takes it again.
 struct Deferred {
-    parser: Parser,
     /// `nUnparsedGenotypes`: the header's sample count, which `size()` answers before a parse.
     count: usize,
-    parsed: OnceLock<Result<Vec<Genotype>, GenotypeError>>,
+    state: AtomicU8,
+    slot: UnsafeCell<Slot>,
+}
+
+enum Slot {
+    Pending(Parser),
+    Done(Result<Vec<Genotype>, Box<GenotypeError>>),
+}
+
+const LOCKED: u8 = 1;
+const DONE: u8 = 2;
+
+// SAFETY: `slot` is written through `&self` only under `LOCKED` and before `DONE` is published, and
+// read under `LOCKED` before it and freely after it. What it holds is `Send` and `Sync`.
+unsafe impl Sync for Deferred where Slot: Send + Sync {}
+
+/// Holding `LOCKED`, which it lets go even if the holder panics.
+struct Locked<'a>(&'a AtomicU8);
+
+impl<'a> Locked<'a> {
+    fn take(state: &'a AtomicU8) -> Self {
+        while state.fetch_or(LOCKED, Ordering::Acquire) & LOCKED != 0 {
+            while state.load(Ordering::Relaxed) & LOCKED != 0 {
+                std::hint::spin_loop();
+            }
+        }
+        Self(state)
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_and(!LOCKED, Ordering::Release);
+    }
+}
+
+impl Deferred {
+    fn new(parser: Parser, count: usize) -> Self {
+        Self {
+            count,
+            state: AtomicU8::new(0),
+            slot: UnsafeCell::new(Slot::Pending(parser)),
+        }
+    }
+
+    /// The answer, if the parse has run.
+    fn answer(&self) -> Option<Result<&Vec<Genotype>, &GenotypeError>> {
+        if self.state.load(Ordering::Acquire) & DONE == 0 {
+            return None;
+        }
+        // SAFETY: `DONE` was published with `Release` after the answer was written, and nothing
+        // writes `slot` through `&self` from then on.
+        match unsafe { &*self.slot.get() } {
+            Slot::Done(answer) => Some(answer.as_ref().map_err(|error| &**error)),
+            Slot::Pending(_) => unreachable!("`DONE` is set with the answer"),
+        }
+    }
+
+    /// The answer, from `parse` the first time. A panic in `parse` leaves the parser in place.
+    fn answer_or_parse(
+        &self,
+        parse: impl FnOnce(&Parser) -> Result<Vec<Genotype>, GenotypeError>,
+    ) -> Result<&Vec<Genotype>, &GenotypeError> {
+        if let Some(answer) = self.answer() {
+            return answer;
+        }
+        {
+            let _locked = Locked::take(&self.state);
+            if self.state.load(Ordering::Relaxed) & DONE == 0 {
+                // SAFETY: `LOCKED` is held and `DONE` is not set, so nothing else reaches `slot`,
+                // and these references end with this block.
+                let slot = unsafe { &mut *self.slot.get() };
+                let Slot::Pending(parser) = &*slot else {
+                    unreachable!("`DONE` is set with the answer");
+                };
+                *slot = Slot::Done(parse(parser).map_err(Box::new));
+                self.state.fetch_or(DONE, Ordering::Release);
+            }
+        }
+        self.answer().expect("parsed just above")
+    }
+
+    /// The answer, for a caller that has just made sure it exists and owns the context.
+    fn into_answer(self) -> Option<Result<Vec<Genotype>, Box<GenotypeError>>> {
+        match self.slot.into_inner() {
+            Slot::Done(answer) => Some(answer),
+            Slot::Pending(_) => None,
+        }
+    }
+}
+
+impl Clone for Deferred {
+    fn clone(&self) -> Self {
+        let _locked = Locked::take(&self.state);
+        // SAFETY: `LOCKED` is held, so nothing writes `slot` until `_locked` drops.
+        let (slot, state) = match unsafe { &*self.slot.get() } {
+            Slot::Pending(parser) => (Slot::Pending(parser.clone()), 0),
+            Slot::Done(answer) => (Slot::Done(answer.clone()), DONE),
+        };
+        Self {
+            count: self.count,
+            state: AtomicU8::new(state),
+            slot: UnsafeCell::new(slot),
+        }
+    }
+}
+
+impl std::fmt::Debug for Deferred {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Deferred")
+            .field("count", &self.count)
+            .field("parsed", &self.answer())
+            .finish()
+    }
 }
 
 /// The parser a deferred block is handed to: `LazyVCFGenotypesParser` or
@@ -179,11 +298,10 @@ impl GenotypesContext {
         parser: crate::genotype_parse::DeferredVcfGenotypes,
     ) -> Self {
         Self {
-            genotypes: Genotypes::Deferred(Box::new(Deferred {
-                parser: Parser::Vcf(parser),
-                count: samples.len(),
-                parsed: OnceLock::new(),
-            })),
+            genotypes: Genotypes::Deferred(Box::new(Deferred::new(
+                Parser::Vcf(parser),
+                samples.len(),
+            ))),
             unparsed: Some(unparsed),
             samples: Some(samples),
             decoded: AtomicBool::new(false),
@@ -209,11 +327,7 @@ impl GenotypesContext {
         count: usize,
     ) -> Self {
         Self {
-            genotypes: Genotypes::Deferred(Box::new(Deferred {
-                parser: Parser::Bcf(parser),
-                count,
-                parsed: OnceLock::new(),
-            })),
+            genotypes: Genotypes::Deferred(Box::new(Deferred::new(Parser::Bcf(parser), count))),
             unparsed: None,
             samples: None,
             decoded: AtomicBool::new(false),
@@ -263,7 +377,7 @@ impl GenotypesContext {
     pub fn len(&self) -> usize {
         match &self.genotypes {
             Genotypes::Parsed(genotypes) => genotypes.len(),
-            Genotypes::Deferred(deferred) => match deferred.parsed.get() {
+            Genotypes::Deferred(deferred) => match deferred.answer() {
                 Some(Ok(genotypes)) => genotypes.len(),
                 _ => deferred.count,
             },
@@ -284,19 +398,14 @@ impl GenotypesContext {
     fn parsed(&self) -> Result<&Vec<Genotype>, &GenotypeError> {
         match &self.genotypes {
             Genotypes::Parsed(genotypes) => Ok(genotypes),
-            Genotypes::Deferred(deferred) => deferred
-                .parsed
-                .get_or_init(|| match &deferred.parser {
-                    Parser::Vcf(parser) => {
-                        parser.parse(self.unparsed.as_deref().unwrap_or_default())
-                    }
-                    Parser::Bcf(parser) => parser.parse(
-                        self.bcf
-                            .as_ref()
-                            .expect("a deferred BCF context keeps its block"),
-                    ),
-                })
-                .as_ref(),
+            Genotypes::Deferred(deferred) => deferred.answer_or_parse(|parser| match parser {
+                Parser::Vcf(parser) => parser.parse(self.unparsed.as_deref().unwrap_or_default()),
+                Parser::Bcf(parser) => parser.parse(
+                    self.bcf
+                        .as_ref()
+                        .expect("a deferred BCF context keeps its block"),
+                ),
+            }),
         }
     }
 
@@ -319,7 +428,7 @@ impl GenotypesContext {
             self.parsed().map_err(Clone::clone)?;
             let parsed = std::mem::replace(&mut self.genotypes, Genotypes::Parsed(Vec::new()));
             if let Genotypes::Deferred(deferred) = parsed {
-                let genotypes = deferred.parsed.into_inner().expect("parsed just above");
+                let genotypes = deferred.into_answer().expect("parsed just above");
                 self.genotypes = Genotypes::Parsed(genotypes.expect("parsed without refusal"));
             }
         }
@@ -472,7 +581,51 @@ mod tests {
         let records = deferred_records();
         let bad = &records[1].genotypes;
         assert_eq!((bad.len(), bad.is_empty()), (2, false));
-        assert!(matches!(&bad.genotypes, Genotypes::Deferred(d) if d.parsed.get().is_none()));
+        assert!(matches!(&bad.genotypes, Genotypes::Deferred(d) if d.answer().is_none()));
+    }
+
+    /// What keeps the parser's copy of the alleles from outliving the parse.
+    #[test]
+    fn a_parse_frees_its_parser_and_a_clone_keeps_the_state_it_found() {
+        let records = deferred_records();
+        let context = &records[0].genotypes;
+        let unparsed = context.clone();
+        assert!(matches!(&unparsed.genotypes, Genotypes::Deferred(d) if d.answer().is_none()));
+        assert_eq!(context.try_peek().map(<[_]>::len), Ok(2));
+        assert!(matches!(
+            &context.genotypes,
+            Genotypes::Deferred(d) if matches!(unsafe { &*d.slot.get() }, Slot::Done(_))
+        ));
+        let parsed = context.clone();
+        assert!(matches!(&parsed.genotypes, Genotypes::Deferred(d) if d.answer().is_some()));
+        assert_eq!(parsed.try_peek(), context.try_peek());
+        assert_eq!(unparsed.try_peek(), context.try_peek());
+    }
+
+    /// Every way into the slot at once, each record starting unparsed.
+    #[test]
+    fn threads_racing_for_a_parse_all_get_the_same_answer() {
+        for _ in 0..500 {
+            let records = deferred_records();
+            let (good, bad) = (&records[0].genotypes, &records[1].genotypes);
+            let expected_good = deferred_records()[0].genotypes.try_peek().unwrap().to_vec();
+            let expected_bad = deferred_records()[1].genotypes.try_peek().unwrap_err();
+            let start = std::sync::Barrier::new(4);
+            std::thread::scope(|scope| {
+                for thread in 0..4 {
+                    let (start, expected_good, expected_bad) =
+                        (&start, &expected_good, &expected_bad);
+                    scope.spawn(move || {
+                        start.wait();
+                        match thread {
+                            0 | 1 => assert_eq!(good.try_peek().unwrap(), &expected_good[..]),
+                            2 => assert_eq!(good.clone().try_peek().unwrap(), &expected_good[..]),
+                            _ => assert_eq!(&bad.try_peek().unwrap_err(), expected_bad),
+                        }
+                    });
+                }
+            });
+        }
     }
 
     #[test]

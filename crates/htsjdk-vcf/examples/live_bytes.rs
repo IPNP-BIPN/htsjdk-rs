@@ -46,7 +46,18 @@ fn main() {
     } else {
         let text = std::fs::read_to_string(&args[1]).unwrap();
         let before = (LIVE.load(Relaxed), COUNT.load(Relaxed));
-        let file = htsjdk_vcf::reader::read_vcf(&text).unwrap();
+        use htsjdk_vcf::reader::{read_vcf_with, GenotypeParsing};
+        let parsing = if args[0] == "vcf" {
+            GenotypeParsing::Eager
+        } else {
+            GenotypeParsing::Deferred
+        };
+        let file = read_vcf_with(&text, parsing).unwrap();
+        if args[0] == "vcf-decoded" {
+            for record in &file.records {
+                let _ = record.genotypes.first();
+            }
+        }
         report(
             "VCF",
             file.records.len(),

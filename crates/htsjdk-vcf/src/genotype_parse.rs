@@ -103,8 +103,8 @@ impl VcfGenotypeSource {
 #[derive(Debug, Clone)]
 pub struct DeferredVcfGenotypes {
     source: std::sync::Arc<VcfGenotypeSource>,
-    alleles: Vec<Allele>,
-    contig: String,
+    alleles: Box<[Allele]>,
+    contig: std::sync::Arc<str>,
     pos: i64,
 }
 
@@ -115,10 +115,20 @@ impl DeferredVcfGenotypes {
         contig: &str,
         pos: i64,
     ) -> Self {
+        Self::on_shared_contig(source, alleles, contig.into(), pos)
+    }
+
+    /// [`Self::new`], for a reader that has the contig's name to share with the records before it.
+    pub fn on_shared_contig(
+        source: &std::sync::Arc<VcfGenotypeSource>,
+        alleles: Vec<Allele>,
+        contig: std::sync::Arc<str>,
+        pos: i64,
+    ) -> Self {
         Self {
             source: std::sync::Arc::clone(source),
-            alleles,
-            contig: contig.to_string(),
+            alleles: alleles.into_boxed_slice(),
+            contig,
             pos,
         }
     }

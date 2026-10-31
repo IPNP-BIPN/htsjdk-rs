@@ -13,6 +13,10 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
+  cells hold, and a kept block carries its prefix hash in its own allocation.
+- A deferred genotype block frees its parser once parsed, and records on one contig share its name:
+  a VCF record costs 831 bytes unparsed rather than 883, and 1719 parsed rather than 1819.
 - **BGZF costs about a fifth fewer cycles, same bytes, same refusals** (decision 0049). `Deflater::Jdk`
   and `Deflater::Gkl` deflate through one reused `gkl_deflate::ReusableDeflater` per thread, where
   zlib was stock and GKL's state was rebuilt per block; reading goes through a strict Rust inflater

@@ -288,6 +288,7 @@ pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, Re
     let source = (parsing == GenotypeParsing::Deferred && samples_were_already_sorted)
         .then(|| VcfGenotypeSource::new(header.clone(), codec_version));
     let mut last = None;
+    let mut shared_contig: Option<std::sync::Arc<str>> = None;
     for line in text.lines().skip(line_number) {
         let decoded = match decode_line(line, &header, line_number, codec_version) {
             Ok(Some(decoded)) => decoded,
@@ -313,10 +314,15 @@ pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, Re
             (None, _) => {}
             // Parsed when something first looks (decision 0048).
             (Some(block), Some(source)) => {
-                let parser = DeferredVcfGenotypes::new(
+                let contig = match &shared_contig {
+                    Some(contig) if **contig == *variant.contig => std::sync::Arc::clone(contig),
+                    _ => std::sync::Arc::<str>::from(variant.contig.as_str()),
+                };
+                shared_contig = Some(std::sync::Arc::clone(&contig));
+                let parser = DeferredVcfGenotypes::on_shared_contig(
                     source,
                     variant.alleles.clone(),
-                    &variant.contig,
+                    contig,
                     variant.start,
                 );
                 variant.genotypes = GenotypesContext::deferred_vcf(block, samples.clone(), parser);
