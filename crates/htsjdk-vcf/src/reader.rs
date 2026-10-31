@@ -244,7 +244,9 @@ pub fn read_vcf(text: &str) -> Result<VcfFile, ReadFailure> {
         mut line_number,
     } = established;
 
-    let mut records = Vec::new();
+    // One record per line at most, known before the first: a growing vector would hold each size and
+    // twice that as it moved. A page of it nothing writes costs nothing.
+    let mut records = Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count());
     let mut skipped = Vec::new();
 
     // The body is every line after the `#CHROM` one. `read_header_frame` stops there without

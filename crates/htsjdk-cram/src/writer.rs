@@ -604,7 +604,15 @@ fn to_write_record(
         cram |= CF_QS_PRESERVED_AS_ARRAY;
     }
 
-    let read_group = match record.tags.get(htsjdk_bam::tag::Tag::new(b"RG")) {
+    let decoded = record.tags.decoded();
+    let stored_tag = |name: &[u8; 2]| {
+        let tag = htsjdk_bam::tag::Tag::new(name);
+        decoded
+            .binary_search_by_key(&tag, |(t, _)| *t)
+            .ok()
+            .map(|i| &decoded[i].1)
+    };
+    let read_group = match stored_tag(b"RG") {
         Some(TagValue::Str(id)) => read_groups.get(id).copied().unwrap_or(NO_READGROUP_ID),
         _ => NO_READGROUP_ID,
     };
@@ -620,7 +628,7 @@ fn to_write_record(
                 reference,
                 record.alignment_start,
             );
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"NM")) {
+            if let Some(stored) = stored_tag(b"NM") {
                 let stored = match stored {
                     TagValue::Int(v) => *v as i32,
                     TagValue::Float(f) => *f as i32,
@@ -630,7 +638,7 @@ fn to_write_record(
                     strip_nm = false;
                 }
             }
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"MD")) {
+            if let Some(stored) = stored_tag(b"MD") {
                 if !matches!(stored, TagValue::Str(s) if *s == md) {
                     strip_md = false;
                 }
@@ -638,7 +646,7 @@ fn to_write_record(
         }
     }
     let mut tags = Vec::new();
-    for (tag, value) in record.tags.iter() {
+    for (tag, value) in decoded.iter() {
         let name = tag.name();
         if &name == b"RG" || (strip_nm && &name == b"NM") || (strip_md && &name == b"MD") {
             continue;

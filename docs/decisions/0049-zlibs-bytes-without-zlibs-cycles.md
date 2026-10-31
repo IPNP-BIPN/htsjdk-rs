@@ -79,11 +79,14 @@ Cycles on one thread: 1.39 G to 1.09 G for a 79 MB BAM, 0.18 G to 0.13 G for a 7
   frequencies with a branchless search or a vector count took 30% more cycles, separate arrays walked
   eight at a time 3% more, and one arena for all a stream's models 4% more instructions for 3% less
   peak memory. None was kept.
-- A BAM record holds 596 bytes measured, 4 allocations, for 319 on disk, down from 717 and 7: a tag
-  block the list would write back is kept as it is and the list is made on first access, so a record
-  whose tags are read holds both. `bam-ops-bench`, which reads them, peaks 3% higher for it.
+- A BAM record holds 607 bytes measured, 4 allocations, for 319 on disk, down from 717 and 7: a tag
+  block the list would write back is kept as it is, and freed when the list is made, so a record
+  holds one or the other. `Tags::find` and `Tags::decoded` answer without leaving a list behind, and
+  the SAM and CRAM readers compact what they parsed. `get` and `iter` still make the list, and a
+  record then costs a little more than before: `Tags` is 32 bytes larger inline.
 - A parsed VCF record of four samples holds 1,724 bytes, 24 allocations, down from 1,916; the fields
-  are public, so going further is an API decision. Opt-in deferred genotypes (PR #274) measure 960.
+  are public, so going further is an API decision. It also holds its genotypes twice, parsed and as
+  the text a writer copies, which is what opt-in deferred genotypes (PR #274) stop: they measure 960.
 - An exact `reserve` of the INFO attributes as well gave 1,612 bytes, and 30% more instructions in
   `vcf-bench` under mimalloc, which either of the two reservations alone does not. The cause was not
   found; that reservation was dropped. Any capacity change has to be re-measured with the allocator

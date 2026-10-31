@@ -174,7 +174,7 @@ pub fn write_alignment(
     } else {
         out.push_str(&phred_to_fastq(&rec.base_qualities));
     }
-    for (tag, value) in rec.tags.iter() {
+    for (tag, value) in rec.tags.decoded().iter() {
         out.push(FIELD_SEPARATOR);
         out.push_str(&encode_tag(*tag, value)?);
     }

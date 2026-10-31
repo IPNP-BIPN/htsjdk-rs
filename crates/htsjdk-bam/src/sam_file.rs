@@ -30,12 +30,18 @@ pub fn write_sam(header: &SamHeader, records: &[BamRecord]) -> Option<String> {
                 .unwrap_or("*")
         }
     };
-    for rec in records {
-        out.push_str(&write_alignment(
+    for (done, rec) in records.iter().enumerate() {
+        let line = write_alignment(
             rec,
             name_of(rec.reference_index),
             name_of(rec.mate_reference_index),
-        )?);
+        )?;
+        // Room for the rest from the first line, and a quarter more. A page of it nothing writes
+        // costs nothing, where growing by doubling would hold the old text and twice the new.
+        if done == 0 {
+            out.reserve((line.len() + 1) * records.len() / 4 * 5);
+        }
+        out.push_str(&line);
         out.push('\n');
     }
     Some(out)
@@ -58,19 +64,11 @@ pub fn read_sam_with(
     text: &str,
     stringency: ValidationStringency,
 ) -> Result<(SamHeader, Vec<BamRecord>), ParseError> {
+    let mut lines = text.lines().peekable();
     let mut header_text = String::new();
-    let mut body = Vec::new();
-    let mut in_header = true;
-    for line in text.lines() {
-        if in_header && line.starts_with('@') {
-            header_text.push_str(line);
-            header_text.push('\n');
-        } else {
-            in_header = false;
-            if !line.is_empty() {
-                body.push(line);
-            }
-        }
+    while let Some(line) = lines.next_if(|line| line.starts_with('@')) {
+        header_text.push_str(line);
+        header_text.push('\n');
     }
 
     let header = crate::reader::parse_header_text(&header_text);
@@ -81,10 +79,12 @@ pub fn read_sam_with(
             .position(|s| s.name == name)
             .map(|i| i as i32)
     };
-    let records = body
-        .iter()
-        .map(|l| parse_line_with(l, index_of, stringency))
-        .collect::<Result<Vec<_>, _>>()?;
+    // One record per line, known before the first: a growing vector would hold each size and twice
+    // that as it moved.
+    let mut records = Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count());
+    for line in lines.filter(|line| !line.is_empty()) {
+        records.push(parse_line_with(line, index_of, stringency)?);
+    }
     Ok((header, records))
 }
 

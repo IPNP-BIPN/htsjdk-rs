@@ -19,10 +19,13 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
   that hands anything unusual to zlib. Both of a parallel writer's block buffers are reused, a
   worker is woken per four blocks rather than per block, and a block is one `write` rather than four.
   Level 1 now beats zlib on incompressible data too.
-- **A BAM record holds 17% less**: a tag block the list would write back is kept as read, the list is
-  made on first access, and a pass-through writes the block. `Tags` is 24 bytes larger inline, and a
-  record whose tags are read holds both. Refusals do not move: whatever the walk does not vouch for
-  takes the old road, and a differential test holds the two together.
+- **A BAM record holds 15% less**: a tag block the list would write back is kept as read and freed
+  when the list is made, and a pass-through writes the block. The new `Tags::find` and `Tags::decoded`
+  answer without leaving a list behind, and `Tags::compact` trades a list for its block, which the SAM
+  and CRAM readers do. `Tags` is 32 bytes larger inline. Refusals do not move: whatever the walk does
+  not vouch for takes the old road, and a differential test holds the two together.
+- **SAM and VCF text no longer grow by doubling**: `read_sam`, `write_sam`, `read_vcf` and `write_vcf`
+  size their vectors and strings up front.
 - **CRAM's arithmetic coder and GZIP blocks**: `ByteModel` is one allocation of four bytes per
   symbol rather than two of four each, and a thread keeps its libdeflate compressor between blocks.
 - **The oracle is htsjdk 5.0.0**, with its runtime dependencies pinned by sha256 and libdeflate

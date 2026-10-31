@@ -16,7 +16,10 @@
 //!    every branch that would write one back is dead, and an `H` tag read and rewritten comes
 //!    out as a `B` array in both the binary and the text codec.
 
+use std::borrow::Cow;
+use std::cell::UnsafeCell;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
 /// `BinaryTagCodec.FIXED_TAG_SIZE`: two bytes of name plus one of type.
@@ -265,20 +268,84 @@ pub fn write_tag(out: &mut Vec<u8>, tag: Tag, value: &TagValue) -> Result<(), Ta
 /// the list already reproduces is not kept: its record re-encodes to the same bytes either way.
 ///
 /// A block the list would reproduce is kept instead of the list, which is made the first time
-/// anything asks for a tag. A record costs its block, about a fifth of what the list and its
-/// strings cost, and a tool that only passes records through never pays for a list at all: what
-/// it writes is the block. Only a block [`canonical_tag_count`] has walked is kept this way, and
-/// the walk refuses nothing: whatever it does not vouch for goes through [`Self::read_checked`],
-/// so a refusal is the same refusal, at the same moment.
-#[derive(Clone, Default)]
+/// anything asks for a reference into it, and the block is freed then: a record holds one or the
+/// other. A tool that only passes records through never pays for a list, and [`Self::find`] and
+/// [`Self::decoded`] answer without leaving one behind. Only a block [`canonical_tag_count`] has
+/// walked is kept this way, and the walk refuses nothing: whatever it does not vouch for goes
+/// through [`Self::read_checked`], so a refusal is the same refusal, at the same moment.
+#[derive(Default)]
 pub struct Tags {
     /// Empty and unset for a list that holds nothing.
     entries: OnceLock<Vec<(Tag, TagValue)>>,
-    /// The bytes `entries` would write, until the first [`Self::insert`] or [`Self::remove`].
-    block: Option<Box<[u8]>>,
+    /// The bytes `entries` would write, until something asks for `entries`.
+    block: BlockCell,
     /// Boxed so that every record that holds no block, which is nearly all of them, pays for one
     /// pointer rather than for the block's two fields.
     raw: Option<Box<RawBlock>>,
+}
+
+/// A canonical block behind a lock of one byte. The list is made through `&self`, so freeing the
+/// block has to be possible through it too, and `std::sync::Mutex` allocates on some platforms for
+/// each one locked, which is the very thing a record is trying not to do. Nothing waits here but
+/// another thread reading the same record's tags in the same instant, and only for a copy or a
+/// short decode, so spinning is enough. Nothing under the lock takes it again.
+#[derive(Default)]
+struct BlockCell {
+    locked: AtomicBool,
+    bytes: UnsafeCell<Option<Box<[u8]>>>,
+}
+
+// SAFETY: `bytes` is reached only through `with`, which holds `locked` for as long as the reference
+// it hands out lives, and `Box<[u8]>` is itself `Send` and `Sync`.
+unsafe impl Sync for BlockCell {}
+
+impl BlockCell {
+    fn new(bytes: Option<Box<[u8]>>) -> Self {
+        Self {
+            locked: AtomicBool::new(false),
+            bytes: UnsafeCell::new(bytes),
+        }
+    }
+
+    #[inline]
+    fn with<T>(&self, f: impl FnOnce(&mut Option<Box<[u8]>>) -> T) -> T {
+        /// Lets the lock go even if `f` panics.
+        struct Unlock<'a>(&'a AtomicBool);
+        impl Drop for Unlock<'_> {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::Release);
+            }
+        }
+        while self
+            .locked
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+        let _unlock = Unlock(&self.locked);
+        // SAFETY: the lock is held until `_unlock` drops, after `f` has returned, and `f` cannot
+        // keep the reference: its lifetime is its own.
+        f(unsafe { &mut *self.bytes.get() })
+    }
+}
+
+/// A block is read before the list is looked at, so a clone taken while another thread is decoding
+/// waits for that thread's list rather than seeing neither.
+impl Clone for Tags {
+    fn clone(&self) -> Self {
+        let block = self.block.with(|bytes| bytes.clone());
+        let entries = if block.is_some() {
+            OnceLock::new()
+        } else {
+            OnceLock::from(self.entries().clone())
+        };
+        Self {
+            entries,
+            block: BlockCell::new(block),
+            raw: self.raw.clone(),
+        }
+    }
 }
 
 /// The tag block as it was read, and a hash of the record's other variable fields as they were
@@ -292,7 +359,7 @@ struct RawBlock {
 impl fmt::Debug for Tags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tags")
-            .field("entries", self.entries())
+            .field("entries", &self.decoded())
             .field("raw", &self.raw)
             .finish()
     }
@@ -301,7 +368,7 @@ impl fmt::Debug for Tags {
 /// Two tag lists are equal when they hold the same tags: how they were read is not part of it.
 impl PartialEq for Tags {
     fn eq(&self, other: &Self) -> bool {
-        self.entries() == other.entries()
+        self.decoded() == other.decoded()
     }
 }
 
@@ -318,21 +385,86 @@ impl Tags {
         Self::default()
     }
 
-    /// The list, made from the block the first time it is wanted.
+    /// The list, made from the block the first time it is wanted, which frees the block. The lock
+    /// is not held while decoding: another thread that finds neither waits here for this list.
     #[inline]
     fn entries(&self) -> &Vec<(Tag, TagValue)> {
-        self.entries.get_or_init(|| match &self.block {
-            Some(block) => decode_canonical(block),
-            None => Vec::new(),
-        })
+        self.entries
+            .get_or_init(|| match self.block.with(Option::take) {
+                Some(block) => decode_canonical(&block),
+                None => Vec::new(),
+            })
     }
 
-    /// The list for changing, which makes the block and any kept bytes stale.
+    /// Room for `count` tags, for a caller about to insert that many.
+    pub(crate) fn with_capacity(count: usize) -> Self {
+        Self {
+            entries: OnceLock::from(Vec::with_capacity(count)),
+            ..Self::default()
+        }
+    }
+
+    /// Trades the list for the bytes it writes, when reading those bytes back gives this very list:
+    /// what a reader does that had to build the list to find out what a record holds, and will
+    /// probably not be asked again. It changes what the record costs and nothing it answers.
+    pub fn compact(&mut self) {
+        let held = self.block.with(|block| block.is_some());
+        if held || self.raw.is_some() || self.is_empty() {
+            return;
+        }
+        let mut block = Vec::new();
+        if self.write(&mut block).is_err() {
+            return;
+        }
+        if canonical_tag_count(&block).is_some() && decode_canonical(&block) == *self.entries() {
+            *self = Self {
+                block: BlockCell::new(Some(block.into_boxed_slice())),
+                ..Self::default()
+            };
+        }
+    }
+
+    /// The list for changing, which makes any kept bytes stale.
     fn entries_mut(&mut self) -> &mut Vec<(Tag, TagValue)> {
         self.entries();
-        self.block = None;
         self.raw = None;
         self.entries.get_mut().expect("just made")
+    }
+
+    /// Every tag in order, leaving no list behind when none has been made: what a caller wants
+    /// that looks at each record's tags once.
+    pub fn decoded(&self) -> Cow<'_, [(Tag, TagValue)]> {
+        if let Some(entries) = self.entries.get() {
+            return Cow::Borrowed(entries);
+        }
+        match self
+            .block
+            .with(|block| block.as_deref().map(decode_canonical))
+        {
+            Some(entries) => Cow::Owned(entries),
+            None => Cow::Borrowed(self.entries()),
+        }
+    }
+
+    /// [`Self::get`], leaving no list behind when none has been made.
+    pub fn find(&self, tag: Tag) -> Option<Cow<'_, TagValue>> {
+        if let Some(entries) = self.entries.get() {
+            return Self::look_up(entries, tag).map(Cow::Borrowed);
+        }
+        let found = self
+            .block
+            .with(|block| block.as_deref().map(|block| find_in_canonical(block, tag)));
+        match found {
+            Some(value) => value.map(Cow::Owned),
+            None => self.get(tag).map(Cow::Borrowed),
+        }
+    }
+
+    fn look_up(entries: &[(Tag, TagValue)], tag: Tag) -> Option<&TagValue> {
+        entries
+            .binary_search_by_key(&tag, |(t, _)| *t)
+            .ok()
+            .map(|i| &entries[i].1)
     }
 
     /// `SAMBinaryTagAndValue.insert`: sorted insert, replacing on an equal tag. Like
@@ -346,11 +478,7 @@ impl Tags {
     }
 
     pub fn get(&self, tag: Tag) -> Option<&TagValue> {
-        let entries = self.entries();
-        entries
-            .binary_search_by_key(&tag, |(t, _)| *t)
-            .ok()
-            .map(|i| &entries[i].1)
+        Self::look_up(self.entries(), tag)
     }
 
     /// `SAMRecord.setAttribute(tag, null)`: drop the tag if present.
@@ -370,7 +498,7 @@ impl Tags {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.block.is_none() && self.entries().is_empty()
+        !self.block.with(|block| block.is_some()) && self.entries().is_empty()
     }
 
     /// `SAMRecord.eagerDecode()`, which drops the bytes read: what a reader opened with
@@ -403,15 +531,20 @@ impl Tags {
 
     /// Total on-disk size, as `BAMRecordCodec.encode` accumulates it.
     pub fn binary_size(&self) -> Result<usize, TagError> {
-        if let Some(block) = &self.block {
-            return Ok(block.len());
+        if let Some(size) = self.block.with(|block| block.as_ref().map(|b| b.len())) {
+            return Ok(size);
         }
         self.entries().iter().map(|(_, v)| tag_size(v)).sum()
     }
 
     pub fn write(&self, out: &mut Vec<u8>) -> Result<(), TagError> {
-        if let Some(block) = &self.block {
-            out.extend_from_slice(block);
+        let copied = self.block.with(|block| {
+            if let Some(block) = block {
+                out.extend_from_slice(block);
+            }
+            block.is_some()
+        });
+        if copied {
             return Ok(());
         }
         for (tag, value) in self.entries() {
@@ -433,7 +566,7 @@ impl Tags {
     pub(crate) fn read_lazily(bytes: &[u8], prefix: &[u8]) -> Result<Self, TagReadError> {
         if canonical_tag_count(bytes).is_some() {
             return Ok(Self {
-                block: (!bytes.is_empty()).then(|| bytes.into()),
+                block: BlockCell::new((!bytes.is_empty()).then(|| bytes.into())),
                 ..Self::default()
             });
         }
@@ -500,43 +633,74 @@ fn canonical_tag_count(bytes: &[u8]) -> Option<usize> {
             word[..width].copy_from_slice(bytes.get(at..at + width)?);
             Some(u32::from_le_bytes(word))
         };
-        at += match ty {
-            b'Z' => bytes[at..].iter().position(|b| *b == 0)? + 1,
-            b'A' => 1,
-            b'f' => 4,
-            b'c' | b'C' | b's' | b'S' | b'i' | b'I' => {
-                let (width, value) = match ty {
-                    b'c' => (1, i64::from(int_value(at, 1)? as u8 as i8)),
-                    b'C' => (1, i64::from(int_value(at, 1)?)),
-                    b's' => (2, i64::from(int_value(at, 2)? as u16 as i16)),
-                    b'S' => (2, i64::from(int_value(at, 2)?)),
-                    b'i' => (4, i64::from(int_value(at, 4)? as i32)),
-                    _ => (4, i64::from(int_value(at, 4)?)),
-                };
-                if integer_type(value) != Ok(ty) {
-                    return None;
-                }
-                width
+        if matches!(ty, b'c' | b'C' | b's' | b'S' | b'i' | b'I') {
+            let value = match ty {
+                b'c' => i64::from(int_value(at, 1)? as u8 as i8),
+                b'C' => i64::from(int_value(at, 1)?),
+                b's' => i64::from(int_value(at, 2)? as u16 as i16),
+                b'S' => i64::from(int_value(at, 2)?),
+                b'i' => i64::from(int_value(at, 4)? as i32),
+                _ => i64::from(int_value(at, 4)?),
+            };
+            if integer_type(value) != Ok(ty) {
+                return None;
             }
-            b'B' => {
-                let element = *bytes.get(at)?;
-                let width = match element {
-                    b'c' | b'C' => 1,
-                    b's' | b'S' => 2,
-                    b'i' | b'I' | b'f' => 4,
-                    _ => return None,
-                };
-                let length = int_value(at + 1, 4)? as i32;
-                5 + usize::try_from(length).ok()?.checked_mul(width)?
-            }
-            _ => return None,
-        };
+        }
+        at += canonical_value_width(bytes, at, ty)?;
         if at > bytes.len() {
             return None;
         }
         count += 1;
     }
     Some(count)
+}
+
+/// How many bytes the value of type `ty` at `at` takes, for the types a canonical block can hold.
+fn canonical_value_width(bytes: &[u8], at: usize, ty: u8) -> Option<usize> {
+    Some(match ty {
+        b'Z' => bytes.get(at..)?.iter().position(|b| *b == 0)? + 1,
+        b'A' | b'c' | b'C' => 1,
+        b's' | b'S' => 2,
+        b'f' | b'i' | b'I' => 4,
+        b'B' => {
+            let width = match *bytes.get(at)? {
+                b'c' | b'C' => 1,
+                b's' | b'S' => 2,
+                b'i' | b'I' | b'f' => 4,
+                _ => return None,
+            };
+            let length: [u8; 4] = bytes.get(at + 1..at + 5)?.try_into().expect("four");
+            5 + usize::try_from(i32::from_le_bytes(length))
+                .ok()?
+                .checked_mul(width)?
+        }
+        _ => return None,
+    })
+}
+
+/// The value of one tag in a block [`canonical_tag_count`] vouched for, which is ascending.
+fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
+    let vouched = "a block is kept only once it was walked";
+    let mut at = 0;
+    while at < block.len() {
+        let tag = Tag(i16::from_le_bytes([block[at], block[at + 1]]));
+        let ty = block[at + 2];
+        at += 3;
+        if tag > wanted {
+            return None;
+        }
+        if tag == wanted {
+            let mut cursor = Cursor { bytes: block, at };
+            let value = if ty == b'B' {
+                read_array(&mut cursor)
+            } else {
+                read_single_value(ty, &mut cursor)
+            };
+            return Some(value.expect(vouched));
+        }
+        at += canonical_value_width(block, at, ty).expect(vouched);
+    }
+    None
 }
 
 /// The list of a block [`canonical_tag_count`] vouched for, at exactly the capacity it needs.
@@ -857,6 +1021,19 @@ mod tests {
             assert!(!lazy.holds_raw());
             assert_eq!(lazy.binary_size().unwrap(), block.len());
             assert_eq!(format!("{lazy:?}"), format!("{eager:?}"));
+            for (tag, value) in eager.iter() {
+                // By what they print: a NaN is not equal to itself.
+                assert_eq!(
+                    format!("{:?}", lazy.find(*tag).as_deref()),
+                    format!("{:?}", Some(value))
+                );
+            }
+            // Once the list is made the block is gone, and the bytes do not move.
+            let _ = lazy.len();
+            assert!(lazy.block.with(|block| block.is_none()));
+            let mut again = Vec::new();
+            lazy.write(&mut again).unwrap();
+            assert_eq!(again, block);
         };
         for seed in seeds {
             check(seed);
@@ -874,6 +1051,73 @@ mod tests {
             }
         }
         assert!(vouched > 1000 && declined > 1000, "{vouched} {declined}");
+    }
+
+    /// Readers, writers and clones of one record on several threads, while the list is being made:
+    /// every one of them sees all the tags, whichever of the block and the list it found.
+    #[test]
+    fn compacting_changes_nothing_a_record_answers() {
+        let t = |name: &[u8; 2]| Tag(i16::from_le_bytes(*name));
+        let values = [
+            TagValue::Int(-5),
+            TagValue::Int(300),
+            TagValue::Int(4_000_000_000),
+            TagValue::Char(b'q'),
+            TagValue::Float(1.5),
+            TagValue::Float(f32::NAN),
+            TagValue::Str("caf\u{e9}".into()),
+            TagValue::Str("\u{20ac}".into()),
+            TagValue::ByteArray {
+                values: vec![-1, 2],
+                unsigned: true,
+            },
+            TagValue::ShortArray {
+                values: vec![-1],
+                unsigned: false,
+            },
+            TagValue::IntArray {
+                values: vec![7],
+                unsigned: true,
+            },
+            TagValue::FloatArray(vec![0.5]),
+            TagValue::Int(1 << 40),
+        ];
+        for value in values {
+            let mut plain = Tags::with_capacity(2);
+            plain.insert(t(b"AA"), value);
+            plain.insert(t(b"ZZ"), TagValue::Int(1));
+            let mut compact = plain.clone();
+            compact.compact();
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            let (written_a, written_b) = (plain.write(&mut a), compact.write(&mut b));
+            assert_eq!(written_a, written_b);
+            assert_eq!(a, b);
+            assert_eq!(format!("{plain:?}"), format!("{compact:?}"));
+        }
+    }
+
+    #[test]
+    fn threads_sharing_a_record_all_see_its_tags() {
+        let block = b"XAZsome-longer-value\0RGZrg1\0AMc\x05NMc\x01";
+        let nm = Tag(i16::from_le_bytes(*b"NM"));
+        for _ in 0..2000 {
+            let tags = Tags::read_lazily(block, b"").unwrap();
+            std::thread::scope(|scope| {
+                for thread in 0..4 {
+                    let tags = &tags;
+                    scope.spawn(move || match thread {
+                        0 => assert_eq!(tags.get(nm), Some(&TagValue::Int(1))),
+                        1 => {
+                            let mut out = Vec::new();
+                            tags.write(&mut out).unwrap();
+                            assert_eq!(out, block);
+                        }
+                        2 => assert_eq!(tags.clone().len(), 4),
+                        _ => assert_eq!(tags.find(nm).as_deref(), Some(&TagValue::Int(1))),
+                    });
+                }
+            });
+        }
     }
 
     #[test]
