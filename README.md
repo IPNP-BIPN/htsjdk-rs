@@ -97,9 +97,10 @@ byte-identical on all ten keys:
 | inflate | text | 5 | 2,204 MB/s | 8,134 MB/s | 3.69x |
 | inflate | random | 5 | 370 MB/s | 1,456 MB/s | 3.94x |
 
-Deflate is stock zlib on both sides at every level here, so the bytes match by construction. The
-`gkl-deflate` crate, a Rust port of Intel GKL's deflater that GATK installs in htsjdk's place, is
-not on this path. Both ratios are parallelism, not faster code: the port's BGZF writer deflates
+htsjdk deflates with stock zlib here. The port deflates with `gkl-deflate`'s `Flavour::Jdk`, a Rust
+port of zlib that is compared with the C library byte for byte at every level
+([decision 0049](docs/decisions/0049-zlibs-bytes-without-zlibs-cycles.md)); the figures here predate
+it. Both ratios are mostly parallelism: the port's BGZF writer deflates
 full blocks on every core, and `decompress_all` walks the block headers once and then inflates the
 blocks on every core, each into its own slice of the output. htsjdk does both on the calling
 thread. The bytes, and for a damaged stream the error, are the serial ones.
@@ -253,6 +254,7 @@ compiler will never catch any of them.
 | [0043](docs/decisions/0043-gkl-passes-levels-one-and-two-through.md) | GKL passes levels 1 and 2 through to ISA-L, correcting 0031 |
 | [0044](docs/decisions/0044-strictmath-log-is-fdlibm-and-is-not-math-log.md) | `StrictMath.log` is FDLIBM, and it is not `Math.log`: 186 corpus points tell them apart |
 | [0047](docs/decisions/0047-the-reference-moves-to-htsjdk-5.0.0.md) | The reference moves to htsjdk 5.0.0: 18 of 87 suites moved, each ported |
+| [0049](docs/decisions/0049-zlibs-bytes-without-zlibs-cycles.md) | zlib's bytes and zlib's refusals without zlib's cycles; libdeflate cannot read for us, even behind a CRC |
 
 ## What "finished" means
 

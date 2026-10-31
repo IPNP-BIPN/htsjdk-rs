@@ -13,6 +13,18 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **BGZF costs about a fifth fewer cycles, same bytes, same refusals** (decision 0049). `Deflater::Jdk`
+  and `Deflater::Gkl` deflate through one reused `gkl_deflate::ReusableDeflater` per thread, where
+  zlib was stock and GKL's state was rebuilt per block; reading goes through a strict Rust inflater
+  that hands anything unusual to zlib. Both of a parallel writer's block buffers are reused, a
+  worker is woken per four blocks rather than per block, and a block is one `write` rather than four.
+  Level 1 now beats zlib on incompressible data too.
+- **A BAM record holds 17% less**: a tag block the list would write back is kept as read, the list is
+  made on first access, and a pass-through writes the block. `Tags` is 24 bytes larger inline, and a
+  record whose tags are read holds both. Refusals do not move: whatever the walk does not vouch for
+  takes the old road, and a differential test holds the two together.
+- **CRAM's arithmetic coder and GZIP blocks**: `ByteModel` is one allocation of four bytes per
+  symbol rather than two of four each, and a thread keeps its libdeflate compressor between blocks.
 - **The oracle is htsjdk 5.0.0**, with its runtime dependencies pinned by sha256 and libdeflate
   off image-wide, so every suite runs against 5.0.0 (#271).
 - **CRAM data series are on htslib's content ids**, 11 to 46, where 4.2.0 numbered them 1 to 32.
