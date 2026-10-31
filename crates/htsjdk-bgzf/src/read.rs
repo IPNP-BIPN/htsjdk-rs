@@ -14,6 +14,7 @@ use std::io::{self, Read};
 
 use flate2::{Crc, Decompress, FlushDecompress};
 
+use crate::inflate::Inflater;
 use crate::{
     vfp, BGZF_ID1, BGZF_ID2, BLOCK_FOOTER_LENGTH, BLOCK_HEADER_LENGTH, GZIP_CM_DEFLATE, GZIP_FLG,
     GZIP_ID1, GZIP_ID2, GZIP_XLEN, MAX_COMPRESSED_BLOCK_SIZE,
@@ -100,7 +101,10 @@ pub struct BgzfReader<R: Read> {
     /// The inflater, reused between blocks. `BlockGunzipper` holds one `Inflater` for the life of
     /// the stream and calls `reset()`; constructing one per block allocates zlib's window each
     /// time.
-    inflater: Decompress,
+    inflater: Option<Inflater>,
+    /// zlib's, built when a block first needs an answer [`Inflater`] does not give, which is any
+    /// damaged block and anything unusual.
+    zlib: Option<Decompress>,
 }
 
 impl<R: Read> BgzfReader<R> {
@@ -114,7 +118,8 @@ impl<R: Read> BgzfReader<R> {
             check_crcs: false, // matches BlockGunzipper's default
             eof: false,
             scratch: Vec::new(),
-            inflater: Decompress::new(false),
+            inflater: None,
+            zlib: None,
         }
     }
 
@@ -169,35 +174,46 @@ impl<R: Read> BgzfReader<R> {
 
         let remaining = block_length - BLOCK_HEADER_LENGTH;
         let mut rest = std::mem::take(&mut self.scratch);
-        rest.clear();
-        rest.resize(remaining, 0);
-        let got = read_up_to(&mut self.inner, &mut rest).map_err(|error| {
+        // Kept at its largest, so it is zeroed once and not once per block.
+        if rest.len() < MAX_COMPRESSED_BLOCK_SIZE {
+            rest.resize(MAX_COMPRESSED_BLOCK_SIZE, 0);
+        }
+        let got = read_up_to(&mut self.inner, &mut rest[..remaining]).map_err(|error| {
             self.scratch = std::mem::take(&mut rest);
             let _ = error;
             BgzfError::PrematureEnd
         })?;
         self.stream_offset += got as u64;
         if got != remaining {
+            self.scratch = rest;
             return Err(BgzfError::PrematureEnd);
         }
 
         // Footer: CRC32 then ISIZE, both little-endian.
-        let footer = &rest[remaining - BLOCK_FOOTER_LENGTH..];
+        let footer = &rest[remaining - BLOCK_FOOTER_LENGTH..remaining];
         let expected_crc = u32::from_le_bytes([footer[0], footer[1], footer[2], footer[3]]);
         let uncompressed_len =
             u32::from_le_bytes([footer[4], footer[5], footer[6], footer[7]]) as usize;
 
         let deflated = &rest[..remaining - BLOCK_FOOTER_LENGTH];
         let mut data = Vec::with_capacity(uncompressed_len);
-        self.inflater.reset(false);
         let inflated = self
             .inflater
-            .decompress_vec(deflated, &mut data, FlushDecompress::Finish)
-            .map_err(|e| BgzfError::Inflate(e.to_string()));
+            .get_or_insert_with(Inflater::new)
+            .inflate_vec(deflated, &mut data);
+        let outcome = if inflated {
+            Ok(())
+        } else {
+            let zlib = self.zlib.get_or_insert_with(|| Decompress::new(false));
+            zlib.reset(false);
+            zlib.decompress_vec(deflated, &mut data, FlushDecompress::Finish)
+                .map(drop)
+                .map_err(|e| BgzfError::Inflate(e.to_string()))
+        };
         // The buffer goes back before any refusal is returned, so a stream that fails mid-way does
         // not leave the reader without one.
         self.scratch = rest;
-        inflated?;
+        outcome?;
 
         if data.len() != uncompressed_len {
             return Err(BgzfError::BlockSizeDisagreement {
@@ -325,23 +341,8 @@ pub fn decompress_all(bytes: &[u8]) -> Result<Vec<u8>, BgzfError> {
     }
     let first_failure = jobs
         .into_par_iter()
-        .map_init(
-            || Decompress::new(false),
-            |inflater, (deflated, slot)| {
-                inflater.reset(false);
-                inflater
-                    .decompress(deflated, slot, FlushDecompress::Finish)
-                    .map_err(|e| BgzfError::Inflate(e.to_string()))?;
-                let actual = inflater.total_out() as usize;
-                if actual != slot.len() {
-                    return Err(BgzfError::BlockSizeDisagreement {
-                        declared: slot.len(),
-                        actual,
-                    });
-                }
-                Ok(())
-            },
-        )
+        .with_min_len(4)
+        .map(|(deflated, slot)| inflate_on_worker(deflated, slot))
         .collect::<Vec<_>>()
         .into_iter()
         .find_map(Result::err);
@@ -349,6 +350,33 @@ pub fn decompress_all(bytes: &[u8]) -> Result<Vec<u8>, BgzfError> {
         Some(error) => Err(error),
         None => Ok(out),
     }
+}
+
+/// One block on a rayon worker, each worker with its own tables. An error is the one the serial
+/// loop would have stopped at, because only zlib ever gives one.
+fn inflate_on_worker(deflated: &[u8], slot: &mut [u8]) -> Result<(), BgzfError> {
+    thread_local! {
+        static INFLATER: std::cell::RefCell<Option<Inflater>> = const { std::cell::RefCell::new(None) };
+    }
+    let inflated = INFLATER.with_borrow_mut(|state| {
+        state
+            .get_or_insert_with(Inflater::new)
+            .inflate(deflated, slot)
+    });
+    if inflated {
+        return Ok(());
+    }
+    let mut zlib = Decompress::new(false);
+    zlib.decompress(deflated, slot, FlushDecompress::Finish)
+        .map_err(|e| BgzfError::Inflate(e.to_string()))?;
+    let actual = zlib.total_out() as usize;
+    if actual != slot.len() {
+        return Err(BgzfError::BlockSizeDisagreement {
+            declared: slot.len(),
+            actual,
+        });
+    }
+    Ok(())
 }
 
 /// One block's framing at the start of `bytes`: its compressed length and declared inflated size,
@@ -401,6 +429,70 @@ mod tests {
         let mut w = crate::BgzfWriter::new(Vec::new());
         w.write_all(&payload).unwrap();
         w.into_inner().unwrap()
+    }
+
+    /// What the reader answered before libdeflate was in front of zlib: one block through zlib alone.
+    fn zlib_answer(block: &[u8]) -> Result<Vec<u8>, String> {
+        let end = block.len() - BLOCK_FOOTER_LENGTH;
+        let size = u32::from_le_bytes(block[end + 4..end + 8].try_into().unwrap()) as usize;
+        let mut data = Vec::with_capacity(size);
+        Decompress::new(false)
+            .decompress_vec(
+                &block[BLOCK_HEADER_LENGTH..end],
+                &mut data,
+                FlushDecompress::Finish,
+            )
+            .map_err(|e| BgzfError::Inflate(e.to_string()).to_string())?;
+        if data.len() != size {
+            return Err(BgzfError::BlockSizeDisagreement {
+                declared: size,
+                actual: data.len(),
+            }
+            .to_string());
+        }
+        Ok(data)
+    }
+
+    /// Every way of damaging a block answers as zlib alone did: bytes for bytes, message for
+    /// message. A flipped CRC is the case that matters most, since htsjdk does not check one: the
+    /// reader must still hand over the block.
+    #[test]
+    fn a_damaged_block_answers_as_zlib_alone_did() {
+        let mut seed = 3u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        for payload in [
+            b"ACGTTGCAACGT".repeat(40),
+            (0..600).map(|_| next() as u8).collect::<Vec<u8>>(),
+            (0..600).map(|_| b"ACGTN"[next() % 5]).collect::<Vec<u8>>(),
+        ] {
+            let mut writer = crate::BgzfWriter::new(Vec::new());
+            writer.write_all(&payload).unwrap();
+            let stream = writer.into_inner().unwrap();
+            let (length, _) = block_frame(&stream).unwrap().unwrap();
+            for byte in BLOCK_HEADER_LENGTH..length {
+                for bit in 0..8 {
+                    let mut block = stream[..length].to_vec();
+                    block[byte] ^= 1 << bit;
+                    // A declared size this damage made absurd would size a buffer in either path.
+                    let footer = length - BLOCK_FOOTER_LENGTH;
+                    let size =
+                        u32::from_le_bytes(block[footer + 4..footer + 8].try_into().unwrap());
+                    if size > 1 << 20 {
+                        continue;
+                    }
+                    let got = BgzfReader::new(&block[..])
+                        .next_block()
+                        .map(|answer| answer.unwrap().data)
+                        .map_err(|e| e.to_string());
+                    assert_eq!(got, zlib_answer(&block), "byte {byte} bit {bit}");
+                }
+            }
+        }
     }
 
     /// The parallel path against the serial loop it replaces, on whole and damaged streams.
