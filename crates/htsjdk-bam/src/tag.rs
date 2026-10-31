@@ -19,8 +19,7 @@
 use std::borrow::Cow;
 use std::cell::UnsafeCell;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// `BinaryTagCodec.FIXED_TAG_SIZE`: two bytes of name plus one of type.
 pub const FIXED_TAG_SIZE: usize = 3;
@@ -273,94 +272,88 @@ pub fn write_tag(out: &mut Vec<u8>, tag: Tag, value: &TagValue) -> Result<(), Ta
 /// [`Self::decoded`] answer without leaving one behind. Only a block [`canonical_tag_count`] has
 /// walked is kept this way, and the walk refuses nothing: whatever it does not vouch for goes
 /// through [`Self::read_checked`], so a refusal is the same refusal, at the same moment.
+///
+/// One record takes 48 bytes of this inline, and a list, a block and a lock each cost nothing they
+/// are not using. Three bits say what the two cells hold:
+///
+///  * `MADE` is set once and never cleared through `&self`. From then on `entries` is the list and
+///    nothing writes either cell through `&self`, so both are read with no lock.
+///  * Without `MADE`, `block` is a canonical block or nothing, and is reached only under `LOCKED`.
+///  * `RAW` says that `block` is the block read, followed by the eight bytes of its prefix hash. It
+///    implies `MADE`, and changes only through `&mut self`.
 #[derive(Default)]
 pub struct Tags {
-    /// Empty and unset for a list that holds nothing.
-    entries: OnceLock<Vec<(Tag, TagValue)>>,
-    /// The bytes `entries` would write, until something asks for `entries`.
-    block: BlockCell,
-    /// Boxed so that every record that holds no block, which is nearly all of them, pays for one
-    /// pointer rather than for the block's two fields.
-    raw: Option<Box<RawBlock>>,
+    state: AtomicU8,
+    entries: UnsafeCell<Vec<(Tag, TagValue)>>,
+    block: UnsafeCell<Option<Box<[u8]>>>,
 }
 
-/// A canonical block behind a lock of one byte. The list is made through `&self`, so freeing the
-/// block has to be possible through it too, and `std::sync::Mutex` allocates on some platforms for
-/// each one locked, which is the very thing a record is trying not to do. Nothing waits here but
-/// another thread reading the same record's tags in the same instant, and only for a copy or a
-/// short decode, so spinning is enough. Nothing under the lock takes it again.
-#[derive(Default)]
-struct BlockCell {
-    locked: AtomicBool,
-    bytes: UnsafeCell<Option<Box<[u8]>>>,
-}
+const LOCKED: u8 = 1;
+const MADE: u8 = 2;
+const RAW: u8 = 4;
 
-// SAFETY: `bytes` is reached only through `with`, which holds `locked` for as long as the reference
-// it hands out lives, and `Box<[u8]>` is itself `Send` and `Sync`.
-unsafe impl Sync for BlockCell {}
+/// The width of a kept block's prefix hash, which sits after its bytes.
+const RAW_HASH_SIZE: usize = size_of::<u64>();
 
-impl BlockCell {
-    fn new(bytes: Option<Box<[u8]>>) -> Self {
-        Self {
-            locked: AtomicBool::new(false),
-            bytes: UnsafeCell::new(bytes),
-        }
-    }
+// SAFETY: the cells are written through `&self` only under `LOCKED` and before `MADE` is published,
+// read under `LOCKED` before it and freely after it: the rules on `Tags`. What they hold is `Sync`.
+unsafe impl Sync for Tags where Vec<(Tag, TagValue)>: Sync {}
 
+/// Holding `LOCKED`, which it lets go even if the holder panics. The list is made through `&self`,
+/// so freeing the block has to be possible through it too, and `std::sync::Mutex` allocates on some
+/// platforms for each one locked, which is the very thing a record is trying not to do. Nothing
+/// waits here but another thread reading the same record's tags in the same instant, and only for a
+/// copy or a short decode, so spinning is enough. Nothing under the lock takes it again.
+struct Locked<'a>(&'a AtomicU8);
+
+impl<'a> Locked<'a> {
     #[inline]
-    fn with<T>(&self, f: impl FnOnce(&mut Option<Box<[u8]>>) -> T) -> T {
-        /// Lets the lock go even if `f` panics.
-        struct Unlock<'a>(&'a AtomicBool);
-        impl Drop for Unlock<'_> {
-            fn drop(&mut self) {
-                self.0.store(false, Ordering::Release);
+    fn take(state: &'a AtomicU8) -> Self {
+        while state.fetch_or(LOCKED, Ordering::Acquire) & LOCKED != 0 {
+            while state.load(Ordering::Relaxed) & LOCKED != 0 {
+                std::hint::spin_loop();
             }
         }
-        while self
-            .locked
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            std::hint::spin_loop();
-        }
-        let _unlock = Unlock(&self.locked);
-        // SAFETY: the lock is held until `_unlock` drops, after `f` has returned, and `f` cannot
-        // keep the reference: its lifetime is its own.
-        f(unsafe { &mut *self.bytes.get() })
+        Self(state)
     }
 }
 
-/// A block is read before the list is looked at, so a clone taken while another thread is decoding
-/// waits for that thread's list rather than seeing neither.
+impl Drop for Locked<'_> {
+    #[inline]
+    fn drop(&mut self) {
+        self.0.fetch_and(!LOCKED, Ordering::Release);
+    }
+}
+
+/// A clone taken while another thread is decoding waits for that thread's list rather than seeing
+/// neither.
 impl Clone for Tags {
     fn clone(&self) -> Self {
-        let block = self.block.with(|bytes| bytes.clone());
-        let entries = if block.is_some() {
-            OnceLock::new()
-        } else {
-            OnceLock::from(self.entries().clone())
-        };
-        Self {
-            entries,
-            block: BlockCell::new(block),
-            raw: self.raw.clone(),
+        if let Some(entries) = self.made() {
+            return Self {
+                state: AtomicU8::new(self.state.load(Ordering::Acquire) & (MADE | RAW)),
+                entries: UnsafeCell::new(entries.clone()),
+                // SAFETY: `made` said `MADE`, after which nothing writes this cell through `&self`.
+                block: UnsafeCell::new(unsafe { &*self.block.get() }.clone()),
+            };
+        }
+        match self.with_block(|block| Box::<[u8]>::from(block)) {
+            Some(block) => Self::from_block(Some(block)),
+            None => {
+                let mut clone = Self::default();
+                *clone.entries.get_mut() = self.entries().clone();
+                *clone.state.get_mut() = MADE;
+                clone
+            }
         }
     }
-}
-
-/// The tag block as it was read, and a hash of the record's other variable fields as they were
-/// read: the name, cigar, bases and qualities. A writer uses the block only while both still hold.
-#[derive(Debug, Clone)]
-struct RawBlock {
-    tags: Box<[u8]>,
-    prefix_hash: u64,
 }
 
 impl fmt::Debug for Tags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Tags")
             .field("entries", &self.decoded())
-            .field("raw", &self.raw)
+            .field("raw", &self.raw_parts())
             .finish()
     }
 }
@@ -385,22 +378,71 @@ impl Tags {
         Self::default()
     }
 
-    /// The list, made from the block the first time it is wanted, which frees the block. The lock
-    /// is not held while decoding: another thread that finds neither waits here for this list.
+    fn from_block(block: Option<Box<[u8]>>) -> Self {
+        Self {
+            block: UnsafeCell::new(block),
+            ..Self::default()
+        }
+    }
+
+    /// The list, if it has been made.
+    #[inline]
+    fn made(&self) -> Option<&Vec<(Tag, TagValue)>> {
+        // SAFETY: `MADE` was published with `Release` after the list was written, and nothing
+        // writes `entries` through `&self` from then on.
+        (self.state.load(Ordering::Acquire) & MADE != 0).then(|| unsafe { &*self.entries.get() })
+    }
+
+    /// `f` of the canonical block, if the list has not been made yet and the record holds one.
+    #[inline]
+    fn with_block<T>(&self, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
+        if self.state.load(Ordering::Acquire) & MADE != 0 {
+            return None;
+        }
+        let _locked = Locked::take(&self.state);
+        if self.state.load(Ordering::Relaxed) & MADE != 0 {
+            return None;
+        }
+        // SAFETY: `LOCKED` is held and `MADE` is not set, so nothing else reaches the cell until
+        // `_locked` drops, after `f` has returned.
+        unsafe { &*self.block.get() }.as_deref().map(f)
+    }
+
+    /// The list, made from the block the first time it is wanted, which frees the block.
     #[inline]
     fn entries(&self) -> &Vec<(Tag, TagValue)> {
-        self.entries
-            .get_or_init(|| match self.block.with(Option::take) {
-                Some(block) => decode_canonical(&block),
-                None => Vec::new(),
-            })
+        if let Some(entries) = self.made() {
+            return entries;
+        }
+        self.make_entries()
+    }
+
+    #[cold]
+    fn make_entries(&self) -> &Vec<(Tag, TagValue)> {
+        let _locked = Locked::take(&self.state);
+        if self.state.load(Ordering::Relaxed) & MADE == 0 {
+            // SAFETY: `LOCKED` is held and `MADE` is not set, so nothing else reaches the cells, and
+            // no reference to either outlives this block.
+            unsafe {
+                let block = &mut *self.block.get();
+                if let Some(bytes) = block {
+                    *self.entries.get() = decode_canonical(bytes);
+                }
+                *block = None;
+            }
+            self.state.fetch_or(MADE, Ordering::Release);
+        }
+        // SAFETY: `MADE` is set, by this thread or by one whose `Release` the lock has synchronised
+        // with, and nothing writes `entries` through `&self` from then on.
+        unsafe { &*self.entries.get() }
     }
 
     /// Room for `count` tags, for a caller about to insert that many.
     pub(crate) fn with_capacity(count: usize) -> Self {
         Self {
-            entries: OnceLock::from(Vec::with_capacity(count)),
-            ..Self::default()
+            state: AtomicU8::new(MADE),
+            entries: UnsafeCell::new(Vec::with_capacity(count)),
+            block: UnsafeCell::new(None),
         }
     }
 
@@ -408,8 +450,7 @@ impl Tags {
     /// what a reader does that had to build the list to find out what a record holds, and will
     /// probably not be asked again. It changes what the record costs and nothing it answers.
     pub fn compact(&mut self) {
-        let held = self.block.with(|block| block.is_some());
-        if held || self.raw.is_some() || self.is_empty() {
+        if self.block.get_mut().is_some() || self.is_empty() {
             return;
         }
         let mut block = Vec::new();
@@ -417,30 +458,21 @@ impl Tags {
             return;
         }
         if canonical_tag_count(&block).is_some() && decode_canonical(&block) == *self.entries() {
-            *self = Self {
-                block: BlockCell::new(Some(block.into_boxed_slice())),
-                ..Self::default()
-            };
+            *self = Self::from_block(Some(block.into_boxed_slice()));
         }
     }
 
     /// The list for changing, which makes any kept bytes stale.
     fn entries_mut(&mut self) -> &mut Vec<(Tag, TagValue)> {
         self.entries();
-        self.raw = None;
-        self.entries.get_mut().expect("just made")
+        self.forget_raw();
+        self.entries.get_mut()
     }
 
     /// Every tag in order, leaving no list behind when none has been made: what a caller wants
     /// that looks at each record's tags once.
     pub fn decoded(&self) -> Cow<'_, [(Tag, TagValue)]> {
-        if let Some(entries) = self.entries.get() {
-            return Cow::Borrowed(entries);
-        }
-        match self
-            .block
-            .with(|block| block.as_deref().map(decode_canonical))
-        {
+        match self.with_block(decode_canonical) {
             Some(entries) => Cow::Owned(entries),
             None => Cow::Borrowed(self.entries()),
         }
@@ -448,13 +480,7 @@ impl Tags {
 
     /// [`Self::get`], leaving no list behind when none has been made.
     pub fn find(&self, tag: Tag) -> Option<Cow<'_, TagValue>> {
-        if let Some(entries) = self.entries.get() {
-            return Self::look_up(entries, tag).map(Cow::Borrowed);
-        }
-        let found = self
-            .block
-            .with(|block| block.as_deref().map(|block| find_in_canonical(block, tag)));
-        match found {
+        match self.with_block(|block| find_in_canonical(block, tag)) {
             Some(value) => value.map(Cow::Owned),
             None => self.get(tag).map(Cow::Borrowed),
         }
@@ -498,53 +524,69 @@ impl Tags {
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.block.with(|block| block.is_some()) && self.entries().is_empty()
+        self.with_block(|_| ()).is_none() && self.entries().is_empty()
     }
 
     /// `SAMRecord.eagerDecode()`, which drops the bytes read: what a reader opened with
     /// `EAGERLY_DECODE` hands over, and what a tool that decodes eagerly writes canonically.
     pub fn forget_raw(&mut self) {
-        self.raw = None;
+        let state = self.state.get_mut();
+        if *state & RAW != 0 {
+            *state &= !RAW;
+            *self.block.get_mut() = None;
+        }
     }
 
     /// Keep the block read, for a record whose name, cigar, bases and qualities hash to
     /// `prefix_hash`. Called by the reader only when the block is not canonical.
     pub(crate) fn keep_raw(&mut self, tags: &[u8], prefix_hash: u64) {
-        self.raw = Some(Box::new(RawBlock {
-            tags: tags.into(),
-            prefix_hash,
-        }));
+        self.entries();
+        let mut kept = Vec::with_capacity(tags.len() + RAW_HASH_SIZE);
+        kept.extend_from_slice(tags);
+        kept.extend_from_slice(&prefix_hash.to_le_bytes());
+        *self.block.get_mut() = Some(kept.into_boxed_slice());
+        *self.state.get_mut() |= RAW;
     }
 
     /// Whether a block read is still held, which only a non-canonical one ever is.
     pub fn holds_raw(&self) -> bool {
-        self.raw.is_some()
+        self.state.load(Ordering::Acquire) & RAW != 0
+    }
+
+    /// The block read and its prefix hash, if one is held.
+    fn raw_parts(&self) -> Option<(&[u8], u64)> {
+        if !self.holds_raw() {
+            return None;
+        }
+        // SAFETY: `RAW` implies `MADE`, after which nothing writes this cell through `&self`.
+        let kept = unsafe { &*self.block.get() }.as_deref()?;
+        let (tags, hash) = kept.split_at(kept.len() - RAW_HASH_SIZE);
+        Some((
+            tags,
+            u64::from_le_bytes(hash.try_into().expect("split at its width")),
+        ))
     }
 
     /// The block read, if the record's other variable fields still hash to what they were.
     pub(crate) fn raw_for(&self, prefix_hash: u64) -> Option<&[u8]> {
-        self.raw
-            .as_ref()
-            .filter(|raw| raw.prefix_hash == prefix_hash)
-            .map(|raw| &*raw.tags)
+        self.raw_parts()
+            .filter(|(_, hash)| *hash == prefix_hash)
+            .map(|(tags, _)| tags)
     }
 
     /// Total on-disk size, as `BAMRecordCodec.encode` accumulates it.
     pub fn binary_size(&self) -> Result<usize, TagError> {
-        if let Some(size) = self.block.with(|block| block.as_ref().map(|b| b.len())) {
+        if let Some(size) = self.with_block(<[u8]>::len) {
             return Ok(size);
         }
         self.entries().iter().map(|(_, v)| tag_size(v)).sum()
     }
 
     pub fn write(&self, out: &mut Vec<u8>) -> Result<(), TagError> {
-        let copied = self.block.with(|block| {
-            if let Some(block) = block {
-                out.extend_from_slice(block);
-            }
-            block.is_some()
-        });
-        if copied {
+        if self
+            .with_block(|block| out.extend_from_slice(block))
+            .is_some()
+        {
             return Ok(());
         }
         for (tag, value) in self.entries() {
@@ -565,10 +607,7 @@ impl Tags {
     /// for it, and otherwise [`Self::read_checked`] and whatever bytes that says to keep.
     pub(crate) fn read_lazily(bytes: &[u8], prefix: &[u8]) -> Result<Self, TagReadError> {
         if canonical_tag_count(bytes).is_some() {
-            return Ok(Self {
-                block: BlockCell::new((!bytes.is_empty()).then(|| bytes.into())),
-                ..Self::default()
-            });
+            return Ok(Self::from_block((!bytes.is_empty()).then(|| bytes.into())));
         }
         let (mut tags, canonical) = Self::read_checked(bytes)?;
         if !canonical {
@@ -1030,7 +1069,7 @@ mod tests {
             }
             // Once the list is made the block is gone, and the bytes do not move.
             let _ = lazy.len();
-            assert!(lazy.block.with(|block| block.is_none()));
+            assert!(lazy.with_block(|_| ()).is_none());
             let mut again = Vec::new();
             lazy.write(&mut again).unwrap();
             assert_eq!(again, block);
@@ -1117,6 +1156,64 @@ mod tests {
                     });
                 }
             });
+        }
+    }
+
+    #[test]
+    fn a_record_pays_48_bytes_for_its_tags() {
+        assert_eq!(size_of::<Tags>(), 48);
+    }
+
+    /// The block read shares a cell with the canonical one: its hash has to come back whole, and
+    /// neither a clone nor a list made alongside it may disturb it.
+    #[test]
+    fn a_kept_block_answers_only_to_its_own_hash_until_something_changes() {
+        let nm = Tag(i16::from_le_bytes(*b"NM"));
+        let block = b"NMc\x01AMc\x05";
+        for bytes in [&block[..], &b""[..]] {
+            let mut tags = Tags::with_capacity(1);
+            tags.insert(nm, TagValue::Int(1));
+            tags.keep_raw(bytes, 0x0123_4567_89ab_cdef);
+            for tags in [tags.clone(), tags] {
+                assert!(tags.holds_raw());
+                assert_eq!(tags.raw_for(0x0123_4567_89ab_cdef), Some(bytes));
+                assert_eq!(tags.raw_for(1), None);
+                assert_eq!(tags.get(nm), Some(&TagValue::Int(1)));
+                let mut changed = tags.clone();
+                changed.insert(nm, TagValue::Int(2));
+                assert!(!changed.holds_raw());
+                assert_eq!(changed.raw_for(0x0123_4567_89ab_cdef), None);
+                assert_eq!(tags.raw_for(0x0123_4567_89ab_cdef), Some(bytes));
+            }
+        }
+    }
+
+    /// Every way into the cells at once, each record starting with its block unread, so that the
+    /// one thread that makes the list races the others for it.
+    #[test]
+    fn threads_racing_for_a_list_all_get_the_same_answers() {
+        let block = b"XAZsome-longer-value\0RGZrg1\0AMc\x05NMc\x01";
+        let expected = decode_canonical(block);
+        let nm = Tag(i16::from_le_bytes(*b"NM"));
+        for _ in 0..2000 {
+            let tags = Tags::read_lazily(block, b"").unwrap();
+            let start = std::sync::Barrier::new(6);
+            std::thread::scope(|scope| {
+                for thread in 0..6 {
+                    let (tags, start, expected) = (&tags, &start, &expected);
+                    scope.spawn(move || {
+                        start.wait();
+                        match thread {
+                            0 | 1 => assert_eq!(tags.iter().count(), 4),
+                            2 => assert_eq!(&*tags.decoded(), expected.as_slice()),
+                            3 => assert_eq!(tags.clone().decoded().as_ref(), expected.as_slice()),
+                            4 => assert_eq!(tags.binary_size().unwrap(), block.len()),
+                            _ => assert_eq!(tags.find(nm).as_deref(), Some(&TagValue::Int(1))),
+                        }
+                    });
+                }
+            });
+            assert_eq!(tags.entries(), &expected);
         }
     }
 
