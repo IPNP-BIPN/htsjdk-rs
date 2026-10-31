@@ -459,6 +459,7 @@ pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<
     let mut reverse_model = ByteModel::new(2);
     let mut dup_model = ByteModel::new(2);
     let mut coder = RangeCoder::new();
+    coder.reserve(quality.len() / 2);
 
     let mut last = 0usize;
     let mut qctx: u32 = 0;

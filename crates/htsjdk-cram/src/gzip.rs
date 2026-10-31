@@ -6,6 +6,49 @@
 //! libdeflate v1.25 (jlibdeflate 0.1.0) for every run: Picard's `USE_JDK_DEFLATER` and GKL only
 //! replace the factory `BlockCompressedOutputStream` uses, and this codec builds its own.
 
+/// A thread's libdeflate compressor, kept between blocks: allocating one costs a few hundred
+/// kilobytes of matchfinder every time, and a tag trial compresses many small blocks.
+struct Compressor {
+    level: i32,
+    state: *mut libdeflate_sys::libdeflate_compressor,
+}
+
+impl Compressor {
+    fn at_level(&mut self, level: i32) -> *mut libdeflate_sys::libdeflate_compressor {
+        if self.state.is_null() || self.level != level {
+            // SAFETY: frees what was allocated here, if anything, and allocates at a level the
+            // writer names; null is refused below.
+            unsafe {
+                if !self.state.is_null() {
+                    libdeflate_sys::libdeflate_free_compressor(self.state);
+                }
+                self.state = libdeflate_sys::libdeflate_alloc_compressor(level as std::ffi::c_int);
+            }
+            assert!(
+                !self.state.is_null(),
+                "libdeflate could not allocate a compressor"
+            );
+            self.level = level;
+        }
+        self.state
+    }
+}
+
+impl Drop for Compressor {
+    fn drop(&mut self) {
+        if !self.state.is_null() {
+            // SAFETY: allocated by `at_level` and freed exactly once, here.
+            unsafe { libdeflate_sys::libdeflate_free_compressor(self.state) }
+        }
+    }
+}
+
+thread_local! {
+    static COMPRESSOR: std::cell::RefCell<Compressor> = const {
+        std::cell::RefCell::new(Compressor { level: 0, state: std::ptr::null_mut() })
+    };
+}
+
 /// `GzipCodec.compress(input, GZIP)` at `level`.
 pub fn compress(input: &[u8], level: i32) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
@@ -17,26 +60,22 @@ pub fn compress(input: &[u8], level: i32) -> Vec<u8> {
     }
     // `compress(ByteBuffer)` sizes its output generously, so the one-shot compressor always fits.
     let capacity = input.len() + (input.len() / 16000 + 1) * 5 + 256;
-    let mut deflated = vec![0u8; capacity];
-    // SAFETY: the compressor is allocated, used once with valid buffers and freed here.
-    let written = unsafe {
-        let compressor = libdeflate_sys::libdeflate_alloc_compressor(level as std::ffi::c_int);
-        assert!(
-            !compressor.is_null(),
-            "libdeflate could not allocate a compressor"
-        );
-        let written = libdeflate_sys::libdeflate_deflate_compress(
-            compressor,
-            input.as_ptr().cast(),
-            input.len(),
-            deflated.as_mut_ptr().cast(),
-            capacity,
-        );
-        libdeflate_sys::libdeflate_free_compressor(compressor);
-        written
-    };
-    assert!(written != 0, "a GZIP block's output was sized to fit");
-    out.extend_from_slice(&deflated[..written]);
+    out.reserve(capacity + 8);
+    COMPRESSOR.with_borrow_mut(|compressor| {
+        // SAFETY: the reservation above holds `capacity` bytes past `out.len()`, and `set_len`
+        // covers only what libdeflate says it wrote there.
+        unsafe {
+            let written = libdeflate_sys::libdeflate_deflate_compress(
+                compressor.at_level(level),
+                input.as_ptr().cast(),
+                input.len(),
+                out.as_mut_ptr().add(out.len()).cast(),
+                capacity,
+            );
+            assert!(written != 0, "a GZIP block's output was sized to fit");
+            out.set_len(out.len() + written);
+        }
+    });
     out.extend_from_slice(&crate::compression_header::crc32(input).to_le_bytes());
     out.extend_from_slice(&(input.len() as u32).to_le_bytes());
     out

@@ -1463,9 +1463,31 @@ fn tag_encoding<'r>(
 
 /// The resolved writers: one encoding per series by name, the QS array, and one per tag.
 struct Encodings {
-    series: HashMap<&'static str, Encoding>,
+    series: HashMap<&'static str, Encoding, BuildSmallKeyHasher>,
     quality_array: Encoding,
-    tags: HashMap<i32, Encoding>,
+    tags: HashMap<i32, Encoding, BuildSmallKeyHasher>,
+}
+
+type BuildSmallKeyHasher = std::hash::BuildHasherDefault<SmallKeyHasher>;
+
+/// For keys of a few bytes that come from the file format's own names, looked up several times per
+/// record and never walked, so neither the order nor a hostile key can reach anything. SipHash was
+/// 2% of writing a CRAM.
+#[derive(Default)]
+struct SmallKeyHasher(u64);
+
+impl std::hash::Hasher for SmallKeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
 }
 
 impl Encodings {
@@ -1480,7 +1502,7 @@ impl Encodings {
 
 fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramError> {
     let factory = |e: crate::encoding_factory::FactoryError| CramError::Cram(e.message());
-    let mut series = HashMap::new();
+    let mut series = HashMap::default();
     for (name, kind, _, _) in WRITTEN {
         let ds = DataSeries::by_canonical_name(name.as_bytes().try_into().unwrap()).unwrap();
         let descriptor = compression.encodings.get(ds).unwrap();
@@ -1495,7 +1517,7 @@ fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramE
         .unwrap();
     let quality_array =
         create_encoding(FactoryType::ByteArray, qs.id, &qs.parameters).map_err(factory)?;
-    let mut tags = HashMap::new();
+    let mut tags = HashMap::default();
     for key in compression.tag_encodings.keys() {
         let descriptor = compression.tag_encodings.get(key).unwrap();
         tags.insert(
