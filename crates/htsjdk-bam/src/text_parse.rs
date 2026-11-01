@@ -415,7 +415,6 @@ where
         let (tag, value) = parse_tag(field)?;
         tags.insert(tag, value);
     }
-    tags.compact();
 
     Ok(BamRecord {
         read_name: fields[0].to_string(),

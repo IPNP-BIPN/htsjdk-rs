@@ -83,7 +83,11 @@ pub fn read_sam_with(
     // that as it moved.
     let mut records = Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count());
     for line in lines.filter(|line| !line.is_empty()) {
-        records.push(parse_line_with(line, index_of, stringency)?);
+        let mut record = parse_line_with(line, index_of, stringency)?;
+        // These are held until the caller is done with all of them. One line parsed on its own need
+        // not pay for this.
+        record.tags.compact();
+        records.push(record);
     }
     Ok((header, records))
 }

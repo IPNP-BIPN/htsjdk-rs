@@ -291,6 +291,19 @@ pub struct Tags {
 const LOCKED: u8 = 1;
 const MADE: u8 = 2;
 const RAW: u8 = 4;
+/// Above those bits, while a canonical block is what is held, how many tags it has: what the walk
+/// that vouched for it found, so that making the list need not walk it again. Zero says it did not
+/// fit.
+const COUNT_SHIFT: u8 = 3;
+
+/// The state bits for a block of `count` tags.
+fn count_bits(count: usize) -> u8 {
+    if count < 1 << (8 - COUNT_SHIFT) {
+        (count as u8) << COUNT_SHIFT
+    } else {
+        0
+    }
+}
 
 /// The width of a kept block's prefix hash, which sits after its bytes.
 const RAW_HASH_SIZE: usize = size_of::<u64>();
@@ -338,7 +351,11 @@ impl Clone for Tags {
             };
         }
         match self.with_block(|block| Box::<[u8]>::from(block)) {
-            Some(block) => Self::from_block(Some(block)),
+            Some(block) => Self {
+                state: AtomicU8::new(self.state.load(Ordering::Relaxed) & !(LOCKED | MADE | RAW)),
+                entries: UnsafeCell::default(),
+                block: UnsafeCell::new(Some(block)),
+            },
             None => {
                 let mut clone = Self::default();
                 *clone.entries.get_mut() = self.entries().clone();
@@ -378,8 +395,9 @@ impl Tags {
         Self::default()
     }
 
-    fn from_block(block: Option<Box<[u8]>>) -> Self {
+    fn from_block(block: Option<Box<[u8]>>, count: usize) -> Self {
         Self {
+            state: AtomicU8::new(count_bits(count)),
             block: UnsafeCell::new(block),
             ..Self::default()
         }
@@ -426,7 +444,8 @@ impl Tags {
             unsafe {
                 let block = &mut *self.block.get();
                 if let Some(bytes) = block {
-                    *self.entries.get() = decode_canonical(bytes);
+                    let count = self.state.load(Ordering::Relaxed) >> COUNT_SHIFT;
+                    *self.entries.get() = decode_canonical(bytes, count as usize);
                 }
                 *block = None;
             }
@@ -457,8 +476,11 @@ impl Tags {
         if self.write(&mut block).is_err() {
             return;
         }
-        if canonical_tag_count(&block).is_some() && decode_canonical(&block) == *self.entries() {
-            *self = Self::from_block(Some(block.into_boxed_slice()));
+        let Some(count) = canonical_tag_count(&block) else {
+            return;
+        };
+        if decode_canonical(&block, count) == *self.entries() {
+            *self = Self::from_block(Some(block.into_boxed_slice()), count);
         }
     }
 
@@ -472,7 +494,8 @@ impl Tags {
     /// Every tag in order, leaving no list behind when none has been made: what a caller wants
     /// that looks at each record's tags once.
     pub fn decoded(&self) -> Cow<'_, [(Tag, TagValue)]> {
-        match self.with_block(decode_canonical) {
+        let count = (self.state.load(Ordering::Relaxed) >> COUNT_SHIFT) as usize;
+        match self.with_block(|block| decode_canonical(block, count)) {
             Some(entries) => Cow::Owned(entries),
             None => Cow::Borrowed(self.entries()),
         }
@@ -606,8 +629,11 @@ impl Tags {
     /// What a record read from a file holds: the block itself, when [`canonical_tag_count`] vouches
     /// for it, and otherwise [`Self::read_checked`] and whatever bytes that says to keep.
     pub(crate) fn read_lazily(bytes: &[u8], prefix: &[u8]) -> Result<Self, TagReadError> {
-        if canonical_tag_count(bytes).is_some() {
-            return Ok(Self::from_block((!bytes.is_empty()).then(|| bytes.into())));
+        if let Some(count) = canonical_tag_count(bytes) {
+            return Ok(Self::from_block(
+                (!bytes.is_empty()).then(|| bytes.into()),
+                count,
+            ));
         }
         let (mut tags, canonical) = Self::read_checked(bytes)?;
         if !canonical {
@@ -742,10 +768,14 @@ fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
     None
 }
 
-/// The list of a block [`canonical_tag_count`] vouched for, at exactly the capacity it needs.
+/// The list of a block [`canonical_tag_count`] vouched for, at exactly the capacity it needs:
+/// `count` tags, or walked for that number if `count` is zero.
 #[cold]
-fn decode_canonical(block: &[u8]) -> Vec<(Tag, TagValue)> {
-    let count = canonical_tag_count(block).expect("a block is kept only once it was walked");
+fn decode_canonical(block: &[u8], count: usize) -> Vec<(Tag, TagValue)> {
+    let count = match count {
+        0 => canonical_tag_count(block).expect("a block is kept only once it was walked"),
+        count => count,
+    };
     let mut cursor = Cursor {
         bytes: block,
         at: 0,
@@ -897,10 +927,13 @@ impl Cursor<'_> {
             .ok_or(TagReadError::UnterminatedString)?;
         // `StringUtil.bytesToString` is the inverse of `stringToBytes`: one char per byte, so a
         // byte of 0xE9 is U+00E9 and not the two bytes UTF-8 would have wanted.
-        let text = self.bytes[self.at..self.at + end]
-            .iter()
-            .map(|b| *b as char)
-            .collect();
+        let bytes = &self.bytes[self.at..self.at + end];
+        let text = if bytes.is_ascii() {
+            // SAFETY: ASCII is UTF-8.
+            unsafe { String::from_utf8_unchecked(bytes.to_vec()) }
+        } else {
+            bytes.iter().map(|b| *b as char).collect()
+        };
         self.at += end + 1;
         Ok(text)
     }
@@ -1193,7 +1226,7 @@ mod tests {
     #[test]
     fn threads_racing_for_a_list_all_get_the_same_answers() {
         let block = b"XAZsome-longer-value\0RGZrg1\0AMc\x05NMc\x01";
-        let expected = decode_canonical(block);
+        let expected = decode_canonical(block, 0);
         let nm = Tag(i16::from_le_bytes(*b"NM"));
         for _ in 0..2000 {
             let tags = Tags::read_lazily(block, b"").unwrap();
