@@ -509,6 +509,50 @@ impl Tags {
         }
     }
 
+    /// Whether the record holds `tag`, decoding nothing and leaving no list behind.
+    pub fn contains(&self, tag: Tag) -> bool {
+        match self.with_block(|block| locate_in_canonical(block, tag).is_some()) {
+            Some(found) => found,
+            None => self.get(tag).is_some(),
+        }
+    }
+
+    /// `f` of the string `tag` holds, or of `None` if it holds no string: [`Self::find`] for a
+    /// caller that only looks at the text, with no copy of it when it is ASCII. `f` runs holding
+    /// the record's lock, so it must not reach these tags again.
+    pub fn with_str<T>(&self, tag: Tag, f: impl FnOnce(Option<&str>) -> T) -> T {
+        let mut f = Some(f);
+        let in_block = self.with_block(|block| {
+            let f = f.take().expect("taken once");
+            match locate_in_canonical(block, tag) {
+                Some((b'Z', at)) => {
+                    let mut cursor = Cursor { bytes: block, at };
+                    let bytes = cursor
+                        .null_terminated_bytes()
+                        .expect("a block is kept only once it was walked");
+                    if bytes.is_ascii() {
+                        // SAFETY: ASCII is UTF-8.
+                        f(Some(unsafe { std::str::from_utf8_unchecked(bytes) }))
+                    } else {
+                        let text: String = bytes.iter().map(|b| *b as char).collect();
+                        f(Some(&text))
+                    }
+                }
+                _ => f(None),
+            }
+        });
+        match in_block {
+            Some(answer) => answer,
+            None => {
+                let f = f.take().expect("the block did not take it");
+                match self.get(tag) {
+                    Some(TagValue::Str(text)) => f(Some(text)),
+                    _ => f(None),
+                }
+            }
+        }
+    }
+
     fn look_up(entries: &[(Tag, TagValue)], tag: Tag) -> Option<&TagValue> {
         entries
             .binary_search_by_key(&tag, |(t, _)| *t)
@@ -745,7 +789,18 @@ fn canonical_value_width(bytes: &[u8], at: usize, ty: u8) -> Option<usize> {
 
 /// The value of one tag in a block [`canonical_tag_count`] vouched for, which is ascending.
 fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
-    let vouched = "a block is kept only once it was walked";
+    let (ty, at) = locate_in_canonical(block, wanted)?;
+    let mut cursor = Cursor { bytes: block, at };
+    let value = if ty == b'B' {
+        read_array(&mut cursor)
+    } else {
+        read_single_value(ty, &mut cursor)
+    };
+    Some(value.expect("a block is kept only once it was walked"))
+}
+
+/// The type of one tag in a block [`canonical_tag_count`] vouched for, and where its value starts.
+fn locate_in_canonical(block: &[u8], wanted: Tag) -> Option<(u8, usize)> {
     let mut at = 0;
     while at < block.len() {
         let tag = Tag(i16::from_le_bytes([block[at], block[at + 1]]));
@@ -755,15 +810,10 @@ fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
             return None;
         }
         if tag == wanted {
-            let mut cursor = Cursor { bytes: block, at };
-            let value = if ty == b'B' {
-                read_array(&mut cursor)
-            } else {
-                read_single_value(ty, &mut cursor)
-            };
-            return Some(value.expect(vouched));
+            return Some((ty, at));
         }
-        at += canonical_value_width(block, at, ty).expect(vouched);
+        at +=
+            canonical_value_width(block, at, ty).expect("a block is kept only once it was walked");
     }
     None
 }
@@ -893,7 +943,7 @@ struct Cursor<'a> {
     at: usize,
 }
 
-impl Cursor<'_> {
+impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize) -> Result<&[u8], TagReadError> {
         let slice = self
             .bytes
@@ -921,21 +971,26 @@ impl Cursor<'_> {
 
     /// `readNullTerminatedString`, which refuses a value its buffer ends inside.
     fn null_terminated(&mut self) -> Result<String, TagReadError> {
-        let end = self.bytes[self.at..]
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or(TagReadError::UnterminatedString)?;
         // `StringUtil.bytesToString` is the inverse of `stringToBytes`: one char per byte, so a
         // byte of 0xE9 is U+00E9 and not the two bytes UTF-8 would have wanted.
-        let bytes = &self.bytes[self.at..self.at + end];
-        let text = if bytes.is_ascii() {
+        let bytes = self.null_terminated_bytes()?;
+        Ok(if bytes.is_ascii() {
             // SAFETY: ASCII is UTF-8.
             unsafe { String::from_utf8_unchecked(bytes.to_vec()) }
         } else {
             bytes.iter().map(|b| *b as char).collect()
-        };
+        })
+    }
+
+    /// The bytes [`Self::null_terminated`] makes its string of.
+    fn null_terminated_bytes(&mut self) -> Result<&'a [u8], TagReadError> {
+        let end = self.bytes[self.at..]
+            .iter()
+            .position(|b| *b == 0)
+            .ok_or(TagReadError::UnterminatedString)?;
+        let bytes = &self.bytes[self.at..self.at + end];
         self.at += end + 1;
-        Ok(text)
+        Ok(bytes)
     }
 }
 
@@ -1223,6 +1278,34 @@ mod tests {
 
     /// Every way into the cells at once, each record starting with its block unread, so that the
     /// one thread that makes the list races the others for it.
+    #[test]
+    fn contains_and_with_str_answer_as_get_does() {
+        let block = b"XAZsome-longer-value\0RGZrg\xE91\0AMc\x05NMc\x01";
+        for (name, present) in [
+            (b"XA", true),
+            (b"RG", true),
+            (b"AM", true),
+            (b"NM", true),
+            (b"ZZ", false),
+            (b"AA", false),
+        ] {
+            let tag = Tag(i16::from_le_bytes(*name));
+            let lazy = Tags::read_lazily(block, b"").unwrap();
+            let listed = Tags::read(block).unwrap();
+            let string = |tags: &Tags| match tags.get(tag) {
+                Some(TagValue::Str(text)) => Some(text.clone()),
+                _ => None,
+            };
+            let expected = string(&listed);
+            assert_eq!(lazy.contains(tag), present);
+            assert_eq!(listed.contains(tag), present);
+            assert_eq!(lazy.with_str(tag, |s| s.map(str::to_string)), expected);
+            assert_eq!(listed.with_str(tag, |s| s.map(str::to_string)), expected);
+            // Neither left a list behind: the block still answers.
+            assert_eq!(string(&lazy), expected);
+        }
+    }
+
     #[test]
     fn threads_racing_for_a_list_all_get_the_same_answers() {
         let block = b"XAZsome-longer-value\0RGZrg1\0AMc\x05NMc\x01";
