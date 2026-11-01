@@ -19,7 +19,8 @@ use std::io::{self, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
 
-use flate2::{Compress, Compression, Crc, FlushCompress, Status};
+use flate2::Crc;
+use gkl_deflate::{Flavour, ReusableDeflater};
 
 use crate::{
     vfp, BGZF_ID1, BGZF_ID2, BGZF_LEN, BLOCK_FOOTER_LENGTH, BLOCK_HEADER_LENGTH,
@@ -102,7 +103,8 @@ struct DeflaterStates {
     /// The level both states were built at. A state built at another level is rebuilt rather than
     /// reused, which only matters to a worker thread that serves writers at different levels.
     level: Option<u32>,
-    jdk: Option<Compress>,
+    jdk: Option<ReusableDeflater>,
+    gkl: Option<ReusableDeflater>,
     libdeflate: Option<LibdeflateState>,
 }
 
@@ -145,18 +147,23 @@ fn deflate_payload(
     compressed.clear();
     compressed.reserve(COMPRESSED_BUFFER_SIZE);
     let fits = match deflater {
+        Deflater::Jdk if level == 0 => {
+            compressed.extend_from_slice(&gkl_deflate::stored(input));
+            true
+        }
         Deflater::Jdk => {
             // One deflater for the life of the stream, reset between blocks, which is what
-            // htsjdk's `deflater` field is. Constructing one per block allocates zlib's window
-            // and its hash tables every time -- a quarter of a megabyte at level 5.
-            let compressor = states
+            // htsjdk's `deflater` field is. `gkl_deflate` is zlib's algorithm, byte for byte at
+            // every level (decision 0049): without zlib's streaming state machine or its
+            // byte-at-a-time comparisons, the same bytes take a third fewer cycles.
+            states
                 .jdk
-                .get_or_insert_with(|| Compress::new(Compression::new(level), false));
-            compressor.reset();
-            let status = compressor
-                .compress_vec(input, compressed, FlushCompress::Finish)
-                .map_err(io::Error::other)?;
-            status == Status::StreamEnd
+                .get_or_insert_with(|| ReusableDeflater::new(level as usize, Flavour::Jdk))
+                .deflate_into(input, compressed);
+            // zlib is handed an output array of exactly `COMPRESSED_BUFFER_SIZE` bytes. Output
+            // that fills it exactly leaves `deflate` returning before `Z_STREAM_END`, so that length
+            // is not finished either: the boundary the comment above is about.
+            compressed.len() < COMPRESSED_BUFFER_SIZE
         }
         Deflater::Gkl => {
             // Levels 1 and 2 are GKL's igzip pair, and `deflate_gkl` PANICS on them when ISA-L
@@ -169,7 +176,16 @@ fn deflate_payload(
                      rebuild with the `gkl-igzip` feature, on a host where it is usable"
                 )));
             }
-            *compressed = gkl_deflate::deflate_gkl(input, level as usize);
+            if level >= 3 {
+                states
+                    .gkl
+                    .get_or_insert_with(|| {
+                        ReusableDeflater::new(level as usize, Flavour::Gkl { sse42: true })
+                    })
+                    .deflate_into(input, compressed);
+            } else {
+                *compressed = gkl_deflate::deflate_gkl(input, level as usize);
+            }
             // htsjdk asks the deflater whether it finished, having given it an output array of
             // exactly `COMPRESSED_BUFFER_SIZE` bytes. A deflater handed a vector never runs
             // out, so the same question is asked of the length: output that would have filled
@@ -194,15 +210,9 @@ fn deflate_payload(
     if !fits {
         // Matches htsjdk's `noCompressionDeflater`, explicitly the plain JDK deflater at
         // NO_COMPRESSION, which predictably yields input + 10 bytes.
+        // One final stored block, which `stored_is_zlibs_no_compression` checks.
         compressed.clear();
-        compressed.reserve(COMPRESSED_BUFFER_SIZE);
-        let mut nc = Compress::new(Compression::none(), false);
-        let nc_status = nc
-            .compress_vec(input, compressed, FlushCompress::Finish)
-            .map_err(io::Error::other)?;
-        // htsjdk throws IllegalStateException("unpossible") here. NO_COMPRESSION yields
-        // input + 10 bytes, and the uncompressed block size is chosen so that always fits.
-        debug_assert_eq!(nc_status, Status::StreamEnd);
+        compressed.extend_from_slice(&gkl_deflate::stored(input));
     }
     Ok(())
 }
@@ -218,13 +228,13 @@ struct DeflatedBlock {
 /// Deflates one full block on a rayon worker, with that worker's own deflater state.
 fn deflate_on_worker(
     uncompressed: Vec<u8>,
+    mut compressed: Vec<u8>,
     level: u32,
     deflater: Deflater,
 ) -> io::Result<DeflatedBlock> {
     thread_local! {
         static STATES: RefCell<DeflaterStates> = RefCell::new(DeflaterStates::default());
     }
-    let mut compressed = Vec::with_capacity(COMPRESSED_BUFFER_SIZE);
     STATES.with_borrow_mut(|states| {
         deflate_payload(&uncompressed, level, deflater, states, &mut compressed)
     })?;
@@ -273,9 +283,24 @@ pub struct BgzfWriter<W: Write> {
     in_flight: VecDeque<mpsc::Receiver<io::Result<DeflatedBlock>>>,
     /// How many blocks may be in flight before the writer waits for the oldest.
     max_in_flight: usize,
-    /// Uncompressed buffers handed back by written blocks, reused for the next ones.
-    spare: Vec<Vec<u8>>,
+    /// Both buffers of each written block, reused for the next ones.
+    spare: Vec<(Vec<u8>, Vec<u8>)>,
+    /// Full blocks not yet handed to a worker, which are already in `in_flight`.
+    gathered: Vec<GatheredBlock>,
+    /// One block as it goes out, so that it is one write rather than four.
+    frame: Vec<u8>,
 }
+
+/// A block waiting for its worker, and where to send the answer.
+struct GatheredBlock {
+    block: Vec<u8>,
+    compressed: Vec<u8>,
+    sender: mpsc::SyncSender<io::Result<DeflatedBlock>>,
+}
+
+/// How many blocks a worker is woken for. Deflating one takes a millisecond or two, which is about
+/// what a worker spins for before it sleeps again, so one wake-up per block is mostly spinning.
+const BLOCKS_PER_JOB: usize = 4;
 
 impl<W: Write> BgzfWriter<W> {
     pub fn new(inner: W) -> Self {
@@ -309,6 +334,8 @@ impl<W: Write> BgzfWriter<W> {
             // enough that the queue stays a few megabytes.
             max_in_flight: threads * 4,
             spare: Vec::new(),
+            gathered: Vec::new(),
+            frame: Vec::new(),
         }
     }
 
@@ -349,29 +376,58 @@ impl<W: Write> BgzfWriter<W> {
         if !self.parallel {
             return self.deflate_block().map(drop);
         }
-        let next = self
-            .spare
-            .pop()
-            .unwrap_or_else(|| Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE));
+        let (next, compressed) = self.spare.pop().unwrap_or_else(|| {
+            (
+                Vec::with_capacity(DEFAULT_UNCOMPRESSED_BLOCK_SIZE),
+                Vec::with_capacity(COMPRESSED_BUFFER_SIZE),
+            )
+        });
         let block = std::mem::replace(&mut self.buffer, next);
-        let (level, deflater) = (self.level, self.deflater);
         let (sender, receiver) = mpsc::sync_channel(1);
-        rayon::spawn(move || {
-            // A panic on a rayon worker aborts the process; the writer's caller is told instead.
-            let deflated = panic::catch_unwind(AssertUnwindSafe(|| {
-                deflate_on_worker(block, level, deflater)
-            }))
-            .unwrap_or_else(|_| Err(io::Error::other("a BGZF block's deflater panicked")));
-            // The writer may have been dropped, and with it the receiver: nothing is waiting.
-            let _ = sender.send(deflated);
+        self.gathered.push(GatheredBlock {
+            block,
+            compressed,
+            sender,
         });
         self.in_flight.push_back(receiver);
+        if self.gathered.len() >= BLOCKS_PER_JOB {
+            self.hand_over();
+        }
         self.write_deflated(false)
+    }
+
+    /// Gives the gathered blocks to a worker. Whatever waits for a block has to come through here
+    /// first, or it would wait for a block no worker has been told about.
+    fn hand_over(&mut self) {
+        if self.gathered.is_empty() {
+            return;
+        }
+        let gathered = std::mem::take(&mut self.gathered);
+        let (level, deflater) = (self.level, self.deflater);
+        rayon::spawn(move || {
+            for GatheredBlock {
+                block,
+                compressed,
+                sender,
+            } in gathered
+            {
+                // A panic on a rayon worker aborts the process; the writer's caller is told instead.
+                let deflated = panic::catch_unwind(AssertUnwindSafe(|| {
+                    deflate_on_worker(block, compressed, level, deflater)
+                }))
+                .unwrap_or_else(|_| Err(io::Error::other("a BGZF block's deflater panicked")));
+                // The writer may have been dropped, and with it the receiver: nothing is waiting.
+                let _ = sender.send(deflated);
+            }
+        });
     }
 
     /// Writes the blocks in flight, in order: those already deflated, then, when the queue is over
     /// its bound or `all` is asked for, the oldest ones as they finish.
     fn write_deflated(&mut self, all: bool) -> io::Result<()> {
+        if all || self.in_flight.len() > self.max_in_flight {
+            self.hand_over();
+        }
         while let Some(oldest) = self.in_flight.front() {
             let deflated = if all || self.in_flight.len() > self.max_in_flight {
                 oldest.recv().ok()
@@ -388,7 +444,7 @@ impl<W: Write> BgzfWriter<W> {
             self.write_gzip_block(&block.compressed, block.uncompressed.len(), block.crc)?;
             let mut uncompressed = block.uncompressed;
             uncompressed.clear();
-            self.spare.push(uncompressed);
+            self.spare.push((uncompressed, block.compressed));
         }
         Ok(())
     }
@@ -423,11 +479,16 @@ impl<W: Write> BgzfWriter<W> {
         // "I don't know why we store block size - 1, but that is what the spec says" (htsjdk)
         header[16..18].copy_from_slice(&((total - 1) as u16).to_le_bytes());
 
-        self.inner.write_all(&header)?;
-        self.inner.write_all(compressed)?;
-        self.inner.write_all(&crc.to_le_bytes())?;
-        self.inner
-            .write_all(&(uncompressed_size as u32).to_le_bytes())?;
+        // One write: three of the four would have been a system call for a few bytes wherever the
+        // stream is not buffered, and a `BufWriter` would have split the block around its payload.
+        self.frame.clear();
+        self.frame.reserve(total);
+        self.frame.extend_from_slice(&header);
+        self.frame.extend_from_slice(compressed);
+        self.frame.extend_from_slice(&crc.to_le_bytes());
+        self.frame
+            .extend_from_slice(&(uncompressed_size as u32).to_le_bytes());
+        self.inner.write_all(&self.frame)?;
         self.block_address += total as u64;
         Ok(total)
     }
@@ -623,6 +684,93 @@ mod tests {
         assert_eq!(&gkl[framed..], &EMPTY_GZIP_BLOCK[..]);
         // Both files end with the terminator, and only the middle differs.
         assert!(jdk.ends_with(&EMPTY_GZIP_BLOCK));
+    }
+
+    /// The bytes `gkl_deflate::stored` stands in for: zlib at level 0, finishing one call.
+    /// However the blocks were deflated, each one reaches the stream in one write, and a writer that
+    /// stops gathering blocks halfway through a job still answers with all of them.
+    #[test]
+    fn a_block_is_one_write_and_gathered_blocks_are_never_forgotten() {
+        struct Counting(Vec<u8>, usize);
+        impl Write for Counting {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.0.extend_from_slice(data);
+                self.1 += 1;
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let payload: Vec<u8> = (0..DEFAULT_UNCOMPRESSED_BLOCK_SIZE * 7 + 123)
+            .map(|i| (i * i % 251) as u8)
+            .collect();
+        let mut serial = Vec::new();
+        for parallel in [false, true] {
+            let mut writer = BgzfWriter::new(Counting(Vec::new(), 0)).parallel(parallel);
+            writer.write_all(&payload).unwrap();
+            let pointer = writer.file_pointer().unwrap();
+            assert!(pointer >> 16 > 0, "seven full blocks are on the stream");
+            let out = writer.into_inner().unwrap();
+            let blocks = 7 + 1 + 1;
+            assert_eq!(out.1, blocks, "parallel = {parallel}");
+            if parallel {
+                assert_eq!(out.0, serial);
+            }
+            serial = out.0;
+        }
+    }
+
+    #[test]
+    fn stored_is_zlibs_no_compression() {
+        use flate2::{Compress, Compression, FlushCompress, Status};
+        for size in [0usize, 1, 2, 5, 100, 65_497, 65_498] {
+            let input: Vec<u8> = (0..size).map(|i| (i * 31 % 251) as u8).collect();
+            let mut out = Vec::with_capacity(COMPRESSED_BUFFER_SIZE);
+            let status = Compress::new(Compression::none(), false)
+                .compress_vec(&input, &mut out, FlushCompress::Finish)
+                .unwrap();
+            assert_eq!(status, Status::StreamEnd);
+            assert_eq!(out, gkl_deflate::stored(&input), "{size} bytes");
+        }
+    }
+
+    /// `Deflater::Jdk`, against the C zlib it replaced, on what a block can hold: bases, qualities,
+    /// noise and the boundary where the output fills the compressed buffer exactly.
+    #[test]
+    fn the_jdk_deflater_is_zlib_at_every_level() {
+        use flate2::{Compress, Compression, FlushCompress, Status};
+        let mut seed = 11u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as u8
+        };
+        let bases: Vec<u8> = (0..65_498)
+            .map(|_| b"ACGTN"[(next() % 5) as usize])
+            .collect();
+        let quals: Vec<u8> = (0..65_498).map(|_| next() % 41).collect();
+        let noise: Vec<u8> = (0..65_498).map(|_| next()).collect();
+        let text: Vec<u8> = (0..65_498).map(|i| b"chr1\t100\tA\tT\n"[i % 13]).collect();
+        for input in [&bases, &quals, &noise, &text] {
+            for level in 0..=9 {
+                let mut expected = Vec::with_capacity(COMPRESSED_BUFFER_SIZE);
+                let status = Compress::new(Compression::new(level), false)
+                    .compress_vec(input, &mut expected, FlushCompress::Finish)
+                    .unwrap();
+                if status != Status::StreamEnd {
+                    expected.clear();
+                    Compress::new(Compression::none(), false)
+                        .compress_vec(input, &mut expected, FlushCompress::Finish)
+                        .unwrap();
+                }
+                let mut compressed = Vec::new();
+                let mut states = DeflaterStates::default();
+                deflate_payload(input, level, Deflater::Jdk, &mut states, &mut compressed).unwrap();
+                assert_eq!(compressed, expected, "level {level}");
+            }
+        }
     }
 
     /// libdeflate writes its own bytes, which decompress to the input at every level BGZF accepts,

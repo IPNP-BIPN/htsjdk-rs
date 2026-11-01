@@ -6,9 +6,11 @@
 //! - `src/main/java/htsjdk/samtools/util/BlockCompressedOutputStream.java`
 //!   (`deflateBlock`, `writeGzipBlock`, `flush`, `close`)
 //!
-//! The deflate backend must be zlib, never miniz_oxide. See
-//! `docs/decisions/0001-deflate-backend.md`.
+//! The deflate bytes must be zlib's, never miniz_oxide's. See
+//! `docs/decisions/0001-deflate-backend.md`. They are produced by `gkl-deflate`'s port of zlib and
+//! checked against the C library; see `docs/decisions/0049-zlibs-bytes-without-zlibs-cycles.md`.
 
+mod inflate;
 pub mod read;
 pub mod termination;
 pub mod vfp;

@@ -48,6 +48,8 @@ pub enum EncodeError {
     AlleleNotInVariant(String),
     /// `"GTs cannot be missing for some samples if they are available for others in the record"`.
     UnavailableGenotype(String),
+    /// A deferred genotype block that did not parse when the encoder needed it (decision 0048).
+    Genotypes(crate::genotypes_context::GenotypeError),
 }
 
 pub struct VcfEncoder<'a> {
@@ -173,6 +175,9 @@ impl<'a> VcfEncoder<'a> {
             out.push_str(unparsed);
             return Ok(());
         }
+        // `calcVCFGenotypeKeys` reaches the genotypes, which is where a deferred block is parsed
+        // and, if it is malformed, refused.
+        vc.genotypes.try_peek().map_err(EncodeError::Genotypes)?;
         let keys = vc.calc_vcf_genotype_keys(!self.header.samples.is_empty());
         if !keys.is_empty() {
             for key in &keys {

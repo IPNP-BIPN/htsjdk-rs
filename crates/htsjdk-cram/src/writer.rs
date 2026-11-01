@@ -604,7 +604,15 @@ fn to_write_record(
         cram |= CF_QS_PRESERVED_AS_ARRAY;
     }
 
-    let read_group = match record.tags.get(htsjdk_bam::tag::Tag::new(b"RG")) {
+    let decoded = record.tags.decoded();
+    let stored_tag = |name: &[u8; 2]| {
+        let tag = htsjdk_bam::tag::Tag::new(name);
+        decoded
+            .binary_search_by_key(&tag, |(t, _)| *t)
+            .ok()
+            .map(|i| &decoded[i].1)
+    };
+    let read_group = match stored_tag(b"RG") {
         Some(TagValue::Str(id)) => read_groups.get(id).copied().unwrap_or(NO_READGROUP_ID),
         _ => NO_READGROUP_ID,
     };
@@ -620,7 +628,7 @@ fn to_write_record(
                 reference,
                 record.alignment_start,
             );
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"NM")) {
+            if let Some(stored) = stored_tag(b"NM") {
                 let stored = match stored {
                     TagValue::Int(v) => *v as i32,
                     TagValue::Float(f) => *f as i32,
@@ -630,7 +638,7 @@ fn to_write_record(
                     strip_nm = false;
                 }
             }
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"MD")) {
+            if let Some(stored) = stored_tag(b"MD") {
                 if !matches!(stored, TagValue::Str(s) if *s == md) {
                     strip_md = false;
                 }
@@ -638,7 +646,7 @@ fn to_write_record(
         }
     }
     let mut tags = Vec::new();
-    for (tag, value) in record.tags.iter() {
+    for (tag, value) in decoded.iter() {
         let name = tag.name();
         if &name == b"RG" || (strip_nm && &name == b"NM") || (strip_md && &name == b"MD") {
             continue;
@@ -1463,9 +1471,31 @@ fn tag_encoding<'r>(
 
 /// The resolved writers: one encoding per series by name, the QS array, and one per tag.
 struct Encodings {
-    series: HashMap<&'static str, Encoding>,
+    series: HashMap<&'static str, Encoding, BuildSmallKeyHasher>,
     quality_array: Encoding,
-    tags: HashMap<i32, Encoding>,
+    tags: HashMap<i32, Encoding, BuildSmallKeyHasher>,
+}
+
+type BuildSmallKeyHasher = std::hash::BuildHasherDefault<SmallKeyHasher>;
+
+/// For keys of a few bytes that come from the file format's own names, looked up several times per
+/// record and never walked, so neither the order nor a hostile key can reach anything. SipHash was
+/// 2% of writing a CRAM.
+#[derive(Default)]
+struct SmallKeyHasher(u64);
+
+impl std::hash::Hasher for SmallKeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
 }
 
 impl Encodings {
@@ -1480,7 +1510,7 @@ impl Encodings {
 
 fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramError> {
     let factory = |e: crate::encoding_factory::FactoryError| CramError::Cram(e.message());
-    let mut series = HashMap::new();
+    let mut series = HashMap::default();
     for (name, kind, _, _) in WRITTEN {
         let ds = DataSeries::by_canonical_name(name.as_bytes().try_into().unwrap()).unwrap();
         let descriptor = compression.encodings.get(ds).unwrap();
@@ -1495,7 +1525,7 @@ fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramE
         .unwrap();
     let quality_array =
         create_encoding(FactoryType::ByteArray, qs.id, &qs.parameters).map_err(factory)?;
-    let mut tags = HashMap::new();
+    let mut tags = HashMap::default();
     for key in compression.tag_encodings.keys() {
         let descriptor = compression.tag_encodings.get(key).unwrap();
         tags.insert(

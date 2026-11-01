@@ -418,9 +418,8 @@ fn parse_info(
             Some(equals) => {
                 let key = field[..equals].to_string();
                 let raw = &field[equals + 1..];
-                let parts: Vec<&str> = raw.split(',').collect();
-                if parts.len() == 1 {
-                    let decoded = transformer.decode(parts[0]);
+                if !raw.contains(',') {
+                    let decoded = transformer.decode(raw);
                     // A declared Flag written as `KEY=0` is dropped rather than stored.
                     if info_type(header, &key) == Some(LineType::Flag) && decoded == "0" {
                         continue;
@@ -430,8 +429,7 @@ fn parse_info(
                     (
                         key,
                         Value::List(
-                            parts
-                                .iter()
+                            raw.split(',')
                                 .map(|p| Value::Str(transformer.decode(p)))
                                 .collect(),
                         ),

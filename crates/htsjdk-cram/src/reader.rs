@@ -810,6 +810,7 @@ fn to_bam_record(
             })?;
         tags.insert(Tag::new(b"RG"), TagValue::Str(group.id.clone()));
     }
+    tags.compact();
     out.tags = tags;
     Ok(out)
 }

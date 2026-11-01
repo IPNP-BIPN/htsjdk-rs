@@ -410,12 +410,8 @@ impl BamRecord {
         };
         p += read_len;
 
-        let (mut tags, canonical) = Tags::read_checked(&input[p..total])
+        let tags = Tags::read_lazily(&input[p..total], &input[4 + FIXED_BLOCK_SIZE..p])
             .map_err(|error| DecodeError::MalformedTags(error.to_string()))?;
-        if !canonical {
-            let prefix = &input[4 + FIXED_BLOCK_SIZE..p];
-            tags.keep_raw(&input[p..total], crate::tag::prefix_hash(prefix));
-        }
 
         Ok(Some((
             BamRecord {

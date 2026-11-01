@@ -410,11 +410,12 @@ where
         fastq_to_phred(qual)
     };
 
-    let mut tags = Tags::new();
+    let mut tags = Tags::with_capacity(fields.len() - NUM_REQUIRED_FIELDS);
     for field in &fields[NUM_REQUIRED_FIELDS..] {
         let (tag, value) = parse_tag(field)?;
         tags.insert(tag, value);
     }
+    tags.compact();
 
     Ok(BamRecord {
         read_name: fields[0].to_string(),

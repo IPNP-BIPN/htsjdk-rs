@@ -145,7 +145,7 @@ pub fn as_fastq_record(rec: &BamRecord) -> FastqRecord {
         }
     }
 
-    let quality_header = match rec.tags.get(Tag::new(b"CO")) {
+    let quality_header = match rec.tags.find(Tag::new(b"CO")).as_deref() {
         Some(TagValue::Str(s)) => Some(s.clone()),
         _ => None,
     };

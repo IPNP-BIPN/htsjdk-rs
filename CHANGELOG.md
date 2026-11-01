@@ -13,6 +13,25 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
+  cells hold, and a kept block carries its prefix hash in its own allocation.
+- A deferred genotype block frees its parser once parsed, and records on one contig share its name:
+  a VCF record costs 831 bytes unparsed rather than 883, and 1719 parsed rather than 1819.
+- **BGZF costs about a fifth fewer cycles, same bytes, same refusals** (decision 0049). `Deflater::Jdk`
+  and `Deflater::Gkl` deflate through one reused `gkl_deflate::ReusableDeflater` per thread, where
+  zlib was stock and GKL's state was rebuilt per block; reading goes through a strict Rust inflater
+  that hands anything unusual to zlib. Both of a parallel writer's block buffers are reused, a
+  worker is woken per four blocks rather than per block, and a block is one `write` rather than four.
+  Level 1 now beats zlib on incompressible data too.
+- **A BAM record holds 15% less**: a tag block the list would write back is kept as read and freed
+  when the list is made, and a pass-through writes the block. The new `Tags::find` and `Tags::decoded`
+  answer without leaving a list behind, and `Tags::compact` trades a list for its block, which the SAM
+  and CRAM readers do. `Tags` is 32 bytes larger inline. Refusals do not move: whatever the walk does
+  not vouch for takes the old road, and a differential test holds the two together.
+- **SAM and VCF text no longer grow by doubling**: `read_sam`, `write_sam`, `read_vcf` and `write_vcf`
+  size their vectors and strings up front.
+- **CRAM's arithmetic coder and GZIP blocks**: `ByteModel` is one allocation of four bytes per
+  symbol rather than two of four each, and a thread keeps its libdeflate compressor between blocks.
 - **The oracle is htsjdk 5.0.0**, with its runtime dependencies pinned by sha256 and libdeflate
   off image-wide, so every suite runs against 5.0.0 (#271).
 - **CRAM data series are on htslib's content ids**, 11 to 46, where 4.2.0 numbered them 1 to 32.

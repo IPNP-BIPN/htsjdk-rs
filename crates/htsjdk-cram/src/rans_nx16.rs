@@ -51,6 +51,7 @@ impl<'a> Input<'a> {
         Self { bytes, pos: 0 }
     }
 
+    #[inline(always)]
     pub(crate) fn byte(&mut self) -> Result<u8, NxError> {
         let b = *self.bytes.get(self.pos).ok_or(NxError::Truncated)?;
         self.pos += 1;
