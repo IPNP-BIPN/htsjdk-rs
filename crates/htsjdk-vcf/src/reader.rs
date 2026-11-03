@@ -267,9 +267,7 @@ pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, Re
         mut line_number,
     } = established;
 
-    // One record per line at most, known before the first: a growing vector would hold each size and
-    // twice that as it moved. A page of it nothing writes costs nothing.
-    let mut records = Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count());
+    let mut records = Vec::new();
     let mut skipped = Vec::new();
 
     // The body is every line after the `#CHROM` one. `read_header_frame` stops there without
@@ -356,6 +354,12 @@ pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, Re
                     }
                 }
             }
+        }
+        // Room for the file at the length of its first line, without walking it to count them: a
+        // growing vector would hold each size and twice that as it moved. A page of it nothing
+        // writes costs nothing.
+        if records.is_empty() {
+            records.reserve(text.len() / line.len().max(64));
         }
         records.push(variant);
     }

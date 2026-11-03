@@ -79,11 +79,18 @@ pub fn read_sam_with(
             .position(|s| s.name == name)
             .map(|i| i as i32)
     };
-    // One record per line, known before the first: a growing vector would hold each size and twice
-    // that as it moved.
-    let mut records = Vec::with_capacity(text.bytes().filter(|byte| *byte == b'\n').count());
+    let mut records = Vec::new();
     for line in lines.filter(|line| !line.is_empty()) {
-        records.push(parse_line_with(line, index_of, stringency)?);
+        let mut record = parse_line_with(line, index_of, stringency)?;
+        // These are held until the caller is done with all of them. One line parsed on its own need
+        // not pay for this.
+        record.tags.compact();
+        // Room for the file at the length of its first line, without walking it to count them: a
+        // growing vector would hold each size and twice that as it moved.
+        if records.is_empty() {
+            records.reserve(text.len() / line.len().max(64));
+        }
+        records.push(record);
     }
     Ok((header, records))
 }

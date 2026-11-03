@@ -212,7 +212,7 @@ pub fn decode_line(
 
     let has_genotypes = !header.samples.is_empty();
     let max_tokens = column_count(header).min(NUM_STANDARD_FIELDS + 1);
-    let parts = split_condensed(line, '\t', max_tokens, true);
+    let parts = split_condensed_borrowed(line, '\t', max_tokens, true);
 
     let expected = if has_genotypes {
         NUM_STANDARD_FIELDS + 1
@@ -240,12 +240,12 @@ pub fn decode_line(
 
 /// `AbstractVCFCodec.parseVCFLine`.
 fn parse_vcf_line(
-    parts: &[String],
+    parts: &[&str],
     header: &VcfHeader,
     line_number: usize,
     version: VcfVersion,
 ) -> Result<DecodedRecord, RecordError> {
-    let contig = parts[0].clone();
+    let contig = parts[0].to_string();
 
     let pos: i64 = parts[1].parse().map_err(|_| {
         generate_exception(
@@ -264,17 +264,17 @@ fn parse_vcf_line(
             "The VCF specification requires a valid ID field",
         ));
     } else {
-        parts[2].clone()
+        parts[2].to_string()
     };
 
     // The reference is upper-cased before anything looks at it, so a lower-case REF is not an
     // error, it is silently rewritten.
     let reference = parts[3].to_uppercase();
-    let alts = &parts[4];
+    let alts = parts[4];
 
-    let log10_p_error = parse_qual(&parts[5])?;
-    let filters = parse_filters(&parts[6], line_number)?;
-    let attributes = parse_info(&parts[7], header, line_number, version)?;
+    let log10_p_error = parse_qual(parts[5])?;
+    let filters = parse_filters(parts[6], line_number)?;
+    let attributes = parse_info(parts[7], header, line_number, version)?;
 
     // `END` wins over the reference allele's length, and nothing checks that the result is sane.
     let stop = match attributes.iter().find(|(key, _)| key == "END") {
@@ -312,7 +312,9 @@ fn parse_vcf_line(
 
     Ok(DecodedRecord {
         variant,
-        genotype_block: parts.get(NUM_STANDARD_FIELDS).cloned(),
+        genotype_block: parts
+            .get(NUM_STANDARD_FIELDS)
+            .map(|block| block.to_string()),
     })
 }
 
