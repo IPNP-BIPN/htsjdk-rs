@@ -82,6 +82,12 @@ fn fixture(name: &str) -> Vec<String> {
             "chr2\t100\t110\tb".into(),
             "chr1\t200\t210\tc".into(),
         ],
+        "revisited-twice" => vec![
+            "chr1\t100\t110\ta".into(),
+            "chr2\t100\t110\tb".into(),
+            "chr1\t200\t210\tc".into(),
+            "chr2\t300\t310\td".into(),
+        ],
         other => panic!("no fixture {other}"),
     }
 }
@@ -140,6 +146,23 @@ const CASES: &[(&str, &str, How)] = &[
     ("empty-linear", "empty", How::Linear),
     ("unsorted-linear", "unsorted", How::Linear),
     ("revisited-linear", "revisited", How::Linear),
+    // Fed to the creators directly, as an on-the-fly writer does: no order check, so built.
+    ("revisited-direct-linear", "revisited-twice", How::Linear),
+    (
+        "revisited-direct-interval",
+        "revisited-twice",
+        How::IntervalTree,
+    ),
+    (
+        "revisited-direct-seek",
+        "revisited-twice",
+        How::Dynamic(BalanceApproach::ForSeekTime),
+    ),
+    (
+        "revisited-direct-size",
+        "revisited-twice",
+        How::Dynamic(BalanceApproach::ForSize),
+    ),
 ];
 
 fn corpus() -> String {
@@ -163,12 +186,14 @@ fn row(text: &str, prefix: &str) -> Option<String> {
 type Built = (BuiltIndex, Vec<(String, String)>);
 
 /// Build a case, returning either that or the refusal a row would carry.
-fn build(name: &str, how: How) -> Result<Built, String> {
+fn build(label: &str, name: &str, how: How) -> Result<Built, String> {
     let (features, final_position) = features(name);
     let plain: Vec<Feature> = features.iter().map(|(f, _)| f.clone()).collect();
     // The path in the message is the one the dump ran with, so the label is the source here and
-    // the message is compared by its stable half.
-    check_ordering(&plain, "SOURCE").map_err(|error| error.message())?;
+    // the message is compared by its stable half. The direct cases skip it, as the dump does.
+    if !label.contains("-direct-") {
+        check_ordering(&plain, "SOURCE").map_err(|error| error.message())?;
+    }
 
     match how {
         How::IntervalTree => {
@@ -215,7 +240,7 @@ fn every_index_is_built_as_the_reference_builds_it() {
         let golden_idx = row(&text, &format!("idx\t{label}\t"));
         let golden_err = row(&text, &format!("err\t{label}\t"));
 
-        match build(name, *how) {
+        match build(label, name, *how) {
             Err(message) => {
                 let golden = golden_err
                     .unwrap_or_else(|| panic!("{label}: the port refused and the golden did not"));
@@ -299,8 +324,8 @@ fn every_index_is_built_as_the_reference_builds_it() {
     }
 
     // Named rather than implied: a run that compared nothing would otherwise pass.
-    assert_eq!(compared, 13, "cases compared byte for byte or by refusal");
-    assert_eq!(trees, 3, "cases the reference built as an interval tree");
+    assert_eq!(compared, 17, "cases compared byte for byte or by refusal");
+    assert_eq!(trees, 5, "cases the reference built as an interval tree");
 }
 
 /// The per-contig rows, checked on their own so a divergence names the contig rather than a byte
@@ -312,7 +337,7 @@ fn every_contig_carries_the_width_the_optimizer_chose() {
     let mut compared = 0;
 
     for (label, name, how) in CASES {
-        let Ok((BuiltIndex::Linear(contigs), _)) = build(name, *how) else {
+        let Ok((BuiltIndex::Linear(contigs), _)) = build(label, name, *how) else {
             continue;
         };
         for contig in &contigs {
@@ -342,7 +367,7 @@ fn every_contig_carries_the_width_the_optimizer_chose() {
         }
     }
 
-    assert_eq!(compared, 10, "contig rows compared");
+    assert_eq!(compared, 14, "contig rows compared");
 }
 
 /// `Base64.getEncoder()`, decoded without a dependency: the alphabet is fixed and the input is a
