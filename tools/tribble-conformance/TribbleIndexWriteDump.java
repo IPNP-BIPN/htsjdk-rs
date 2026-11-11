@@ -46,7 +46,11 @@ import htsjdk.tribble.Feature;
 import htsjdk.tribble.FeatureCodec;
 import htsjdk.tribble.bed.BEDCodec;
 import htsjdk.tribble.index.Index;
+import htsjdk.tribble.index.DynamicIndexCreator;
 import htsjdk.tribble.index.IndexFactory;
+import htsjdk.tribble.index.TribbleIndexCreator;
+import htsjdk.tribble.index.interval.IntervalIndexCreator;
+import htsjdk.tribble.index.linear.LinearIndexCreator;
 import htsjdk.tribble.index.linear.LinearIndex;
 import htsjdk.tribble.util.LittleEndianInputStream;
 
@@ -136,6 +140,40 @@ public class TribbleIndexWriteDump {
                 "chr2\t100\t110\tb",
                 "chr1\t200\t210\tc");
         build("revisited-linear", revisited, "LINEAR");
+
+        // The same revisit, through the creators directly, as the writers that index on the fly
+        // (IndexingVariantContextWriter) feed them: nothing checks the order, so the file is
+        // indexed, and the LinkedHashMap the index keeps its contigs in decides what is written.
+        // chr2 is revisited too, so both a first and a last contig lose their earlier run.
+        final Path revisitedTwice = write("revisited-twice.bed",
+                "chr1\t100\t110\ta",
+                "chr2\t100\t110\tb",
+                "chr1\t200\t210\tc",
+                "chr2\t300\t310\td");
+        build("revisited-direct-linear", revisitedTwice, "DIRECT_LINEAR");
+        build("revisited-direct-interval", revisitedTwice, "DIRECT_INTERVAL_TREE");
+        build("revisited-direct-seek", revisitedTwice, "DIRECT_FOR_SEEK_TIME");
+        build("revisited-direct-size", revisitedTwice, "DIRECT_FOR_SIZE");
+    }
+
+    /**
+     * The creators fed directly, in file order, with IndexFactory's positions: the byte offset of
+     * each line, and the file's length at the end. `how` is an IndexType or an IndexBalanceApproach
+     * name, as for {@link #build}.
+     */
+    static Index direct(final Path source, final String how) throws Exception {
+        final TribbleIndexCreator creator = how.equals("LINEAR")
+                ? new LinearIndexCreator(source, LinearIndexCreator.DEFAULT_BIN_WIDTH)
+                : how.equals("INTERVAL_TREE")
+                        ? new IntervalIndexCreator(source, IntervalIndexCreator.DEFAULT_FEATURE_COUNT)
+                        : new DynamicIndexCreator(source, IndexFactory.IndexBalanceApproach.valueOf(how));
+        final BEDCodec codec = new BEDCodec();
+        long position = 0;
+        for (final String line : Files.readAllLines(source)) {
+            creator.addFeature(codec.decode(line), position);
+            position += line.getBytes(java.nio.charset.StandardCharsets.UTF_8).length + 1;
+        }
+        return creator.finalizeIndex(position);
     }
 
     static Path write(final String name, final String... lines) throws Exception {
@@ -156,8 +194,9 @@ public class TribbleIndexWriteDump {
     static void build(final String label, final Path source, final String how) {
         try {
             final FeatureCodec<? extends Feature, ?> codec = new BEDCodec();
-            final Index index =
-                    how.startsWith("FOR_")
+            final Index index = how.startsWith("DIRECT_")
+                    ? direct(source, how.substring("DIRECT_".length()))
+                    : how.startsWith("FOR_")
                             ? IndexFactory.createDynamicIndex(
                                     source, codec, IndexFactory.IndexBalanceApproach.valueOf(how))
                             : IndexFactory.createIndex(
