@@ -4,17 +4,16 @@ version = "0.4.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "A deflate compressor reproducing GKL's bytes, ported from zlib"
+description = "A deflate compressor reproducing GKL's bytes, ported from zlib and ISA-L"
 
 [features]
-# On by default so `deflate_gkl` answers every level GKL answers. Turn it off for a build with no
-# C dependency; levels 1 and 2 then refuse rather than guess, which is what they did before.
-default = ["isal"]
+# Links ISA-L only to compare the igzip port with it (decision 0050). Levels 1 and 2 never use it.
+# The comparison means something on x86-64 with nasm, where ISA-L runs the kernels GKL ships.
 isal = ["dep:isal-sys"]
 
 [dependencies]
-# Decision 0034: igzip's readable C is a second implementation that finds different matches, so a
-# translation of it would be a confident wrong answer. This links the library GKL links.
+# Decision 0034: igzip's readable C is not what GKL runs, so the port follows the x86 kernels, and
+# this is the library to check it against.
 isal-sys = { version = "0.5.3", optional = true }
 
 [dev-dependencies]

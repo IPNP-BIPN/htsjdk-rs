@@ -32,36 +32,28 @@
 //! that a parameter rather than a hidden assumption; the default of `true` is the column every
 //! oracle run has been measured in, because every host so far reports SSE4.2.
 //!
-//! ## What is not here
+//! ## Levels 1 and 2
 //!
-//! **igzip, for levels 1 and 2.** Those are the only levels GKL does not route through zlib, and
-//! nothing in htsjdk asks for them by default. [`deflate_gkl`] refuses them rather than quietly
-//! answering with zlib's bytes, which would be a wrong answer that looks like a right one.
+//! GKL routes those through ISA-L igzip, not zlib, and GATK writes BGZF at level 2. `igzip` is a
+//! port of the x86 kernels GKL runs, so [`deflate_gkl`] gives GKL's bytes at those levels on any
+//! CPU, Apple Silicon included (decision 0050). It used to link ISA-L instead, which only
+//! reproduced GKL on x86-64 with an assembler; the `isal` feature keeps that binding as a
+//! cross-check and nothing else.
 
 mod deflate;
-#[cfg(feature = "isal")]
 mod igzip;
-#[cfg(feature = "isal")]
+#[cfg(test)]
 mod igzip_canary;
+#[cfg(all(test, feature = "isal"))]
+mod igzip_isal;
 mod trees;
 
 pub use deflate::Flavour;
 
-/// Whether `deflate_gkl` can answer levels 1 and 2 on this build and this host.
-///
-/// False when the crate is built without the `isal` feature, and false when ISA-L is present but
-/// fell back to its readable C, which happens without an assembler, without SSE4.2, and on any
-/// non-x86 architecture. In that state the library still returns valid deflate; it is simply not
-/// GKL's, so those levels refuse. Callers that would rather degrade than fail can ask first.
+/// Whether `deflate_gkl` can answer levels 1 and 2. Always, since they are ported (decision 0050);
+/// kept for callers written when they depended on a linked ISA-L that could fall back to C.
 pub fn igzip_available() -> bool {
-    #[cfg(feature = "isal")]
-    {
-        igzip::usable()
-    }
-    #[cfg(not(feature = "isal"))]
-    {
-        false
-    }
+    true
 }
 
 /// Compress `data` as a raw deflate stream the way `java.util.zip.Deflater` does, which is the
@@ -154,29 +146,15 @@ pub fn stored(data: &[u8]) -> Vec<u8> {
 
 /// Compress `data` the way GKL's `IntelDeflater` does, on a CPU reporting SSE4.2.
 ///
-/// `level` is 0 to 9; 0 is [`stored`]. Levels 1 and 2 go through ISA-L itself rather than through a port of it, for
-/// the reason decision 0034 gives: ISA-L's own readable C finds different matches from the
-/// assembly kernels it ships, so translating the C would answer confidently and wrongly.
-///
-/// Without the `isal` feature those two levels are refused rather than approximated.
+/// `level` is 0 to 9; 0 is [`stored`]. Levels 1 and 2 are ISA-L igzip's x86 kernels, ported
+/// rather than linked (decision 0050), and 3 to 9 Intel's zlib.
 pub fn deflate_gkl(data: &[u8], level: usize) -> Vec<u8> {
     if level == 0 {
         return stored(data);
     }
     if level == 1 || level == 2 {
-        #[cfg(feature = "isal")]
-        {
-            // GKL passes the level through to ISA-L (decision 0043, correcting 0031, whose four
-            // fixtures happen to compress identically at ISA-L levels 1 and 2). The call refuses
-            // if this build cannot reproduce GKL; see `igzip::usable`.
-            return igzip::deflate(data, level);
-        }
-        #[cfg(not(feature = "isal"))]
-        panic!(
-            "GKL routes levels 1 and 2 through igzip; build with the `isal` feature, or use \
-             level 3 or above. Answering with zlib's bytes would be a wrong answer wearing a \
-             right one's shape."
-        );
+        // GKL passes the level through to ISA-L (decision 0043, correcting 0031).
+        return igzip::deflate(data, level);
     }
     assert!(
         (3..=9).contains(&level),
