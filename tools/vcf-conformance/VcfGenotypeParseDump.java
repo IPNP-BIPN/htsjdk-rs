@@ -96,6 +96,8 @@ public class VcfGenotypeParseDump {
         two("ft-pass", "GT:FT\t0/1:PASS\t1/1:LowQual");
         two("ft-missing", "GT:FT\t0/1:.\t1/1:PASS");
         two("ft-two", "GT:FT\t0/1:LowQual;q10\t1/1:PASS");
+        // GenotypeBuilder.filters(List) sorts two or more names, PASS among them.
+        two("ft-unsorted", "GT:FT\t0/1:LowQD;LowGQ\t1/1:q10;PASS;LowQual");
         // An unreserved key, which becomes a plain string attribute.
         two("extended-key", "GT:XX\t0/1:hello\t1/1:world");
         // No GT at all, at 4.2.
