@@ -350,7 +350,10 @@ impl BcfGenotypeSource {
                 "FT" => {
                     for gb in gbs.iter_mut() {
                         gb.filters = match d.decode_typed_value_sized(descriptor, n)? {
+                            // `GenotypeBuilder.filter(String)`: `PASS` is null, and the
+                            // string is kept as written, unsorted.
                             Typed::Null => None,
+                            Typed::Str(s) if s == "PASS" => None,
                             Typed::Str(s) => Some(s),
                             other => {
                                 return Err(Bcf2Error::tribble(format!(

@@ -260,8 +260,13 @@ pub fn parse_genotypes(
             if *key == "FT" {
                 // The genotype filter goes through the record's filter parser, so `PASS` and `.`
                 // mean what they mean on a record.
-                if let Some(filters) = parse_genotype_filters(value, line_number)? {
-                    genotype.filters = Some(filters.join(";"));
+                // `GenotypeBuilder.filters(List)`: no names (`PASS`) is null, two or more are
+                // sorted, so `LowQD;LowGQ` is held as `LowGQ;LowQD`.
+                if let Some(mut filters) = parse_genotype_filters(value, line_number)? {
+                    if !filters.is_empty() {
+                        filters.sort_unstable();
+                        genotype.filters = Some(filters.join(";"));
+                    }
                 }
                 continue;
             }

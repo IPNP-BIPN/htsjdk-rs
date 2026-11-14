@@ -267,3 +267,35 @@ fn deferred_bcf_reads_refuse_what_eager_reads_refuse() {
         files.len()
     );
 }
+
+/// The BCF codec's FT goes through `GenotypeBuilder.filter(String)`, not `filters(List)`: a
+/// stored `PASS` (which bcftools writes, htsjdk does not) reads as unfiltered, and two names stay
+/// in the order written, unlike the VCF codec, which sorts them.
+#[test]
+fn bcf_ft_pass_is_unfiltered_and_names_keep_their_order() {
+    let vcf = "##fileformat=VCFv4.2\n\
+               ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+               ##FORMAT=<ID=FT,Number=1,Type=String,Description=\"Genotype filter\">\n\
+               ##contig=<ID=chr1,length=1000>\n\
+               #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts0\ts1\n\
+               chr1\t10\t.\tA\tT\t50\tPASS\t.\tGT:FT\t0/1:LowQD;LowGQ\t1/1:PASS\n";
+    let file = read_vcf(vcf).expect("the VCF reads");
+    let mut vc = file.records[0].clone();
+    assert_eq!(vc.genotypes[0].filters.as_deref(), Some("LowGQ;LowQD"));
+    assert_eq!(vc.genotypes[1].filters, None);
+
+    vc.genotypes[0].filters = Some("LowQD;LowGQ".into());
+    vc.genotypes[1].filters = Some("PASS".into());
+    let mut writer = Bcf2Writer::new(&file.header, false).expect("a writer");
+    let mut bcf = writer.header_bytes();
+    bcf.extend(
+        writer
+            .encode(&vc, Origin::Bcf2Codec)
+            .expect("the record encodes"),
+    );
+    let read = read_bcf(&bcf).expect("the BCF reads");
+    let genotypes = &read.records[0].genotypes;
+    assert_eq!(genotypes[0].filters.as_deref(), Some("LowQD;LowGQ"));
+    assert_eq!(genotypes[1].filters, None);
+    assert!(!genotypes[1].is_filtered());
+}
