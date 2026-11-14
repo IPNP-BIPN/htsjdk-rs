@@ -25,12 +25,11 @@ jobs:
           grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(avx|avx2|avx512f|fma)$' | sort | tr '\n' ' '
           echo
 
-      - name: nasm, which decides whether igzip is exact or merely valid
-        # `gkl-deflate` links ISA-L for GKL's levels 1 and 2. Without an assembler ISA-L still
-        # builds, still compresses, and still round-trips: it falls back to its readable C, which
-        # finds different matches (decision 0034). The crate's canary catches that and makes those
-        # levels refuse, so a missing nasm turns into a skipped comparison rather than a wrong
-        # golden. Installed here so the comparison actually runs on the one host that can.
+      - name: nasm, for the one build of ISA-L the igzip port can be checked against
+        # gkl-deflate ports ISA-L igzip's x86 kernels and needs nothing at build time (decision
+        # 0050). Its `isal` feature links ISA-L to compare the two, and ISA-L only runs those
+        # kernels when it is assembled: without nasm it falls back to its readable C, which makes
+        # other bytes (decision 0034), and the comparison fails rather than passing on nothing.
         run: sudo apt-get update -qq && sudo apt-get install -y -qq nasm && nasm -v
 
       - uses: dtolnay/rust-toolchain@master
@@ -50,6 +49,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --release
+      - name: The igzip port against ISA-L itself
+        run: cargo test -p gkl-deflate --release --features isal agrees_with_linked_isal
 
       - name: Builds are reproducible
         # Two clean builds of the same source must produce the same bytes. A build that is not

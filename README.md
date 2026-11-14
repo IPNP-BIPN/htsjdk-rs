@@ -271,6 +271,7 @@ compiler will never catch any of them.
 | [0044](docs/decisions/0044-strictmath-log-is-fdlibm-and-is-not-math-log.md) | `StrictMath.log` is FDLIBM, and it is not `Math.log`: 186 corpus points tell them apart |
 | [0047](docs/decisions/0047-the-reference-moves-to-htsjdk-5.0.0.md) | The reference moves to htsjdk 5.0.0: 18 of 87 suites moved, each ported |
 | [0049](docs/decisions/0049-zlibs-bytes-without-zlibs-cycles.md) | zlib's bytes and zlib's refusals without zlib's cycles; libdeflate cannot read for us, even behind a CRC |
+| [0050](docs/decisions/0050-igzip-levels-one-and-two-ported-from-the-kernels.md) | igzip's levels 1 and 2 ported from the x86 kernels, so GKL's bytes come out on any CPU and ISA-L is a cross-check only |
 
 ## What "finished" means
 

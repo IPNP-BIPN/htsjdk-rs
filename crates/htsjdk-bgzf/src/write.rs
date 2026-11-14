@@ -38,11 +38,7 @@ pub enum Deflater {
     Jdk,
     /// Intel's GKL, which GATK installs as the default factory: zlib 1.2.13 carrying Intel's
     /// `deflate_medium` patch above level two, and ISA-L igzip at one and two.
-    ///
-    /// Levels 1 and 2 need the `gkl-igzip` feature, which links ISA-L and therefore wants an
-    /// assembler at build time. Without it they refuse rather than answer with zlib's bytes, which
-    /// is `gkl-deflate`'s own behaviour and the reason the feature is off by default: BGZF's level
-    /// is 5, so nothing here pays a C toolchain for a pair of levels it never asks for.
+    /// Both are ported, so every level answers on every CPU (gkl-deflate's decision 0050).
     Gkl,
     /// libdeflate v1.25, which htsjdk 5.0.0's own `DeflaterFactory` returns whenever its native
     /// library loads (`samjdk.use_libdeflate`, true by default). So it is what Picard 3.5.0 writes
@@ -166,16 +162,6 @@ fn deflate_payload(
             compressed.len() < COMPRESSED_BUFFER_SIZE
         }
         Deflater::Gkl => {
-            // Levels 1 and 2 are GKL's igzip pair, and `deflate_gkl` PANICS on them when ISA-L
-            // is absent or unusable rather than answering with zlib's bytes. That refusal is
-            // the right one and a panic is the wrong way to deliver it: a writer is handed a
-            // level by a caller, and a caller can be told.
-            if (1..=2).contains(&level) && !gkl_deflate::igzip_available() {
-                return Err(io::Error::other(format!(
-                    "GKL routes level {level} through ISA-L igzip, which this build cannot reach: \
-                     rebuild with the `gkl-igzip` feature, on a host where it is usable"
-                )));
-            }
             if level >= 3 {
                 states
                     .gkl
@@ -595,12 +581,6 @@ mod tests {
         assert_eq!(decompress_all(&without).unwrap(), payload);
     }
 
-    /// GKL's igzip levels refuse rather than panic when ISA-L is out of reach.
-    ///
-    /// The refusal itself is `gkl-deflate`'s, and it is the right answer: levels 1 and 2 are the
-    /// only pair GKL does not route through zlib, so answering them with zlib's bytes would be a
-    /// wrong answer that looks like a right one. What is asserted here is that a caller is TOLD,
-    /// rather than the process ending.
     /// `COMPRESSION_LEVEL=0` under GKL is GKL's zlib storing: one final stored block per BGZF
     /// block, which is what Picard 3.5.0 writes (measured on a 3,000-record SortSam, where GKL and
     /// libdeflate agree byte for byte). Level 0 is not igzip's, so it never needs ISA-L.
@@ -619,33 +599,17 @@ mod tests {
         assert_eq!(&file[23..23 + 16], &payload[..16]);
     }
 
+    /// GKL's igzip levels answer in every build, with bytes that inflate back.
     #[test]
-    fn a_gkl_level_that_needs_igzip_refuses_when_it_is_out_of_reach() {
-        if gkl_deflate::igzip_available() {
-            // A build with ISA-L usable answers those levels, which is the other half of the
-            // claim: the refusal is about reach and not about the level.
-            for level in [1, 2] {
-                let mut w = BgzfWriter::with_deflater(Vec::new(), level, Deflater::Gkl);
-                w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
-                assert_eq!(
-                    decompress_all(&w.into_inner().unwrap()).unwrap(),
-                    b"chr1\t100\t.\tA\tC\n"
-                );
-            }
-            return;
-        }
+    fn gkl_levels_one_and_two_answer_everywhere() {
         for level in [1, 2] {
             let mut w = BgzfWriter::with_deflater(Vec::new(), level, Deflater::Gkl);
             w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
-            let error = w
-                .into_inner()
-                .expect_err("igzip is out of reach on this build");
-            assert!(error.to_string().contains("igzip"), "{error}");
+            assert_eq!(
+                decompress_all(&w.into_inner().unwrap()).unwrap(),
+                b"chr1\t100\t.\tA\tC\n"
+            );
         }
-        // Every other level is unaffected, since GKL routes them through zlib.
-        let mut w = BgzfWriter::with_deflater(Vec::new(), 5, Deflater::Gkl);
-        w.write_all(b"chr1\t100\t.\tA\tC\n").unwrap();
-        assert!(w.into_inner().is_ok());
     }
 
     /// The deflater changes the block's bytes and nothing else about the file.
@@ -873,12 +837,6 @@ mod tests {
             .unwrap();
         for deflater in [Deflater::Jdk, Deflater::Gkl, Deflater::Libdeflate] {
             for level in 0..=9 {
-                if deflater == Deflater::Gkl
-                    && (1..=2).contains(&level)
-                    && !gkl_deflate::igzip_available()
-                {
-                    continue;
-                }
                 let serial = write(&payload, level, deflater, false);
                 let parallel = pool.install(|| write(&payload, level, deflater, true));
                 assert!(
