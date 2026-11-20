@@ -89,7 +89,11 @@ pub fn read_int(encoding: &Encoding, streams: &mut SliceReadStreams<'_>) -> Resu
             ExternalIntegerCodec::new(*content_id).read(streams)?
         }
         Encoding::HuffmanInteger(params) => {
-            CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?.read(streams.core())?
+            match constant_symbol(&params.symbols, &params.bit_lengths) {
+                Some(symbol) => symbol,
+                None => CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?
+                    .read(streams.core())?,
+            }
         }
         Encoding::Beta {
             offset,
@@ -139,7 +143,11 @@ pub fn read_byte(encoding: &Encoding, streams: &mut SliceReadStreams<'_>) -> Res
     Ok(match encoding {
         Encoding::ExternalByte(content_id) => ExternalByteCodec::new(*content_id).read(streams),
         Encoding::HuffmanByte(params) => {
-            CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?.read(streams.core())?
+            match constant_symbol(&params.symbols, &params.bit_lengths) {
+                Some(symbol) => symbol,
+                None => CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?
+                    .read(streams.core())?,
+            }
         }
         other => {
             return Err(ReadError::WrongKind {
@@ -147,6 +155,19 @@ pub fn read_byte(encoding: &Encoding, streams: &mut SliceReadStreams<'_>) -> Res
             })
         }
     })
+}
+
+/// The one symbol of a one-symbol, zero-length alphabet, which is how a writer encodes a series
+/// that never changes.
+///
+/// Its code is the code word `0` of length `0`, so building the table and reading from it
+/// consumes no bit and answers that symbol: exactly what this returns, without the table, which
+/// was built again for every value read. Every other alphabet goes through the table.
+fn constant_symbol<S: Copy>(symbols: &[S], bit_lengths: &[i32]) -> Option<S> {
+    match (symbols, bit_lengths) {
+        ([symbol], [0]) => Some(*symbol),
+        _ => None,
+    }
 }
 
 /// A byte array. `length` is `None` where the encoding finds its own end, as byte-array-stop does,
