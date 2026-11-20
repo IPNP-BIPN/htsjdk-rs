@@ -1312,45 +1312,66 @@ mod tests {
 /// outside `=ABCDGHKMNRSTVWY` (either case) becoming `N`. `]` is `=` lower-cased by the table's
 /// own arithmetic, so it maps to `=`.
 fn bam_read_base(byte: u8) -> u8 {
-    const SET: &[u8] = b"=ABCDGHKMNRSTVWY";
-    let b = byte & 0x7F;
-    for &base in SET {
-        if b == base || b == base + 32 {
-            return base;
-        }
-    }
-    b'N'
+    BAM_READ_BASE[byte as usize]
 }
+
+/// [`bam_read_base`] for every byte, computed at compile time from the walk it replaces, which
+/// was made once per base.
+const BAM_READ_BASE: [u8; 256] = {
+    const SET: &[u8] = b"=ABCDGHKMNRSTVWY";
+    let mut table = [b'N'; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let b = (byte as u8) & 0x7F;
+        let mut i = 0;
+        while i < SET.len() {
+            if b == SET[i] || b == SET[i] + 32 {
+                table[byte] = SET[i];
+                break;
+            }
+            i += 1;
+        }
+        byte += 1;
+    }
+    table
+};
 
 /// `SequenceUtil.bases`: the IUPAC bit mask of a code, zero for anything that is not one.
 fn iupac_mask(byte: u8) -> u8 {
-    let upper = if byte.is_ascii_lowercase() {
-        byte - 32
-    } else {
-        byte
-    };
-    match upper {
-        b'A' => 1,
-        b'C' => 2,
-        b'G' => 4,
-        b'T' => 8,
-        b'M' => 3,
-        b'R' => 5,
-        b'W' => 9,
-        b'S' => 6,
-        b'Y' => 10,
-        b'K' => 12,
-        b'V' => 7,
-        b'H' => 11,
-        b'D' => 13,
-        b'B' => 14,
-        b'N' => 15,
-        _ if byte == b'.' => 15,
-        _ => 0,
-    }
+    IUPAC_MASK[byte as usize]
 }
 
-/// `SequenceUtil.basesEqual`: both inside the table, and the same mask.
+/// [`iupac_mask`] for every byte, at compile time.
+const IUPAC_MASK: [u8; 256] = {
+    let mut table = [0u8; 256];
+    let mut byte = 0;
+    while byte < 256 {
+        let b = byte as u8;
+        let upper = if b.is_ascii_lowercase() { b - 32 } else { b };
+        table[byte] = match upper {
+            b'A' => 1,
+            b'C' => 2,
+            b'G' => 4,
+            b'T' => 8,
+            b'M' => 3,
+            b'R' => 5,
+            b'W' => 9,
+            b'S' => 6,
+            b'Y' => 10,
+            b'K' => 12,
+            b'V' => 7,
+            b'H' => 11,
+            b'D' => 13,
+            b'B' => 14,
+            b'N' => 15,
+            _ if b == b'.' => 15,
+            _ => 0,
+        };
+        byte += 1;
+    }
+    table
+};
+
 fn bases_equal(lhs: u8, rhs: u8) -> bool {
     lhs < 127 && rhs < 127 && iupac_mask(lhs) == iupac_mask(rhs)
 }
@@ -1722,4 +1743,57 @@ pub fn restore_bases_and_tags(
         md: compute.then_some(md),
         nm: compute.then_some(nm),
     })
+}
+
+#[cfg(test)]
+mod base_tables {
+    /// The two lookups as they were written before they became tables.
+    fn bam_read_base_walk(byte: u8) -> u8 {
+        let b = byte & 0x7F;
+        for &base in b"=ABCDGHKMNRSTVWY" {
+            if b == base || b == base + 32 {
+                return base;
+            }
+        }
+        b'N'
+    }
+
+    fn iupac_mask_match(byte: u8) -> u8 {
+        let upper = if byte.is_ascii_lowercase() {
+            byte - 32
+        } else {
+            byte
+        };
+        match upper {
+            b'A' => 1,
+            b'C' => 2,
+            b'G' => 4,
+            b'T' => 8,
+            b'M' => 3,
+            b'R' => 5,
+            b'W' => 9,
+            b'S' => 6,
+            b'Y' => 10,
+            b'K' => 12,
+            b'V' => 7,
+            b'H' => 11,
+            b'D' => 13,
+            b'B' => 14,
+            b'N' => 15,
+            _ if byte == b'.' => 15,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn the_tables_answer_what_the_functions_did_for_every_byte() {
+        for byte in 0..=255u8 {
+            assert_eq!(
+                super::bam_read_base(byte),
+                bam_read_base_walk(byte),
+                "{byte}"
+            );
+            assert_eq!(super::iupac_mask(byte), iupac_mask_match(byte), "{byte}");
+        }
+    }
 }
