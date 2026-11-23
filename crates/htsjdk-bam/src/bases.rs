@@ -95,11 +95,11 @@ pub fn compressed_bases_to_bytes(length: usize, compressed: &[u8], offset: usize
     let packed = &compressed[offset..offset + length.div_ceil(2)];
     let mut out = vec![0u8; length];
     // A byte at a time, both its bases from one table: the nibble loop was a hot spot on every read.
-    let mut pairs = out.chunks_exact_mut(2);
-    for (pair, &byte) in (&mut pairs).zip(packed) {
-        pair.copy_from_slice(&BYTE_TO_BASES[byte as usize]);
+    let (pairs, last) = out.as_chunks_mut::<2>();
+    for (pair, &byte) in pairs.iter_mut().zip(packed) {
+        *pair = BYTE_TO_BASES[byte as usize];
     }
-    if let [last] = pairs.into_remainder() {
+    if let [last] = last {
         *last = NIBBLE_TO_BASE[(packed[length / 2] >> 4) as usize];
     }
     out

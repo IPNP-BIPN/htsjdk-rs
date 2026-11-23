@@ -400,12 +400,14 @@ impl PartialEq for Tags {
 pub(crate) fn prefix_hash(bytes: &[u8]) -> u64 {
     const K: u64 = 0x9E37_79B9_7F4A_7C15;
     let step = |hash: u64, word: u64| (hash ^ word).wrapping_mul(K).rotate_left(29);
-    let chunks = bytes.chunks_exact(8);
+    let (words, rest) = bytes.as_chunks::<8>();
     let mut tail = [0u8; 8];
-    tail[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
-    let hash = chunks.fold(0xcbf2_9ce4_8422_2325 ^ bytes.len() as u64, |hash, word| {
-        step(hash, u64::from_le_bytes(word.try_into().expect("eight")))
-    });
+    tail[..rest.len()].copy_from_slice(rest);
+    let hash = words
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325 ^ bytes.len() as u64, |hash, word| {
+            step(hash, u64::from_le_bytes(*word))
+        });
     let hash = step(hash, u64::from_le_bytes(tail));
     (hash ^ (hash >> 32)).wrapping_mul(K)
 }
@@ -654,7 +656,8 @@ impl Tags {
     }
 
     /// Keep the block read, for a record whose name, cigar, bases and qualities hash to
-    /// `prefix_hash`. Called by the reader only when the block is not canonical.
+    /// `prefix_hash`. For tests: a list made first, then a block kept beside it.
+    #[cfg(test)]
     pub(crate) fn keep_raw(&mut self, tags: &[u8], prefix_hash: u64) {
         self.entries();
         let mut kept = Vec::with_capacity(tags.len() + RAW_HASH_SIZE);
