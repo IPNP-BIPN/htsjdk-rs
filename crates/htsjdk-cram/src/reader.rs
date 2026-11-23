@@ -241,11 +241,79 @@ impl ReferenceRegion {
     }
 }
 
+/// Where a reader's containers come from.
+enum Source<'a> {
+    /// The whole file in memory.
+    Bytes { cram: &'a [u8], at: usize },
+    /// A stream, of which only what the next container needs is held.
+    Stream(Streamed<'a>),
+}
+
+/// The bytes of a stream from the next unread container on, read ahead only as far as asked.
+struct Streamed<'a> {
+    input: Box<dyn std::io::Read + 'a>,
+    buffer: Vec<u8>,
+    eof: bool,
+}
+
+impl Streamed<'_> {
+    /// Read until the buffer holds `want` bytes or the stream ends.
+    fn fill(&mut self, want: usize) -> Result<(), CramError> {
+        while !self.eof && self.buffer.len() < want {
+            let have = self.buffer.len();
+            self.buffer.resize(want, 0);
+            match self.input.read(&mut self.buffer[have..]) {
+                Ok(0) => {
+                    self.buffer.truncate(have);
+                    self.eof = true;
+                }
+                Ok(read) => self.buffer.truncate(have + read),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                    self.buffer.truncate(have)
+                }
+                Err(error) => {
+                    self.buffer.truncate(have);
+                    return Err(CramError::Other {
+                        class: "htsjdk.samtools.util.RuntimeIOException",
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `parse` over the buffer, answering what it answers over the whole rest of the stream.
+    ///
+    /// A parse is accepted when what it consumed lies inside the buffer, which is then a prefix of
+    /// the rest of the stream holding every byte the parse read; otherwise, and on a refusal, the
+    /// buffer grows and the parse runs again, until the stream has nothing left. So a refusal is
+    /// the one the in-memory reader gives over the same bytes, and the consumed bytes are dropped.
+    fn parse<T>(
+        &mut self,
+        parse: impl Fn(&[u8]) -> Result<(T, usize), FileError>,
+    ) -> Result<T, CramError> {
+        // A data container is a few megabytes; a header container, a few kilobytes.
+        let mut want = 1 << 20;
+        loop {
+            self.fill(want)?;
+            match parse(&self.buffer) {
+                Ok((value, end)) if end <= self.buffer.len() || self.eof => {
+                    self.buffer.drain(..end.min(self.buffer.len()));
+                    return Ok(value);
+                }
+                Err(error) if self.eof => return Err(error.into()),
+                Ok((_, end)) => want = end.max(self.buffer.len() * 2),
+                Err(_) => want = self.buffer.len() * 2,
+            }
+        }
+    }
+}
+
 /// A CRAM being read: the header at once, the records a container at a time.
 pub struct CramReader<'a> {
-    cram: &'a [u8],
+    source: Source<'a>,
     major: u8,
-    at: usize,
     finished: bool,
     /// The SAM header text as the file holds it.
     pub header_text: String,
@@ -257,12 +325,29 @@ impl<'a> CramReader<'a> {
     /// `CRAMFileReader`'s constructor: the definition and the SAM header container.
     pub fn new(cram: &'a [u8]) -> Result<Self, CramError> {
         let (definition, block, at) = read_preamble(cram)?;
-        let header_text = header_text(&block)?;
+        Self::opened(Source::Bytes { cram, at }, definition.major, &block)
+    }
+
+    /// [`Self::new`] over a stream, which holds one container at a time rather than the file:
+    /// the same records and the same refusals, at the memory of the largest container.
+    pub fn from_read(input: impl std::io::Read + 'a) -> Result<Self, CramError> {
+        let mut streamed = Streamed {
+            input: Box::new(input),
+            buffer: Vec::new(),
+            eof: false,
+        };
+        let (definition, block) = streamed.parse(|bytes| {
+            read_preamble(bytes).map(|(definition, block, at)| ((definition, block), at))
+        })?;
+        Self::opened(Source::Stream(streamed), definition.major, &block)
+    }
+
+    fn opened(source: Source<'a>, major: u8, block: &[u8]) -> Result<Self, CramError> {
+        let header_text = header_text(block)?;
         let header = htsjdk_bam::reader::parse_header_text(&header_text);
         Ok(Self {
-            cram,
-            major: definition.major,
-            at,
+            source,
+            major,
             finished: false,
             header_text,
             header,
@@ -276,12 +361,28 @@ impl<'a> CramReader<'a> {
         reference: &mut dyn ReferenceSource,
     ) -> Result<Option<Vec<BamRecord>>, CramError> {
         loop {
-            if self.finished || self.at >= self.cram.len() {
-                self.finished = true;
-                return Ok(None);
-            }
-            let (container, end) = read_container(self.cram, self.at, self.major)?;
-            self.at = end;
+            let major = self.major;
+            let container = match &mut self.source {
+                Source::Bytes { cram, at } => {
+                    if self.finished || *at >= cram.len() {
+                        self.finished = true;
+                        return Ok(None);
+                    }
+                    let (container, end) = read_container(cram, *at, major)?;
+                    *at = end;
+                    container
+                }
+                Source::Stream(streamed) => {
+                    if !self.finished {
+                        streamed.fill(1)?;
+                    }
+                    if self.finished || streamed.buffer.is_empty() {
+                        self.finished = true;
+                        return Ok(None);
+                    }
+                    streamed.parse(|bytes| read_container(bytes, 0, major))?
+                }
+            };
             if container.header.is_eof() && container.slices.is_empty() {
                 self.finished = true;
                 return Ok(None);
@@ -300,7 +401,12 @@ impl<'a> CramReader<'a> {
     ) -> Result<Vec<BamRecord>, CramError> {
         let mut records = Vec::new();
         while let Some(batch) = self.next_container(reference)? {
-            records.extend(batch);
+            // Held until the caller is done with all of them, so each record's tags are packed
+            // into the block they are written as. A record taken a container at a time is not.
+            records.extend(batch.into_iter().map(|mut record| {
+                record.tags.compact();
+                record
+            }));
         }
         Ok(records)
     }
@@ -315,7 +421,7 @@ impl<'a> CramReader<'a> {
             .compression_header
             .as_ref()
             .expect("a data container has a compression header");
-        let readers = RecordReaders::new(&compression.encodings)?;
+        let readers = RecordReaders::new(&compression.encodings)?.with_tags(compression);
         let matrix = SubstitutionMatrix::from_encoded(compression.preservation.substitution_matrix);
         let mut out = Vec::new();
 
@@ -810,7 +916,6 @@ fn to_bam_record(
             })?;
         tags.insert(Tag::new(b"RG"), TagValue::Str(group.id.clone()));
     }
-    tags.compact();
     out.tags = tags;
     Ok(out)
 }

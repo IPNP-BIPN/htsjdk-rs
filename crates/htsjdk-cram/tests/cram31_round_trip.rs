@@ -282,3 +282,61 @@ fn a_missing_reference_fails_as_htsjdk_does() {
         "A reference must be supplied (reference sequence SAMSequenceRecord(name=chr1,length=30000,dict_index=0,"
     ));
 }
+
+/// A reader that hands out a few bytes per call, so the stream reader's buffer has to grow.
+struct Trickle<'a>(&'a [u8]);
+
+impl std::io::Read for Trickle<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = out.len().min(self.0.len()).min(7);
+        out[..n].copy_from_slice(&self.0[..n]);
+        self.0 = &self.0[n..];
+        Ok(n)
+    }
+}
+
+#[test]
+fn a_streamed_cram_reads_as_the_bytes_do() {
+    let (header, mut source) = reference();
+    let written = records(&header, &mut source, 25_000);
+    let cram = write_cram(&header, &written, "file:///s.cram", &mut source).unwrap();
+    let (whole_header, whole) = read(&cram, &mut source);
+    for input in [
+        Box::new(&cram[..]) as Box<dyn std::io::Read>,
+        Box::new(Trickle(&cram)),
+    ] {
+        let mut reader = CramReader::from_read(input).unwrap();
+        assert_eq!(reader.header, whole_header);
+        assert_eq!(reader.read_all(&mut source).unwrap(), whole);
+    }
+    // Cut short anywhere, the stream refuses where the bytes do, with the same records before it.
+    for cut in [10, 30, cram.len() / 3, cram.len() / 2, cram.len() - 40] {
+        let short = &cram[..cut];
+        let whole = CramReader::new(short).map(|mut r| {
+            let mut out = Vec::new();
+            let end = loop {
+                match r.next_container(&mut source) {
+                    Ok(Some(batch)) => out.extend(batch),
+                    other => break other.map(|_| ()),
+                }
+            };
+            (out, end)
+        });
+        let streamed = CramReader::from_read(Trickle(short)).map(|mut r| {
+            let mut out = Vec::new();
+            let end = loop {
+                match r.next_container(&mut source) {
+                    Ok(Some(batch)) => out.extend(batch),
+                    other => break other.map(|_| ()),
+                }
+            };
+            (out, end)
+        });
+        assert_eq!(streamed.is_ok(), whole.is_ok(), "cut at {cut}");
+        match (streamed, whole) {
+            (Ok(a), Ok(b)) => assert!(a == b, "cut at {cut}"),
+            (Err(a), Err(b)) => assert_eq!(a, b, "cut at {cut}"),
+            _ => unreachable!(),
+        }
+    }
+}
