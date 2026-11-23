@@ -281,9 +281,11 @@ pub fn write_tag(out: &mut Vec<u8>, tag: Tag, value: &TagValue) -> Result<(), Ta
 ///    them for every tag looked up.
 ///  * `MADE` is set once and never cleared through `&self`. From then on `entries` is the list and
 ///    nothing writes it through `&self`. Before it, `entries` is reached only under `LOCKED`.
-///  * Without `MADE`, `block` is a canonical block or nothing.
-///  * `RAW` says that `block` is the block read, followed by the eight bytes of its prefix hash. It
-///    implies `MADE`, and changes only through `&mut self`.
+///  * Without `MADE` or `RAW`, `block` is a canonical block or nothing.
+///  * `RAW` says that `block` is the block read, followed by the eight bytes of its prefix hash, and
+///    changes only through `&mut self`. Without `MADE` the list is made from that block, as
+///    `BAMRecord` parses its tags on first access: a block that is not canonical, which is what
+///    aligners write, costs one copy and no parse until something looks.
 #[derive(Default)]
 pub struct Tags {
     state: AtomicU8,
@@ -359,9 +361,10 @@ impl Clone for Tags {
                 }),
             };
         }
-        match self.with_block(|block| Box::<[u8]>::from(block)) {
+        // SAFETY: nothing writes this cell through `&self`.
+        match unsafe { &*self.block.get() }.clone() {
             Some(block) => Self {
-                state: AtomicU8::new(self.state.load(Ordering::Relaxed) & !(LOCKED | MADE | RAW)),
+                state: AtomicU8::new(self.state.load(Ordering::Relaxed) & !(LOCKED | MADE)),
                 entries: UnsafeCell::default(),
                 block: UnsafeCell::new(Some(block)),
             },
@@ -391,12 +394,27 @@ impl PartialEq for Tags {
     }
 }
 
-/// FNV-1a, 64 bits: a fixed, seedless hash, so a record hashes the same way when it is read and
-/// when it is written.
+/// A fixed, seedless hash, so a record hashes the same way when it is read and when it is written.
+/// Eight bytes a step, each step a bijection of the state, so a record changed in one word always
+/// hashes differently. It is never stored: only the process that read a record compares it.
 pub(crate) fn prefix_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &b| {
-        (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+    let step = |hash: u64, word: u64| (hash ^ word).wrapping_mul(K).rotate_left(29);
+    let chunks = bytes.chunks_exact(8);
+    let mut tail = [0u8; 8];
+    tail[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+    let hash = chunks.fold(0xcbf2_9ce4_8422_2325 ^ bytes.len() as u64, |hash, word| {
+        step(hash, u64::from_le_bytes(word.try_into().expect("eight")))
+    });
+    let hash = step(hash, u64::from_le_bytes(tail));
+    (hash ^ (hash >> 32)).wrapping_mul(K)
+}
+
+/// Where the first NUL is: std's word-at-a-time `memchr`, which `CStr` goes through.
+fn nul_at(bytes: &[u8]) -> Option<usize> {
+    std::ffi::CStr::from_bytes_until_nul(bytes)
+        .ok()
+        .map(|s| s.count_bytes())
 }
 
 impl Tags {
@@ -423,11 +441,27 @@ impl Tags {
     /// `f` of the canonical block, if the list has not been made yet and the record holds one.
     #[inline]
     fn with_block<T>(&self, f: impl FnOnce(&[u8]) -> T) -> Option<T> {
-        if self.state.load(Ordering::Acquire) & MADE != 0 {
+        if self.state.load(Ordering::Acquire) & (MADE | RAW) != 0 {
             return None;
         }
         // SAFETY: nothing writes this cell through `&self`.
         unsafe { &*self.block.get() }.as_deref().map(f)
+    }
+
+    /// `f` of the block as read and whether it is the kept, non-canonical one, if no list is made.
+    #[inline]
+    fn with_unread<T>(&self, f: impl FnOnce(&[u8], bool) -> T) -> Option<T> {
+        let state = self.state.load(Ordering::Acquire);
+        if state & MADE != 0 {
+            return None;
+        }
+        // SAFETY: nothing writes this cell through `&self`.
+        let block = unsafe { &*self.block.get() }.as_deref()?;
+        Some(if state & RAW != 0 {
+            f(&block[..block.len() - RAW_HASH_SIZE], true)
+        } else {
+            f(block, false)
+        })
     }
 
     /// The list, made from the block the first time it is wanted.
@@ -447,8 +481,15 @@ impl Tags {
             // nothing writes `block` through `&self`.
             unsafe {
                 if let Some(bytes) = &*self.block.get() {
-                    let count = self.state.load(Ordering::Relaxed) >> COUNT_SHIFT;
-                    *self.entries.get() = decode_canonical(bytes, count as usize);
+                    let state = self.state.load(Ordering::Relaxed);
+                    *self.entries.get() = if state & RAW != 0 {
+                        let tags = &bytes[..bytes.len() - RAW_HASH_SIZE];
+                        let (mut read, _) = Self::read_checked(tags)
+                            .expect("a block is kept only once it was walked");
+                        std::mem::take(read.entries.get_mut())
+                    } else {
+                        decode_canonical(bytes, (state >> COUNT_SHIFT) as usize)
+                    };
                 }
             }
             self.state.fetch_or(MADE, Ordering::Release);
@@ -507,7 +548,7 @@ impl Tags {
 
     /// [`Self::get`], leaving no list behind when none has been made.
     pub fn find(&self, tag: Tag) -> Option<Cow<'_, TagValue>> {
-        match self.with_block(|block| find_in_canonical(block, tag)) {
+        match self.with_unread(|block, raw| find_in(block, raw, tag)) {
             Some(value) => value.map(Cow::Owned),
             None => self.get(tag).map(Cow::Borrowed),
         }
@@ -515,7 +556,7 @@ impl Tags {
 
     /// Whether the record holds `tag`, decoding nothing and leaving no list behind.
     pub fn contains(&self, tag: Tag) -> bool {
-        match self.with_block(|block| locate_in_canonical(block, tag).is_some()) {
+        match self.with_unread(|block, raw| locate(block, raw, tag).is_some()) {
             Some(found) => found,
             None => self.get(tag).is_some(),
         }
@@ -526,9 +567,9 @@ impl Tags {
     /// the record's lock, so it must not reach these tags again.
     pub fn with_str<T>(&self, tag: Tag, f: impl FnOnce(Option<&str>) -> T) -> T {
         let mut f = Some(f);
-        let in_block = self.with_block(|block| {
+        let in_block = self.with_unread(|block, raw| {
             let f = f.take().expect("taken once");
-            match locate_in_canonical(block, tag) {
+            match locate(block, raw, tag) {
                 Some((b'Z', at)) => {
                     let mut cursor = Cursor { bytes: block, at };
                     let bytes = cursor
@@ -595,12 +636,16 @@ impl Tags {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.with_block(|_| ()).is_none() && self.entries().is_empty()
+        // A block read is kept only when it is not canonical, which an empty one is.
+        !self.holds_raw() && self.with_block(|_| ()).is_none() && self.entries().is_empty()
     }
 
     /// `SAMRecord.eagerDecode()`, which drops the bytes read: what a reader opened with
     /// `EAGERLY_DECODE` hands over, and what a tool that decodes eagerly writes canonically.
     pub fn forget_raw(&mut self) {
+        if self.holds_raw() {
+            self.entries();
+        }
         let state = self.state.get_mut();
         if *state & MADE != 0 {
             *state &= !RAW;
@@ -629,7 +674,7 @@ impl Tags {
         if !self.holds_raw() {
             return None;
         }
-        // SAFETY: `RAW` implies `MADE`, after which nothing writes this cell through `&self`.
+        // SAFETY: nothing writes this cell through `&self`.
         let kept = unsafe { &*self.block.get() }.as_deref()?;
         let (tags, hash) = kept.split_at(kept.len() - RAW_HASH_SIZE);
         Some((
@@ -683,11 +728,19 @@ impl Tags {
                 count,
             ));
         }
-        let (mut tags, canonical) = Self::read_checked(bytes)?;
-        if !canonical {
-            tags.keep_raw(bytes, prefix_hash(prefix));
+        // Real aligner output lands here: `BAMRecord` keeps such a block unparsed, and so does this,
+        // once a walk that refuses exactly what `read_checked` refuses has been over it.
+        if !walk_checked(bytes)? {
+            let mut kept = Vec::with_capacity(bytes.len() + RAW_HASH_SIZE);
+            kept.extend_from_slice(bytes);
+            kept.extend_from_slice(&prefix_hash(prefix).to_le_bytes());
+            return Ok(Self {
+                state: AtomicU8::new(RAW),
+                entries: UnsafeCell::default(),
+                block: UnsafeCell::new(Some(kept.into_boxed_slice())),
+            });
         }
-        Ok(tags)
+        Ok(Self::read_checked(bytes)?.0)
     }
 
     /// [`Self::read`], and whether writing the list back gives the same bytes: tags strictly
@@ -720,6 +773,49 @@ impl Tags {
         }
         Ok((tags, canonical))
     }
+}
+
+/// [`Tags::read_checked`] without the list: the same refusal at the same byte, else whether the
+/// block is canonical. Only `H` is decoded, for the hex refusals it can raise.
+fn walk_checked(bytes: &[u8]) -> Result<bool, TagReadError> {
+    let mut cursor = Cursor { bytes, at: 0usize };
+    let mut canonical = true;
+    let mut previous: Option<Tag> = None;
+    while cursor.at < cursor.bytes.len() {
+        let tag = Tag(cursor.i16()?);
+        let ty = cursor.u8()?;
+        let fits = match ty {
+            b'B' => {
+                let array_type = cursor.u8()?;
+                let length = cursor.i32()?;
+                let width = match array_type.to_ascii_lowercase() {
+                    b'c' => 1,
+                    b's' => 2,
+                    b'i' | b'f' => 4,
+                    _ => return Err(TagReadError::UnrecognizedArrayType(array_type)),
+                };
+                if length < 0 {
+                    return Err(TagReadError::NegativeArraySize(length));
+                }
+                cursor.take(length as usize * width)?;
+                true
+            }
+            b'Z' => cursor.null_terminated_bytes().map(|_| true)?,
+            b'A' => cursor.u8().map(|_| true)?,
+            b'f' => cursor.f32().map(|_| true)?,
+            b'c' => integer_type(i64::from(cursor.u8()? as i8)) == Ok(ty),
+            b'C' => integer_type(i64::from(cursor.u8()?)) == Ok(ty),
+            b's' => integer_type(i64::from(cursor.i16()?)) == Ok(ty),
+            b'S' => integer_type(i64::from(cursor.i16()?) & 0xFFFF) == Ok(ty),
+            b'i' => integer_type(i64::from(cursor.i32()?)) == Ok(ty),
+            b'I' => integer_type(i64::from(cursor.i32()?) & 0xFFFF_FFFF) == Ok(ty),
+            b'H' => read_single_value(ty, &mut cursor).map(|_| false)?,
+            other => return Err(TagReadError::UnrecognizedType(other)),
+        };
+        canonical &= fits && previous.is_none_or(|p| p < tag);
+        previous = Some(tag);
+    }
+    Ok(canonical)
 }
 
 /// How many tags a block holds, if it certainly reads without a refusal and writes back as the same
@@ -771,7 +867,7 @@ fn canonical_tag_count(bytes: &[u8]) -> Option<usize> {
 /// How many bytes the value of type `ty` at `at` takes, for the types a canonical block can hold.
 fn canonical_value_width(bytes: &[u8], at: usize, ty: u8) -> Option<usize> {
     Some(match ty {
-        b'Z' => bytes.get(at..)?.iter().position(|b| *b == 0)? + 1,
+        b'Z' => nul_at(bytes.get(at..)?)? + 1,
         b'A' | b'c' | b'C' => 1,
         b's' | b'S' => 2,
         b'f' | b'i' | b'I' => 4,
@@ -791,9 +887,10 @@ fn canonical_value_width(bytes: &[u8], at: usize, ty: u8) -> Option<usize> {
     })
 }
 
-/// The value of one tag in a block [`canonical_tag_count`] vouched for, which is ascending.
-fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
-    let (ty, at) = locate_in_canonical(block, wanted)?;
+/// The value of one tag in a block [`canonical_tag_count`] vouched for, or a `raw` one
+/// [`walk_checked`] went over.
+fn find_in(block: &[u8], raw: bool, wanted: Tag) -> Option<TagValue> {
+    let (ty, at) = locate(block, raw, wanted)?;
     let mut cursor = Cursor { bytes: block, at };
     let value = if ty == b'B' {
         read_array(&mut cursor)
@@ -801,6 +898,33 @@ fn find_in_canonical(block: &[u8], wanted: Tag) -> Option<TagValue> {
         read_single_value(ty, &mut cursor)
     };
     Some(value.expect("a block is kept only once it was walked"))
+}
+
+/// [`locate_in_canonical`], or for a `raw` block in any order the *last* tag of that name: the one
+/// `insert` would have left in the list.
+fn locate(block: &[u8], raw: bool, wanted: Tag) -> Option<(u8, usize)> {
+    if !raw {
+        return locate_in_canonical(block, wanted);
+    }
+    let vouched = "a block is kept only once it was walked";
+    let (mut at, mut found) = (0, None);
+    while at < block.len() {
+        let tag = Tag(i16::from_le_bytes([block[at], block[at + 1]]));
+        let ty = block[at + 2];
+        at += 3;
+        if tag == wanted {
+            found = Some((ty, at));
+        }
+        at += match ty {
+            b'Z' | b'H' => nul_at(&block[at..]).expect(vouched) + 1,
+            b'B' if block[at] == b'F' => {
+                let length: [u8; 4] = block[at + 1..at + 5].try_into().expect("four");
+                5 + 4 * u32::from_le_bytes(length) as usize
+            }
+            _ => canonical_value_width(block, at, ty).expect(vouched),
+        };
+    }
+    found
 }
 
 /// The type of one tag in a block [`canonical_tag_count`] vouched for, and where its value starts.
@@ -988,10 +1112,7 @@ impl<'a> Cursor<'a> {
 
     /// The bytes [`Self::null_terminated`] makes its string of.
     fn null_terminated_bytes(&mut self) -> Result<&'a [u8], TagReadError> {
-        let end = self.bytes[self.at..]
-            .iter()
-            .position(|b| *b == 0)
-            .ok_or(TagReadError::UnterminatedString)?;
+        let end = nul_at(&self.bytes[self.at..]).ok_or(TagReadError::UnterminatedString)?;
         let bytes = &self.bytes[self.at..self.at + end];
         self.at += end + 1;
         Ok(bytes)
@@ -1182,6 +1303,100 @@ mod tests {
             }
         }
         assert!(vouched > 1000 && declined > 1000, "{vouched} {declined}");
+    }
+
+    /// The walk refuses what `read_checked` refuses, with the same error, and a block it keeps unread
+    /// answers, clones and writes as the list `read_checked` made.
+    #[test]
+    fn a_block_kept_unread_is_the_block_read_eagerly() {
+        let seeds: [&[u8]; 6] = [
+            b"XAZchr1,+5,1M,0;\0MCZ151M\0PGZbwa\0MQc\x3cASc\x05XSc\x00MDZ151\0NMc\x00RGZrg\0",
+            b"NMc\x01NMc\x02AMc\x05",
+            b"XIi\x05\x00\x00\x00XBBs\x02\x00\x00\x00\x01\x00\xff\xff",
+            b"XHH4865\0XFBF\x01\x00\x00\x00\x00\x00\x80?",
+            b"ZZI\x00\x00\x00\x80AAf\x00\x00\x80?",
+            b"XAAqXUS\x01\x00",
+        ];
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut kept = 0;
+        let mut check = |block: &[u8]| {
+            let eager = Tags::read_checked(block);
+            let walked = walk_checked(block);
+            assert_eq!(walked.as_ref().err(), eager.as_ref().err(), "{block:?}");
+            let Ok((eager, canonical)) = eager else {
+                assert!(Tags::read_lazily(block, b"p").is_err());
+                return;
+            };
+            if canonical_tag_count(block).is_none() {
+                assert_eq!(walked.unwrap(), canonical, "{block:?}");
+            }
+            let lazy = Tags::read_lazily(block, b"p").unwrap();
+            if !canonical {
+                kept += 1;
+                assert!(lazy.holds_raw() && lazy.made().is_none());
+                assert_eq!(lazy.raw_for(prefix_hash(b"p")), Some(block));
+                assert!(!lazy.is_empty());
+            }
+            let missing = Tag::new(b"q?");
+            for (tag, value) in eager.iter().chain([(missing, TagValue::Int(0))].iter()) {
+                let expected = eager.get(*tag);
+                assert_eq!(lazy.contains(*tag), expected.is_some());
+                // By what they print: a NaN is not equal to itself.
+                assert_eq!(
+                    format!("{:?}", lazy.find(*tag).as_deref()),
+                    format!("{expected:?}")
+                );
+                let text = lazy.with_str(*tag, |s| s.map(str::to_owned));
+                match expected {
+                    Some(TagValue::Str(s)) => assert_eq!(text.as_ref(), Some(s)),
+                    _ => assert_eq!(text, None, "{value:?}"),
+                }
+            }
+            assert_eq!(
+                lazy.made().is_none(),
+                !canonical || canonical_tag_count(block).is_some()
+            );
+            for tags in [lazy.clone(), lazy] {
+                assert_eq!(
+                    format!("{:?}", tags.decoded()),
+                    format!("{:?}", eager.decoded())
+                );
+                assert_eq!(tags.binary_size(), eager.binary_size());
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                assert_eq!(tags.write(&mut a).is_ok(), eager.write(&mut b).is_ok());
+                assert_eq!(a, b);
+                assert_eq!(tags.holds_raw(), !canonical);
+                let mut changed = tags.clone();
+                changed.forget_raw();
+                assert!(!changed.holds_raw());
+                assert_eq!(
+                    format!("{:?}", changed.decoded()),
+                    format!("{:?}", eager.decoded())
+                );
+            }
+        };
+        for seed in seeds {
+            check(seed);
+            for _ in 0..50_000 {
+                let mut block = seed.to_vec();
+                for _ in 0..1 + next() % 3 {
+                    let at = next() as usize % block.len();
+                    match next() % 3 {
+                        0 => block[at] = next() as u8,
+                        1 => block.truncate(at.max(1)),
+                        _ => block[at] ^= 1 << (next() % 8),
+                    }
+                }
+                check(&block);
+            }
+        }
+        assert!(kept > 10_000, "{kept}");
     }
 
     /// Readers, writers and clones of one record on several threads, while the list is being made:
