@@ -48,7 +48,7 @@ use crate::genotypes_context::GenotypesContext;
 use crate::header::{HeaderLine, VcfHeader};
 use crate::header_lines::{parse_meta_line, HeaderLineError};
 use crate::header_parse::{read_header_frame, InvalidHeader, VcfVersion};
-use crate::record_parse::{decode_line, RecordError};
+use crate::record_parse::{decode_line_with, InfoTypes, RecordError};
 use crate::variant::VariantContext;
 
 /// What a whole-file read produced.
@@ -287,8 +287,10 @@ pub fn read_vcf_with(text: &str, parsing: GenotypeParsing) -> Result<VcfFile, Re
         .then(|| VcfGenotypeSource::new(header.clone(), codec_version));
     let mut last = None;
     let mut shared_contig: Option<std::sync::Arc<str>> = None;
+    let info_types = InfoTypes::new(&header);
     for line in text.lines().skip(line_number) {
-        let decoded = match decode_line(line, &header, line_number, codec_version) {
+        let decoded = match decode_line_with(line, &header, &info_types, line_number, codec_version)
+        {
             Ok(Some(decoded)) => decoded,
             // A `#` line: no record, no refusal, and no increment of the counter either.
             Ok(None) => {
