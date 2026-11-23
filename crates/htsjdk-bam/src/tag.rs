@@ -686,6 +686,11 @@ impl Tags {
         ))
     }
 
+    /// The kept block's length, if one is held: measuring it costs no list.
+    pub(crate) fn raw_len(&self) -> Option<usize> {
+        self.raw_parts().map(|(tags, _)| tags.len())
+    }
+
     /// The block read, if the record's other variable fields still hash to what they were.
     pub(crate) fn raw_for(&self, prefix_hash: u64) -> Option<&[u8]> {
         self.raw_parts()
