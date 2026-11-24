@@ -54,6 +54,9 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 - **Reading past the end of an external block is `IllegalStateException`** naming the bytes
   asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
   naming it, where 4.2.0 returned what it had.
+- **A SAM record ending in one tab is read, as 5.0.0 reads it**, where the port refused it as an
+  empty field; and a FASTA whose first lines are `;` comments is read (htsjdk 6.0.0 #1922), where
+  5.0.0 refused it (`docs/htsjdk-upstream.md`).
 
 ## [0.4.0] - 2026-10-22
 
