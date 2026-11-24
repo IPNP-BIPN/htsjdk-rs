@@ -158,7 +158,25 @@ fn bcf2_matches_the_oracle() {
         }
     };
 
+    // htsjdk 6.0.0 (#1828), taken by this port: an Integer INFO list with a missing value is
+    // written, its MISSING in place, where 5.0.0 threw unboxing it. `AC=1,.` (Number=A) is the
+    // golden's one such case; its trailing `.` is BCF 2.1 padding, so it reads back as `AC=1`.
+    let mut lifted = 0;
     for (kind, case, bytes) in &inputs {
+        if case == "refuse-nullint" {
+            let text = String::from_utf8(bytes.clone()).expect("utf-8");
+            let Outcome::Bytes(bcf) = to_bcf(&text) else {
+                panic!("{case} is written");
+            };
+            let Outcome::Bytes(vcf) = from_bcf(&bcf, false, "") else {
+                panic!("{case} reads back");
+            };
+            let vcf = String::from_utf8(vcf).expect("utf-8");
+            assert!(vcf.ends_with("\tAC=1\tGT\t0/1\n"), "{vcf}");
+            assert_eq!(from_bcf(&bcf, true, ""), Outcome::Bytes(bcf));
+            lifted += 1;
+            continue;
+        }
         if kind == "read" {
             check(case, "vcf", from_bcf(bytes, false, &source_of(case, "vcf")));
             continue;
@@ -175,6 +193,7 @@ fn bcf2_matches_the_oracle() {
         check(case, "bcf2", from_bcf(&bcf_bytes, true, ""));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(lifted, 1, "5.0.0 refuses a null in an Integer INFO list");
 }
 
 /// Every BCF the golden reads, eager and deferred (decision 0048): the same records and the same
@@ -298,4 +317,65 @@ fn bcf_ft_pass_is_unfiltered_and_names_keep_their_order() {
     assert_eq!(genotypes[0].filters.as_deref(), Some("LowQD;LowGQ"));
     assert_eq!(genotypes[1].filters, None);
     assert!(!genotypes[1].is_filtered());
+}
+
+/// htsjdk 6.0.0 (#1827, #1828): a missing value inside a BCF 2.1 vector stays missing in its
+/// place. 5.0.0 dropped it on read, so `AC=1,.,3` read as `[1, 3]` and the 3 moved onto the second
+/// allele, and cut AD there, so `5,.,7` read as `[5]`; it also skipped it on write. An `int[]`
+/// cannot hold a missing value, so AD with one is absent, as the VCF reader makes it.
+#[test]
+fn bcf_keeps_a_missing_value_inside_a_vector() {
+    let vcf = "##fileformat=VCFv4.2\n\
+               ##INFO=<ID=AC,Number=A,Type=Integer,Description=\"Allele count\">\n\
+               ##INFO=<ID=AF,Number=A,Type=Float,Description=\"Allele frequency\">\n\
+               ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+               ##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"Allelic depths\">\n\
+               ##FORMAT=<ID=XR,Number=R,Type=Integer,Description=\"Per-allele ints\">\n\
+               ##contig=<ID=chr1,length=1000>\n\
+               #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts0\n\
+               chr1\t10\t.\tA\tC,G,T\t50\tPASS\tAC=1,.,3;AF=0.5,.,0.25\tGT:AD:XR\t0/1:5,7,9,1:5,.,7,.\n";
+    let file = read_vcf(vcf).expect("the VCF reads");
+    let mut writer = Bcf2Writer::new(&file.header, false).expect("a writer");
+    let mut bcf = writer.header_bytes();
+    let header_len = bcf.len();
+    bcf.extend(
+        writer
+            .encode(&file.records[0], Origin::VcfCodec)
+            .expect("the record encodes"),
+    );
+
+    let out = |bytes: &[u8]| -> String {
+        let Outcome::Bytes(b) = from_bcf(bytes, false, "") else {
+            panic!("the BCF reads");
+        };
+        String::from_utf8(b).expect("utf-8")
+    };
+    let line = out(&bcf);
+    assert!(
+        line.ends_with("\tAC=1,.,3;AF=0.500,.,0.250\tGT:AD:XR\t0/1:5,7,9,1:5,.,7\n"),
+        "{line}"
+    );
+
+    // AD's second value made MISSING in the written bytes: `5,.,9,1` is a missing value among the
+    // values, so AD is absent. The record's AD vector is the only INT8 `[5, 7, 9, 1]` in it.
+    let mut damaged = bcf.clone();
+    let ad = damaged[header_len..]
+        .windows(5)
+        .position(|w| w == [0x41, 5, 7, 9, 1])
+        .expect("the AD vector")
+        + header_len;
+    damaged[ad + 2] = 0x80;
+    let line = out(&damaged);
+    assert!(line.ends_with("\tGT:XR\t0/1:5,.,7\n"), "{line}");
+    // Only MISSING after a value is BCF 2.1 padding, and is cut there.
+    damaged[ad + 3] = 0x80;
+    damaged[ad + 4] = 0x80;
+    let line = out(&damaged);
+    assert!(line.ends_with("\tGT:AD:XR\t0/1:5:5,.,7\n"), "{line}");
+
+    // Written again from the BCF it reads as, nothing moves.
+    let Outcome::Bytes(again) = from_bcf(&bcf, true, "") else {
+        panic!("the BCF is written again");
+    };
+    assert_eq!(out(&again), out(&bcf));
 }
