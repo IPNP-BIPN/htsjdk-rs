@@ -13,6 +13,13 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **A multi-interval query no longer drops references a file holds out of dictionary order**,
+  diverging from htsjdk 5.0.0 / GATK 4.7.0.0 on purpose, as htsjdk 6.0.0 does (samtools/htsjdk#1877,
+  issue #1271). `MultipleIntervalsFilter` walked one cursor over every interval, so on an indexed
+  BAM or CRAM whose references are grouped but not in `@SQ` order (`samtools cat` of per-contig
+  files) it silently lost the records of every reference that came later in the file than one
+  sorting after it. Each reference now keeps its own cursor, as htslib does. Six `query` golden
+  rows record 5.0.0's loss and are checked as lifted.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
