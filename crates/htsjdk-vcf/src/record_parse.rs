@@ -36,6 +36,8 @@
 //! changes the record.
 
 use crate::allele::Allele;
+use std::collections::HashMap;
+
 use crate::header::{HeaderLine, LineType, VcfHeader};
 use crate::header_parse::VcfVersion;
 use crate::text_transformer::TextTransformer;
@@ -206,6 +208,43 @@ pub fn decode_line(
     line_number: usize,
     version: VcfVersion,
 ) -> Result<Option<DecodedRecord>, RecordError> {
+    decode_line_with(line, header, &InfoTypes::new(header), line_number, version)
+}
+
+/// The declared type of every INFO id in a header, built once per file rather than looked up by
+/// scanning every header line for every INFO key of every record.
+pub struct InfoTypes<'h>(HashMap<&'h str, LineType>);
+
+impl<'h> InfoTypes<'h> {
+    pub fn new(header: &'h VcfHeader) -> Self {
+        let mut types = HashMap::new();
+        for line in &header.lines {
+            if let HeaderLine::Compound {
+                key, id, line_type, ..
+            } = line
+            {
+                // The FIRST declaration of a repeated id wins, as the scan it replaces did.
+                if key == "INFO" {
+                    types.entry(id.as_str()).or_insert(*line_type);
+                }
+            }
+        }
+        Self(types)
+    }
+
+    fn get(&self, key: &str) -> Option<LineType> {
+        self.0.get(key).copied()
+    }
+}
+
+/// [`decode_line`] with the header's [`InfoTypes`] built by the caller, once for many lines.
+pub fn decode_line_with(
+    line: &str,
+    header: &VcfHeader,
+    info_types: &InfoTypes,
+    line_number: usize,
+    version: VcfVersion,
+) -> Result<Option<DecodedRecord>, RecordError> {
     if line.starts_with('#') {
         return Ok(None);
     }
@@ -235,13 +274,13 @@ pub fn decode_line(
 
     // `parseVCFLine` increments the line counter on entry, so every field error below reports one
     // more than the column check above does.
-    parse_vcf_line(&parts, header, line_number + 1, version).map(Some)
+    parse_vcf_line(&parts, info_types, line_number + 1, version).map(Some)
 }
 
 /// `AbstractVCFCodec.parseVCFLine`.
 fn parse_vcf_line(
     parts: &[&str],
-    header: &VcfHeader,
+    info_types: &InfoTypes,
     line_number: usize,
     version: VcfVersion,
 ) -> Result<DecodedRecord, RecordError> {
@@ -274,7 +313,7 @@ fn parse_vcf_line(
 
     let log10_p_error = parse_qual(parts[5])?;
     let filters = parse_filters(parts[6], line_number)?;
-    let attributes = parse_info(parts[7], header, line_number, version)?;
+    let attributes = parse_info(parts[7], info_types, line_number, version)?;
 
     // `END` wins over the reference allele's length, and nothing checks that the result is sane.
     let stop = match attributes.iter().find(|(key, _)| key == "END") {
@@ -387,7 +426,7 @@ fn parse_filters(text: &str, line_number: usize) -> Result<Option<Vec<String>>, 
 /// `AbstractVCFCodec.parseInfo`.
 fn parse_info(
     text: &str,
-    header: &VcfHeader,
+    info_types: &InfoTypes,
     line_number: usize,
     version: VcfVersion,
 ) -> Result<Vec<(String, Value)>, RecordError> {
@@ -423,7 +462,7 @@ fn parse_info(
                 if !raw.contains(',') {
                     let decoded = transformer.decode(raw);
                     // A declared Flag written as `KEY=0` is dropped rather than stored.
-                    if info_type(header, &key) == Some(LineType::Flag) && decoded == "0" {
+                    if info_types.get(&key) == Some(LineType::Flag) && decoded == "0" {
                         continue;
                     }
                     (key, Value::Str(decoded))
@@ -442,7 +481,7 @@ fn parse_info(
                 let key = field.to_string();
                 // A bare key whose header type is not Flag becomes the *string* ".", not a flag
                 // and not an absence.
-                match info_type(header, &key) {
+                match info_types.get(&key) {
                     // `VCFConstants.MISSING_VALUE_v4` itself, not a substring that reads the same.
                     // The two are indistinguishable in every rendering and are *not*
                     // indistinguishable to `getAttributeAsInt`, which tests the reference; see
@@ -472,19 +511,6 @@ fn put(attributes: &mut Vec<(String, Value)>, key: String, value: Value) {
     } else {
         attributes.push((key, value));
     }
-}
-
-/// The declared type of an INFO key, which is what makes a header change a record.
-fn info_type(header: &VcfHeader, key: &str) -> Option<LineType> {
-    header.lines.iter().find_map(|line| match line {
-        HeaderLine::Compound {
-            key: line_key,
-            id,
-            line_type,
-            ..
-        } if line_key == "INFO" && id == key => Some(*line_type),
-        _ => None,
-    })
 }
 
 fn value_text(value: &Value) -> String {
@@ -578,4 +604,27 @@ fn bad_allele_bases_text(allele: &str) -> String {
             .to_string();
     }
     format!("unparsable vcf record with allele {allele}")
+}
+
+#[cfg(test)]
+mod info_types_tests {
+    use crate::reader::read_vcf;
+
+    /// `X` is declared twice; the first declaration, `Flag`, is the one that drops `X=0`.
+    #[test]
+    fn the_first_info_declaration_of_an_id_wins() {
+        let file = read_vcf(
+            "##fileformat=VCFv4.2\n\
+             ##INFO=<ID=X,Number=0,Type=Flag,Description=\"x\">\n\
+             ##INFO=<ID=X,Number=1,Type=Integer,Description=\"x\">\n\
+             ##contig=<ID=chr1,length=240>\n\
+             #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n\
+             chr1\t20\t.\tT\tG\t.\t.\tX=0\n",
+        )
+        .expect("the file reads");
+        assert!(
+            file.records[0].attributes.is_empty(),
+            "a Flag's X=0 is dropped"
+        );
+    }
 }
