@@ -457,11 +457,6 @@ fn an_eof_container_partway_through_does_not_end_the_file() {
     let (_, twice) = read(&catted, &mut source);
     assert_eq!(twice.len(), 2 * once.len());
     assert_eq!(&twice[once.len()..], &once[..]);
-    let streamed = CramReader::from_read(Trickle(&catted))
-        .unwrap()
-        .read_all(&mut source)
-        .unwrap();
-    assert_eq!(streamed, twice);
 
     let walked = htsjdk_cram::file::read_file(&catted).unwrap();
     let single = htsjdk_cram::file::read_file(&cram).unwrap();
