@@ -5,6 +5,10 @@
 //! `new DeflaterFactory().makeDeflater(level, true)` hands back, and in Picard 3.5.0 that is
 //! libdeflate v1.25 (jlibdeflate 0.1.0) for every run: Picard's `USE_JDK_DEFLATER` and GKL only
 //! replace the factory `BlockCompressedOutputStream` uses, and this codec builds its own.
+//!
+//! With `-Dsamjdk.use_libdeflate=false`, which gatk-rs's oracle runs every GATK tool under, the
+//! same factory hands back `java.util.zip.Deflater` instead: stock zlib, which `gkl-deflate`'s
+//! JDK flavour reproduces. [`Deflater`] names the two.
 
 /// A thread's libdeflate compressor, kept between blocks: allocating one costs a few hundred
 /// kilobytes of matchfinder every time, and a tag trial compresses many small blocks.
@@ -49,7 +53,34 @@ thread_local! {
     };
 }
 
-/// `GzipCodec.compress(input, GZIP)` at `level`.
+/// Which deflater `new DeflaterFactory().makeDeflater(level, true)` returns, which decides a
+/// GZIP block's bytes and nothing else.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Deflater {
+    /// jlibdeflate's `LibdeflateDeflater`, htsjdk 5.0.0's default (`samjdk.use_libdeflate=true`).
+    #[default]
+    Libdeflate,
+    /// `java.util.zip.Deflater`, under `samjdk.use_libdeflate=false`.
+    Jdk,
+}
+
+/// `GzipCodec.compress(input, GZIP)` at `level` through `deflater`.
+pub fn compress_with(input: &[u8], level: i32, deflater: Deflater) -> Vec<u8> {
+    match deflater {
+        Deflater::Libdeflate => compress(input, level),
+        Deflater::Jdk => {
+            // `setInput`, `finish`, then `deflate` until finished: one `Z_FINISH` over the whole
+            // input, which for no input at all is zlib's empty final block, `03 00`.
+            let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+            out.extend_from_slice(&gkl_deflate::deflate(input, level as usize));
+            out.extend_from_slice(&crate::compression_header::crc32(input).to_le_bytes());
+            out.extend_from_slice(&(input.len() as u32).to_le_bytes());
+            out
+        }
+    }
+}
+
+/// `GzipCodec.compress(input, GZIP)` at `level`, through libdeflate.
 pub fn compress(input: &[u8], level: i32) -> Vec<u8> {
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
     // jlibdeflate writes nothing at all for no input, so an empty block is the header and a
@@ -131,4 +162,18 @@ pub fn decompress(input: &[u8]) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_jdk_block_inflates_back_and_an_empty_one_is_zlibs_empty_final_block() {
+        let data = b"ACGTACGTACGTNNNNACGTACGT".repeat(40);
+        let block = compress_with(&data, 5, Deflater::Jdk);
+        assert_eq!(decompress(&block).unwrap(), data);
+        let empty = compress_with(&[], 5, Deflater::Jdk);
+        assert_eq!(&empty[10..], &[3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    }
 }

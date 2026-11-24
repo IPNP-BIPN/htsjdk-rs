@@ -153,10 +153,14 @@ impl TrialCompressor {
         }
     }
 
-    fn candidate(index: usize, data: &[u8]) -> (Vec<u8>, CompressionMethod) {
+    fn candidate(
+        index: usize,
+        data: &[u8],
+        gzip: crate::gzip::Deflater,
+    ) -> (Vec<u8>, CompressionMethod) {
         if index == 0 {
             (
-                crate::gzip::compress(data, GZIP_LEVEL),
+                crate::gzip::compress_with(data, GZIP_LEVEL, gzip),
                 CompressionMethod::Gzip,
             )
         } else {
@@ -167,14 +171,18 @@ impl TrialCompressor {
         }
     }
 
-    fn compress(&mut self, data: &[u8]) -> (Vec<u8>, CompressionMethod) {
+    fn compress(
+        &mut self,
+        data: &[u8],
+        gzip: crate::gzip::Deflater,
+    ) -> (Vec<u8>, CompressionMethod) {
         if data.is_empty() {
-            return Self::candidate(self.winner.unwrap_or(0), data);
+            return Self::candidate(self.winner.unwrap_or(0), data, gzip);
         }
         if let Some(winner) = self.winner {
             if self.until_retrial > 0 {
                 self.until_retrial -= 1;
-                return Self::candidate(winner, data);
+                return Self::candidate(winner, data, gzip);
             }
             self.trials_remaining = Self::TRIALS;
             self.winner = None;
@@ -182,7 +190,10 @@ impl TrialCompressor {
                 *size /= 2;
             }
         }
-        let results = [Self::candidate(0, data), Self::candidate(1, data)];
+        let results = [
+            Self::candidate(0, data, gzip),
+            Self::candidate(1, data, gzip),
+        ];
         for (size, result) in self.sizes.iter_mut().zip(&results) {
             *size += result.0.len() as i64;
         }
@@ -734,6 +745,25 @@ fn link_mates(records: &mut [WriteRecord]) {
 /// A slice's bytes, its reference context, start and span, and its block count.
 type SliceBytes = (Vec<u8>, (i32, i32, i32), i32);
 
+/// What a `CRAMEncodingStrategy` and the deflater factory leave to the caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriterOptions {
+    /// The file definition's minor version: 1 for CRAM 3.1, 0 for `setCramVersion(CRAM_v3)`,
+    /// which keeps NORMAL's codecs and changes that byte alone.
+    pub minor_version: u8,
+    /// Which deflater the GZIP blocks get from `new DeflaterFactory()`.
+    pub gzip: crate::gzip::Deflater,
+}
+
+impl Default for WriterOptions {
+    fn default() -> Self {
+        Self {
+            minor_version: MINOR,
+            gzip: crate::gzip::Deflater::Libdeflate,
+        }
+    }
+}
+
 /// The writer's state across containers.
 pub struct CramWriter<'a> {
     header: SamHeader,
@@ -747,6 +777,7 @@ pub struct CramWriter<'a> {
     out: Vec<u8>,
     /// `CRAMBAIIndexer`, when the output is to be indexed.
     index: Option<crate::bai::CramBaiIndexer>,
+    options: WriterOptions,
 }
 
 impl<'a> CramWriter<'a> {
@@ -755,11 +786,21 @@ impl<'a> CramWriter<'a> {
     /// `id` is what `SAMFileWriterFactory` passes, the output's `file:` URI, truncated to twenty
     /// bytes in the file definition.
     pub fn new(header: &SamHeader, id: &str, reference: &'a mut dyn ReferenceSource) -> Self {
+        Self::with_options(header, id, reference, WriterOptions::default())
+    }
+
+    /// [`Self::new`] under `options`.
+    pub fn with_options(
+        header: &SamHeader,
+        id: &str,
+        reference: &'a mut dyn ReferenceSource,
+        options: WriterOptions,
+    ) -> Self {
         let header = stamp_sort_order(header);
         let mut out = Vec::new();
         out.extend_from_slice(b"CRAM");
         out.push(MAJOR);
-        out.push(MINOR);
+        out.push(options.minor_version);
         let mut id_bytes = [0u8; 20];
         let bytes = id.as_bytes();
         let take = bytes.len().min(20);
@@ -770,7 +811,7 @@ impl<'a> CramWriter<'a> {
         let text = header.encode_replacing_version();
         let mut content = (text.len() as i32).to_le_bytes().to_vec();
         content.extend_from_slice(text.as_bytes());
-        let compressed = crate::gzip::compress(&content, GZIP_LEVEL);
+        let compressed = crate::gzip::compress_with(&content, GZIP_LEVEL, options.gzip);
         let block = block_bytes(
             CompressionMethod::Gzip,
             ContentType::FileHeader,
@@ -811,6 +852,7 @@ impl<'a> CramWriter<'a> {
             global_record_counter: 0,
             out,
             index: None,
+            options,
         }
     }
 
@@ -1234,7 +1276,7 @@ impl<'a> CramWriter<'a> {
         if let Some(&(_, _, _, compressor)) = WRITTEN.iter().find(|w| w.2 == id) {
             return Ok(match compressor {
                 Compressor::Gzip => (
-                    crate::gzip::compress(content, GZIP_LEVEL),
+                    crate::gzip::compress_with(content, GZIP_LEVEL, self.options.gzip),
                     CompressionMethod::Gzip,
                 ),
                 Compressor::Rans0 => (
@@ -1282,7 +1324,7 @@ impl<'a> CramWriter<'a> {
             });
         }
         let trial = self.trials.entry(id).or_insert_with(TrialCompressor::new);
-        Ok(trial.compress(content))
+        Ok(trial.compress(content, self.options.gzip))
     }
 }
 
@@ -1712,6 +1754,23 @@ pub fn write_cram_indexed(
         .with_index()
         .write_all_indexed(records)?;
     Ok((cram, index.expect("an indexing writer returns its index")))
+}
+
+/// A whole file under `options`, with its BAI index when `index` is set.
+pub fn write_cram_with(
+    header: &SamHeader,
+    records: &[BamRecord],
+    id: &str,
+    reference: &mut dyn ReferenceSource,
+    options: WriterOptions,
+    index: bool,
+) -> Result<(Vec<u8>, Option<Vec<u8>>), CramError> {
+    let writer = CramWriter::with_options(header, id, reference, options);
+    if index {
+        writer.with_index().write_all_indexed(records)
+    } else {
+        writer.write_all_indexed(records)
+    }
 }
 
 /// A whole file: [`CramWriter::new`] then [`CramWriter::write_all`].
