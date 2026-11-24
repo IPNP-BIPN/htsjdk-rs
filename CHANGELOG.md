@@ -13,14 +13,6 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
-- **`smart_merge_headers` keeps every contig when the inputs' dictionaries differ**, diverging from
-  htsjdk 5.0.0 / GATK 4.7.0.0 on purpose, as htsjdk 6.0.0 does (samtools/htsjdk#1878, issue #1574).
-  Each contig line kept the index it had in its own header, so merging headers whose dictionaries
-  differ left several contigs at one index, and 5.0.0's writer, which keeps one contig per index,
-  silently lost the others. Merged contigs are now numbered in first-seen order, and the same contig
-  met at another index is no longer warned about. Agreeing dictionaries merge as before; the
-  `smart_merge_headers` golden does not move. 6.0.0's Integer/Float promotion is a separate change and
-  is not taken.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
@@ -36,6 +28,14 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
   answer without leaving a list behind, and `Tags::compact` trades a list for its block, which the SAM
   and CRAM readers do. `Tags` is 32 bytes larger inline. Refusals do not move: whatever the walk does
   not vouch for takes the old road, and a differential test holds the two together.
+- **`smart_merge_headers` keeps every contig when the inputs' dictionaries differ**, diverging from
+  htsjdk 5.0.0 / GATK 4.7.0.0 on purpose, as htsjdk 6.0.0 does (samtools/htsjdk#1878, issue #1574).
+  Each contig line kept the index it had in its own header, so merging headers whose dictionaries
+  differ left several contigs at one index, and 5.0.0's writer, which keeps one contig per index,
+  silently lost the others. Merged contigs are now numbered in first-seen order, and the same contig
+  met at another index is no longer warned about. Agreeing dictionaries merge as before; the
+  `smart_merge_headers` golden does not move. 6.0.0's Integer/Float promotion is a separate change and
+  is not taken.
 - **SAM and VCF text no longer grow by doubling**: `read_sam`, `write_sam`, `read_vcf` and `write_vcf`
   size their vectors and strings up front.
 - **CRAM's arithmetic coder and GZIP blocks**: `ByteModel` is one allocation of four bytes per
