@@ -17,9 +17,9 @@
 //! it starts on. A filter that dropped every unmapped read would return five fewer records on this
 //! programme's own corpus, which is exactly what happened.
 //!
-//! The state machine is the other half. The filter walks a **sorted** interval list alongside the
-//! records, advancing its cursor when an interval is behind the record and stopping the whole
-//! iteration when the cursor runs off the end. So `STOP_ITERATION` is not "this record fails", it
+//! The state machine is the other half. The filter walks each reference's **sorted** intervals
+//! alongside that reference's records, advancing its cursor when an interval is behind the record
+//! and stopping the whole iteration when every reference's cursor has run off the end. So `STOP_ITERATION` is not "this record fails", it
 //! is "no later record can pass either", and a port that answered a boolean per record would read
 //! the whole file.
 
@@ -97,44 +97,78 @@ pub fn compare_interval_to_record(
     }
 }
 
-/// `BAMQueryMultipleIntervalsIteratorFilter`: stateful, because its interval cursor only moves
-/// forward.
+/// `BAMQueryMultipleIntervalsIteratorFilter`: stateful, because each reference's interval cursor
+/// only moves forward.
+///
+/// Diverges from htsjdk 5.0.0 on purpose, as htsjdk 6.0.0 does (samtools/htsjdk#1877): 5.0.0
+/// walked one cursor over all the intervals, so in a file whose references are not in dictionary
+/// order (`samtools cat` of per-contig files) it stopped early and dropped every reference that
+/// came later in the file than one sorting after it. Records are now compared with the intervals
+/// of their own reference only, as htslib's multi-region iterator does.
 pub struct MultipleIntervalsFilter {
     intervals: Vec<QueryInterval>,
     contained: bool,
-    interval_index: usize,
+    /// The intervals' distinct references, ascending.
+    references: Vec<i32>,
+    /// For each of `references`, the index of its first interval not yet behind its records, or
+    /// `None` once they all are.
+    next_interval: Vec<Option<usize>>,
+    references_with_intervals_ahead: usize,
 }
 
 impl MultipleIntervalsFilter {
-    /// `contained` is the caller's `queryContained` rather than `queryOverlapping`.
+    /// `intervals` sorted by reference and then start, as [`crate::query::optimize_intervals`]
+    /// sorts them; `contained` is the caller's `queryContained` rather than `queryOverlapping`.
     pub fn new(intervals: Vec<QueryInterval>, contained: bool) -> Self {
+        let first_intervals: Vec<usize> = (0..intervals.len())
+            .filter(|&i| i == 0 || intervals[i].reference_index != intervals[i - 1].reference_index)
+            .collect();
         MultipleIntervalsFilter {
+            references: first_intervals
+                .iter()
+                .map(|&i| intervals[i].reference_index)
+                .collect(),
+            references_with_intervals_ahead: first_intervals.len(),
+            next_interval: first_intervals.into_iter().map(Some).collect(),
             intervals,
             contained,
-            interval_index: 0,
         }
     }
 
     /// `compareToFilter(record)`.
     pub fn compare_to_filter(&mut self, record: &BamRecord) -> FilteringIteratorState {
-        while self.interval_index < self.intervals.len() {
-            match compare_interval_to_record(&self.intervals[self.interval_index], record) {
-                // The interval is behind the record: it can never match again, so drop it.
-                IntervalComparison::Before => self.interval_index += 1,
-                // The interval is ahead: this record misses, later ones may not.
-                IntervalComparison::After => return FilteringIteratorState::ContinueIteration,
-                IntervalComparison::Contained => return FilteringIteratorState::MatchesFilter,
-                IntervalComparison::Overlapping => {
-                    return if self.contained {
-                        FilteringIteratorState::ContinueIteration
-                    } else {
-                        FilteringIteratorState::MatchesFilter
+        let reference = record.reference_index;
+        if let Ok(slot) = self.references.binary_search(&reference) {
+            if let Some(first) = self.next_interval[slot] {
+                for i in first..self.intervals.len() {
+                    if self.intervals[i].reference_index != reference {
+                        break;
                     }
+                    let comparison = compare_interval_to_record(&self.intervals[i], record);
+                    // An interval behind the record is behind every later record of its reference.
+                    if comparison == IntervalComparison::Before {
+                        continue;
+                    }
+                    self.next_interval[slot] = Some(i);
+                    let matches = comparison == IntervalComparison::Contained
+                        || (comparison == IntervalComparison::Overlapping && !self.contained);
+                    return if matches {
+                        FilteringIteratorState::MatchesFilter
+                    } else {
+                        FilteringIteratorState::ContinueIteration
+                    };
                 }
+                // The record is past its reference's last interval.
+                self.next_interval[slot] = None;
+                self.references_with_intervals_ahead -= 1;
             }
         }
-        // Past the last interval: nothing later can match either.
-        FilteringIteratorState::StopIteration
+        // Nothing later can match once every reference's intervals are behind its records.
+        if self.references_with_intervals_ahead == 0 {
+            FilteringIteratorState::StopIteration
+        } else {
+            FilteringIteratorState::ContinueIteration
+        }
     }
 }
 
@@ -218,6 +252,47 @@ mod tests {
         assert_eq!(
             strict.compare_to_filter(&overlapping),
             FilteringIteratorState::ContinueIteration
+        );
+    }
+
+    #[test]
+    fn references_out_of_dictionary_order_do_not_end_the_query() {
+        // samtools/htsjdk#1877: the file holds reference 1's records before reference 0's, as
+        // `samtools cat` of per-contig files writes them. 5.0.0 stopped at the third record.
+        let mut filter = MultipleIntervalsFilter::new(
+            vec![QueryInterval::new(0, 1, 100), QueryInterval::new(1, 1, 100)],
+            false,
+        );
+        let states: Vec<_> = [
+            mapped(1, 10, 5),
+            mapped(1, 150, 5),
+            mapped(0, 10, 5),
+            mapped(0, 150, 5),
+        ]
+        .iter()
+        .map(|record| filter.compare_to_filter(record))
+        .collect();
+        assert_eq!(
+            states,
+            vec![
+                FilteringIteratorState::MatchesFilter,
+                FilteringIteratorState::ContinueIteration,
+                FilteringIteratorState::MatchesFilter,
+                FilteringIteratorState::StopIteration,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reference_without_intervals_is_skipped_until_every_interval_is_behind() {
+        let mut filter = MultipleIntervalsFilter::new(vec![QueryInterval::new(0, 1, 100)], false);
+        assert_eq!(
+            filter.compare_to_filter(&mapped(1, 10, 5)),
+            FilteringIteratorState::ContinueIteration
+        );
+        assert_eq!(
+            filter.compare_to_filter(&mapped(0, 150, 5)),
+            FilteringIteratorState::StopIteration
         );
     }
 }
