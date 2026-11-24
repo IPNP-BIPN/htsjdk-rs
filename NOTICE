@@ -1,0 +1,8 @@
+htsjdk-rs
+Copyright (c) 2026 Benjamin Demaille
+
+This product is a Rust port of htsjdk (https://github.com/samtools/htsjdk),
+Copyright (c) 2009-2024 The Broad Institute, licensed under the MIT License.
+It is not the official htsjdk and is not affiliated with or endorsed by its authors.
+
+The notices of the other projects whose code it ports are in THIRD-PARTY-NOTICES.
