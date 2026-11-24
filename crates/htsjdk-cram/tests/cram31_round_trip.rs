@@ -340,3 +340,155 @@ fn a_streamed_cram_reads_as_the_bytes_do() {
         }
     }
 }
+
+// htsjdk 6.0.0 fixes this port takes on purpose, where 5.0.0 (and so GATK 4.7.0.0) loses data.
+// See docs/htsjdk-upstream.md.
+
+fn one_round_trip(records: &[BamRecord]) -> Vec<BamRecord> {
+    let (header, mut source) = reference();
+    let cram = write_cram(&header, records, "file:///d.cram", &mut source).unwrap();
+    read(&cram, &mut source).1
+}
+
+/// #1837: a mapped read with SEQ `*` keeps its cigar, NM and MD. 5.0.0 stored RL 0, read the
+/// cigar back as `0M` and dropped NM and MD unchecked.
+#[test]
+fn a_mapped_read_without_bases_keeps_its_cigar_nm_and_md() {
+    let mut r = record("noseq", 0, 101, "3S20M2D10M1I5M2S", Vec::new(), 0);
+    r.base_qualities.clear();
+    r.tags.insert(Tag::new(b"NM"), TagValue::Int(4));
+    r.tags
+        .insert(Tag::new(b"MD"), TagValue::Str("12A7^AC15".to_string()));
+    let back = one_round_trip(std::slice::from_ref(&r));
+    let got = &back[0];
+    assert_eq!(got.cigar, r.cigar);
+    assert!(got.read_bases.is_empty());
+    assert!(got.base_qualities.is_empty());
+    assert_eq!(got.tags.get(Tag::new(b"NM")), Some(&TagValue::Int(4)));
+    assert_eq!(got.tags.get(Tag::new(b"MD")), r.tags.get(Tag::new(b"MD")));
+}
+
+/// A record stored with RL 0 and its aligned bases as `N` read features, as 5.0.0 wrote a mapped
+/// SEQ `*` read, reads back with the cigar those features give, as 6.0.0 reads it.
+#[test]
+fn a_zero_read_length_takes_the_query_length_from_its_features() {
+    use htsjdk_cram::read_features::{restore_bases_and_tags, ReadFeature};
+    use htsjdk_cram::substitution_matrix::SubstitutionMatrix;
+    let features = vec![
+        ReadFeature::SoftClip {
+            position: 1,
+            sequence: b"NN".to_vec(),
+        },
+        ReadFeature::ReadBase {
+            position: 4,
+            base: b'N',
+            quality: 0,
+        },
+        ReadFeature::Deletion {
+            position: 6,
+            length: 2,
+        },
+        ReadFeature::ReadBase {
+            position: 7,
+            base: b'N',
+            quality: 0,
+        },
+    ];
+    let matrix = SubstitutionMatrix::from_encoded([0x1b; 5]);
+    let restored = restore_bases_and_tags(&features, true, 1, 0, None, 0, &matrix, true).unwrap();
+    assert_eq!(
+        restored.cigar,
+        htsjdk_bam::text_parse::parse_cigar("2S3M2D2M").unwrap()
+    );
+    let none = restore_bases_and_tags(&[], true, 1, 0, None, 0, &matrix, true).unwrap();
+    assert_eq!(
+        none.cigar,
+        Cigar::default(),
+        "no features: no cigar, not 0M"
+    );
+}
+
+/// #1843 and #1840: unsigned `B` arrays keep their type, and bytes 0x80-0xFF in a read name and a
+/// `Z` tag are kept. 5.0.0 read the arrays back signed and wrote the bytes as `?`.
+#[test]
+fn unsigned_arrays_and_latin1_bytes_survive() {
+    let (_, mut source) = reference();
+    let bases = source.sequence_bases("chr1").unwrap()[99..129].to_vec();
+    let mut r = record("r\u{e9}ad\u{ff}1", 0, 100, "30M", bases, 0);
+    r.tags.insert(
+        Tag::new(b"XC"),
+        TagValue::ByteArray {
+            values: vec![1, -56],
+            unsigned: true,
+        },
+    );
+    r.tags.insert(
+        Tag::new(b"XS"),
+        TagValue::ShortArray {
+            values: vec![7, -2],
+            unsigned: true,
+        },
+    );
+    r.tags.insert(
+        Tag::new(b"XI"),
+        TagValue::IntArray {
+            values: vec![-1, 3],
+            unsigned: true,
+        },
+    );
+    r.tags.insert(
+        Tag::new(b"XZ"),
+        TagValue::Str("caf\u{e9} \u{80}".to_string()),
+    );
+    let back = one_round_trip(std::slice::from_ref(&r));
+    assert_eq!(back[0].read_name, r.read_name);
+    for (tag, value) in r.tags.iter() {
+        assert_eq!(back[0].tags.get(*tag), Some(value), "{tag}");
+    }
+}
+
+/// #1887 and #1891: an unpaired read keeps its 0x2, 0x8, 0x20, 0x40 and 0x80 flags and its PNEXT,
+/// and an RG naming no @RG line is kept. 5.0.0's writer dropped all of them.
+#[test]
+fn an_unpaired_read_keeps_its_mate_flags_pnext_and_an_unknown_rg() {
+    let (_, mut source) = reference();
+    let bases = source.sequence_bases("chr1").unwrap()[199..229].to_vec();
+    let mut r = record("lone", 0, 200, "30M", bases, 0x2 | 0x8 | 0x20 | 0x40 | 0x80);
+    r.mate_alignment_start = 500;
+    r.tags
+        .insert(Tag::new(b"RG"), TagValue::Str("nowhere".to_string()));
+    let back = one_round_trip(std::slice::from_ref(&r));
+    assert_eq!(back[0].flags, r.flags);
+    assert_eq!(back[0].mate_alignment_start, 500);
+    assert_eq!(back[0].mate_reference_index, -1);
+    assert_eq!(
+        back[0].tags.get(Tag::new(b"RG")),
+        Some(&TagValue::Str("nowhere".to_string()))
+    );
+}
+
+/// #1876: a CRAM with an EOF container partway through, as `samtools cat` before 1.13 wrote one,
+/// is read to its end. 5.0.0 stopped at the first EOF container.
+#[test]
+fn an_eof_container_partway_through_does_not_end_the_file() {
+    let (header, mut source) = reference();
+    let written = records(&header, &mut source, 50);
+    let cram = write_cram(&header, &written, "file:///cat.cram", &mut source).unwrap();
+    let (_, _, data_start) = htsjdk_cram::file::read_preamble(&cram).unwrap();
+    let mut catted = cram.clone();
+    catted.extend_from_slice(&cram[data_start..]);
+
+    let (_, once) = read(&cram, &mut source);
+    let (_, twice) = read(&catted, &mut source);
+    assert_eq!(twice.len(), 2 * once.len());
+    assert_eq!(&twice[once.len()..], &once[..]);
+    let streamed = CramReader::from_read(Trickle(&catted))
+        .unwrap()
+        .read_all(&mut source)
+        .unwrap();
+    assert_eq!(streamed, twice);
+
+    let walked = htsjdk_cram::file::read_file(&catted).unwrap();
+    let single = htsjdk_cram::file::read_file(&cram).unwrap();
+    assert_eq!(walked.containers.len(), 2 * single.containers.len());
+}

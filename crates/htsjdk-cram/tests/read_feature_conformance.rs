@@ -251,6 +251,7 @@ fn every_case_produces_the_features_the_reference_produced() {
     let ends: Vec<Vec<&str>> = rows(&corpus, "alignend");
 
     let mut compared = 0;
+    let mut lifted = 0;
     for row in rows(&corpus, "case") {
         let (label, cigar_text, base_text, qual_text, start, count) =
             (row[0], row[1], row[2], row[3], row[4], row[5]);
@@ -266,6 +267,15 @@ fn every_case_produces_the_features_the_reference_produced() {
             &reference,
         )
         .unwrap_or_else(|e| panic!("{label}: {}", e.message()));
+
+        // htsjdk 6.0.0 (#1837), taken by this port: a SEQ "*" read gets no features for its
+        // aligned bases, where 5.0.0 gave each a mismatching N and read the record back as `0M`.
+        // That golden row is 5.0.0's; see docs/htsjdk-upstream.md.
+        if label == "no-sequence" {
+            assert!(mine.is_empty(), "{label}: {mine:?}");
+            lifted += 1;
+            continue;
+        }
 
         assert_eq!(mine.len().to_string(), count, "{label}: feature count");
 
@@ -302,7 +312,11 @@ fn every_case_produces_the_features_the_reference_produced() {
         );
         compared += 1;
     }
-    assert_eq!(compared, 20, "cases compared");
+    assert_eq!(compared, 19, "cases compared");
+    assert_eq!(
+        lifted, 1,
+        "5.0.0 stores a SEQ \"*\" read's aligned bases as N features"
+    );
 }
 
 /// Nothing is stored for a base that matches, and the cigar's claim is not consulted.

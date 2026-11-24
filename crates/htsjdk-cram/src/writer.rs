@@ -19,7 +19,8 @@
 //! * A tag's external block, once created, stays in every later container's slices, empty: the
 //!   encoding map that holds the tag compressors lives as long as the writer.
 //! * `MD` and `NM` are dropped from a mapped record when they equal what a reader would regenerate,
-//!   and kept verbatim when they do not; with no bases or no cigar they are dropped unchecked.
+//!   and kept verbatim when they do not; with no cigar they are dropped unchecked. With no bases
+//!   they are kept, as htsjdk 6.0.0 keeps them (#1837): 5.0.0 dropped them unchecked.
 
 use crate::block::{CompressionMethod, ContentType};
 use crate::compression_header::{crc32, raw_block, raw_block_with_id, CompressionHeader};
@@ -432,6 +433,11 @@ fn to_bam_read_bases(bases: &[u8]) -> Vec<u8> {
         .collect()
 }
 
+/// A char as `ISO_8859_1` encodes it: itself up to 0xFF, `?` past it.
+fn latin1(c: char) -> u8 {
+    u8::try_from(c).unwrap_or(b'?')
+}
+
 /// `ReadTag.getIntegerType`.
 fn integer_type(value: i64) -> Result<u8, CramError> {
     const MAX_INT: i64 = i32::MAX as i64;
@@ -467,10 +473,8 @@ fn integer_type(value: i64) -> Result<u8, CramError> {
 fn tag_of(name: [u8; 2], value: &TagValue) -> Result<Tag, CramError> {
     let (kind, bytes, size): (u8, Vec<u8>, usize) = match value {
         TagValue::Str(s) => {
-            let mut bytes: Vec<u8> = s
-                .chars()
-                .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
-                .collect();
+            // One byte per char, as BAM stores it: htsjdk 6.0.0 (#1840); 5.0.0 wrote 0x80-0xFF as `?`.
+            let mut bytes: Vec<u8> = s.chars().map(latin1).collect();
             let size = s.encode_utf16().count() + 1;
             bytes.push(0);
             (b'Z', bytes, size)
@@ -487,22 +491,23 @@ fn tag_of(name: [u8; 2], value: &TagValue) -> Result<Tag, CramError> {
             let size = bytes.len();
             (kind, bytes, size)
         }
-        TagValue::ByteArray { values, .. } => {
-            let mut bytes = vec![b'c'];
+        // An unsigned array keeps its element type: htsjdk 6.0.0 (#1843); 5.0.0 wrote it signed.
+        TagValue::ByteArray { values, unsigned } => {
+            let mut bytes = vec![if *unsigned { b'C' } else { b'c' }];
             bytes.extend_from_slice(&(values.len() as i32).to_le_bytes());
             bytes.extend(values.iter().map(|&v| v as u8));
             (b'B', bytes, 5 + values.len())
         }
-        TagValue::ShortArray { values, .. } => {
-            let mut bytes = vec![b's'];
+        TagValue::ShortArray { values, unsigned } => {
+            let mut bytes = vec![if *unsigned { b'S' } else { b's' }];
             bytes.extend_from_slice(&(values.len() as i32).to_le_bytes());
             for v in values {
                 bytes.extend_from_slice(&v.to_le_bytes());
             }
             (b'B', bytes, 5 + 2 * values.len())
         }
-        TagValue::IntArray { values, .. } => {
-            let mut bytes = vec![b'i'];
+        TagValue::IntArray { values, unsigned } => {
+            let mut bytes = vec![if *unsigned { b'I' } else { b'i' }];
             bytes.extend_from_slice(&(values.len() as i32).to_le_bytes());
             for v in values {
                 bytes.extend_from_slice(&v.to_le_bytes());
@@ -541,11 +546,13 @@ fn to_write_record(
             bam |= bit;
         }
     };
+    // BF holds every flag bit, an unpaired read's 0x2, 0x40 and 0x80 too, as htsjdk 6.0.0 and
+    // htslib write it (#1887); 5.0.0 dropped them.
     set(paired, 0x1);
-    set(paired && flags & 0x2 != 0, 0x2);
+    set(flags & 0x2 != 0, 0x2);
     set(unmapped, 0x4);
-    set(paired && flags & 0x40 != 0, 0x40);
-    set(paired && flags & 0x80 != 0, 0x80);
+    set(flags & 0x40 != 0, 0x40);
+    set(flags & 0x80 != 0, 0x80);
     set(flags & 0x10 != 0, 0x10);
     set(flags & 0x100 != 0, 0x100);
     set(flags & 0x800 != 0, 0x800);
@@ -553,7 +560,14 @@ fn to_write_record(
     set(flags & 0x400 != 0, 0x400);
 
     let mut cram = CF_DETACHED;
-    let read_length = record.read_bases.len() as i32;
+    let bases_unknown = record.read_bases.is_empty();
+    // htsjdk 6.0.0 (#1837): a mapped SEQ "*" read is stored with its cigar's query length as RL,
+    // as htslib stores it, so its cigar can be rebuilt; 5.0.0 stored 0 and read back `0M`.
+    let read_length = if bases_unknown && !unmapped {
+        record.cigar.read_length() as i32
+    } else {
+        record.read_bases.len() as i32
+    };
     let read_bases = to_bam_read_bases(&record.read_bases);
 
     let (features, end) = if unmapped {
@@ -580,7 +594,7 @@ fn to_write_record(
     };
 
     let mut mate = 0;
-    let (mate_start, mate_reference) = if paired {
+    if paired {
         if flags & 0x8 != 0 {
             mate |= MF_MATE_UNMAPPED;
             bam |= 0x8;
@@ -589,15 +603,21 @@ fn to_write_record(
             mate |= MF_MATE_NEG_STRAND;
             bam |= 0x20;
         }
-        (record.mate_alignment_start, record.mate_reference_index)
     } else {
-        (0, -1)
-    };
-    if record.read_bases.is_empty() {
+        // An unpaired read's mate bits go in BF but not MF, whose mate-reverse bit htslib takes
+        // to mean the read is paired: htsjdk 6.0.0 (#1887).
+        bam |= flags & (0x8 | 0x20);
+    }
+    // Mate fields are stored for an unpaired read too, as htsjdk 6.0.0 and htslib store them.
+    let (mate_start, mate_reference) = (record.mate_alignment_start, record.mate_reference_index);
+    if bases_unknown {
         cram |= CF_UNKNOWN_BASES;
     }
     let mut qualities = record.base_qualities.clone();
-    if !qualities.is_empty() {
+    if bases_unknown {
+        // QUAL is `*` when SEQ is, and a reader reads RL scores for a record that keeps them.
+        qualities.clear();
+    } else if !qualities.is_empty() {
         cram |= CF_QS_PRESERVED_AS_ARRAY;
     } else if !features.is_empty() {
         qualities = vec![MISSING_QUALITY_SCORE; read_length.max(0) as usize];
@@ -617,9 +637,10 @@ fn to_write_record(
         _ => NO_READGROUP_ID,
     };
 
-    // NM and MD: dropped when they are what a reader would regenerate.
-    let mut strip_nm = !unmapped;
-    let mut strip_md = !unmapped;
+    // NM and MD: dropped when they are what a reader would regenerate. Without bases they can't
+    // be, so a SEQ "*" read keeps them, as in htsjdk 6.0.0 and htslib (#1837).
+    let mut strip_nm = !unmapped && !bases_unknown;
+    let mut strip_md = !unmapped && !bases_unknown;
     if let Some(reference) = reference {
         if !unmapped && !record.cigar.is_empty() && !record.read_bases.is_empty() {
             let (md, nm) = calculate_md_nm(
@@ -648,7 +669,12 @@ fn to_write_record(
     let mut tags = Vec::new();
     for (tag, value) in decoded.iter() {
         let name = tag.name();
-        if &name == b"RG" || (strip_nm && &name == b"NM") || (strip_md && &name == b"MD") {
+        // An RG naming no @RG line can't go in the RG series and is kept as an ordinary tag, as
+        // htsjdk 6.0.0 and htslib keep it (#1891); 5.0.0 dropped it.
+        if (&name == b"RG" && read_group != NO_READGROUP_ID)
+            || (strip_nm && &name == b"NM")
+            || (strip_md && &name == b"MD")
+        {
             continue;
         }
         tags.push(tag_of(name, value)?);
@@ -659,12 +685,13 @@ fn to_write_record(
         bam_flags: bam,
         cram_flags: cram,
         mate_flags: mate,
-        read_name: record.read_name.as_bytes().to_vec(),
+        // One byte per char, as BAM stores it: htsjdk 6.0.0 (#1840); 5.0.0 wrote UTF-8.
+        read_name: record.read_name.chars().map(latin1).collect(),
         reference_index: record.reference_index,
         alignment_start: record.alignment_start,
         alignment_end: end,
         read_length,
-        read_bases: if record.read_bases.is_empty() {
+        read_bases: if bases_unknown {
             Vec::new()
         } else {
             read_bases

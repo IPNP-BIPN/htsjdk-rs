@@ -13,6 +13,15 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM keeps data htsjdk 5.0.0 loses**, as htsjdk 6.0.0 does. This diverges from htsjdk 5.0.0 and
+  GATK 4.7.0.0 on purpose: their CRAMs lose these, without a warning, on input GATK accepts. A mapped
+  read with SEQ `*` keeps its CIGAR, NM and MD (RL is the CIGAR's query length; 5.0.0 read back `0M`,
+  and a 5.0.0-written one now reads back with the CIGAR its features give) (#1837). Unsigned `B`
+  arrays keep their type, and bytes 0x80–0xFF in read names and `Z` tags are kept rather than
+  written as `?` or read as U+FFFD (#1843, #1840). The writer keeps an unpaired read's 0x2, 0x8,
+  0x20, 0x40 and 0x80 flags and its PNEXT (#1887), and an `RG` tag naming no `@RG` line (#1891).
+  A CRAM with an EOF container partway through, as `samtools cat` before 1.13 wrote, is read to its
+  end (#1876). Bytes and reads move only for records like these.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
