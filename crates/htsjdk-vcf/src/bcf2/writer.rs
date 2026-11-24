@@ -135,9 +135,10 @@ fn collapse_string_list(strings: &[Option<&str>]) -> Result<String, Bcf2Error> {
         }),
         many => {
             let mut b = String::new();
-            for s in many.iter().flatten() {
+            // htsjdk 6.0.0 (#1828): a null is written as `.` in its place; 5.0.0 skipped it.
+            for s in many {
                 b.push(',');
-                b.push_str(s);
+                b.push_str(s.unwrap_or("."));
             }
             Ok(b)
         }
@@ -276,13 +277,8 @@ impl FieldEncoder {
             },
             _ => {
                 // `for (final int value : values)` unboxes each element, and `.` decoded to null.
+                // htsjdk 6.0.0 (#1828) skips a null; 5.0.0 threw unboxing it.
                 let ints = int_list(value)?;
-                if ints.iter().any(Option::is_none) {
-                    return Err(Bcf2Error::null_pointer(
-                        "Cannot invoke \"java.lang.Integer.intValue()\" because the return value \
-                         of \"java.util.Iterator.next()\" is null",
-                    ));
-                }
                 determine_integer_type_of_list(&ints.into_iter().flatten().collect::<Vec<_>>())?
             }
         };
@@ -322,8 +318,13 @@ impl FieldEncoder {
                 }
             },
             EncoderKind::Float { atomic: false } => {
-                for d in double_list(value)?.into_iter().flatten() {
-                    encoder.encode_raw_float(d)?;
+                // htsjdk 6.0.0 (#1828): a null is written as MISSING in its place; 5.0.0 skipped
+                // it, shifting the values after it.
+                for d in double_list(value)? {
+                    match d {
+                        Some(d) => encoder.encode_raw_float(d)?,
+                        None => encoder.encode_raw_missing_value(t)?,
+                    }
                     count += 1;
                 }
             }
@@ -348,8 +349,12 @@ impl FieldEncoder {
                 _ => return Err(Bcf2Error::class_cast("[I", "java.lang.Integer")),
             },
             EncoderKind::GenericInts => {
-                for i in int_list(value)?.into_iter().flatten() {
-                    encoder.encode_raw_int(i, t)?;
+                // htsjdk 6.0.0 (#1828), as for Float.
+                for i in int_list(value)? {
+                    match i {
+                        Some(i) => encoder.encode_raw_int(i, t)?,
+                        None => encoder.encode_raw_missing_value(t)?,
+                    }
                     count += 1;
                 }
             }

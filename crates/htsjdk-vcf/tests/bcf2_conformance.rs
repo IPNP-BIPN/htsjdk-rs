@@ -158,7 +158,25 @@ fn bcf2_matches_the_oracle() {
         }
     };
 
+    // htsjdk 6.0.0 (#1828), taken by this port: an Integer INFO list with a missing value is
+    // written, its MISSING in place, where 5.0.0 threw unboxing it. `AC=1,.` (Number=A) is the
+    // golden's one such case; its trailing `.` is BCF 2.1 padding, so it reads back as `AC=1`.
+    let mut lifted = 0;
     for (kind, case, bytes) in &inputs {
+        if case == "refuse-nullint" {
+            let text = String::from_utf8(bytes.clone()).expect("utf-8");
+            let Outcome::Bytes(bcf) = to_bcf(&text) else {
+                panic!("{case} is written");
+            };
+            let Outcome::Bytes(vcf) = from_bcf(&bcf, false, "") else {
+                panic!("{case} reads back");
+            };
+            let vcf = String::from_utf8(vcf).expect("utf-8");
+            assert!(vcf.ends_with("\tAC=1\tGT\t0/1\n"), "{vcf}");
+            assert_eq!(from_bcf(&bcf, true, ""), Outcome::Bytes(bcf));
+            lifted += 1;
+            continue;
+        }
         if kind == "read" {
             check(case, "vcf", from_bcf(bytes, false, &source_of(case, "vcf")));
             continue;
@@ -175,4 +193,5 @@ fn bcf2_matches_the_oracle() {
         check(case, "bcf2", from_bcf(&bcf_bytes, true, ""));
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(lifted, 1, "5.0.0 refuses a null in an Integer INFO list");
 }
