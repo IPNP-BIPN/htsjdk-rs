@@ -128,6 +128,22 @@ pub fn java_float_to_string(f: f32) -> String {
     jmath::to_string::float_to_string(f)
 }
 
+/// `SAMRecord.toString()`: the record's SAM line, its reference indices resolved against `names`.
+pub fn sam_string(rec: &BamRecord, names: &[String]) -> String {
+    let name_of = |index: i32| {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| names.get(i))
+            .map_or(NO_ALIGNMENT_REFERENCE_NAME, |n| n.as_str())
+    };
+    write_alignment(
+        rec,
+        name_of(rec.reference_index),
+        name_of(rec.mate_reference_index),
+    )
+    .unwrap_or_default()
+}
+
 /// `SAMTextWriter.writeAlignment`, without the trailing newline.
 ///
 /// `reference_name` and `mate_reference_name` are resolved by the caller from the header, since

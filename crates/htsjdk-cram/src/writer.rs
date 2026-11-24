@@ -1086,12 +1086,7 @@ impl<'a> CramWriter<'a> {
         self.out.extend_from_slice(&body);
         self.global_record_counter += i64::from(record_count);
         if let Some(index) = self.index.as_mut() {
-            index
-                .process_container(entries)
-                .map_err(|message| CramError::Other {
-                    class: "htsjdk.samtools.SAMException",
-                    message,
-                })?;
+            index.process_container(entries)?;
         }
         Ok(())
     }
