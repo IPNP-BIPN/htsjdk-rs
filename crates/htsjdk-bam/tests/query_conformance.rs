@@ -148,6 +148,7 @@ fn every_answer_matches_the_reference() {
     };
 
     let mut rows = 0;
+    let mut lifted = 0;
     for line in dump.lines() {
         let fields: Vec<&str> = line.trim().split('\t').collect();
         match fields.as_slice() {
@@ -209,7 +210,24 @@ fn every_answer_matches_the_reference() {
                 for i in 0..=upto {
                     state = filter.compare_to_filter(&filter_record(i));
                 }
-                assert_eq!(state_name(state), *expected, "filter {contained} {index}");
+                // htsjdk 6.0.0 (#1877, issue #1271), taken by this port: the dump's records
+                // alternate references 0 and 1, so 5.0.0's single cursor sat on reference 1's
+                // interval and missed records 4, 6 and 8, which lie in 0:500-900. Those rows are
+                // 5.0.0's loss; see docs/htsjdk-upstream.md.
+                if ["4", "6", "8"].contains(index) {
+                    assert_eq!(
+                        *expected, "CONTINUE_ITERATION",
+                        "filter {contained} {index}"
+                    );
+                    assert_eq!(
+                        state,
+                        FilteringIteratorState::MatchesFilter,
+                        "filter {contained} {index}"
+                    );
+                    lifted += 1;
+                } else {
+                    assert_eq!(state_name(state), *expected, "filter {contained} {index}");
+                }
             }
             ["bins", start, end, expected] => {
                 let ours = match region_to_bins(
@@ -235,6 +253,10 @@ fn every_answer_matches_the_reference() {
         }
         rows += 1;
     }
+    assert_eq!(
+        lifted, 6,
+        "5.0.0 misses records 4, 6 and 8, contained or not"
+    );
     assert!(rows > 100, "the dump has every pair, not a sample");
     println!("rows={rows}");
 }
