@@ -353,7 +353,9 @@ fn read_name(
     streams: &mut SliceReadStreams<'_>,
 ) -> Result<String, RecordReadError> {
     let bytes = read_byte_array(readers.get("RN")?, streams, None)?;
-    Ok(String::from_utf8_lossy(&bytes).to_string())
+    // One byte per char, as BAM stores names: htsjdk 6.0.0 (#1840). 5.0.0 decoded UTF-8, which
+    // turns a byte 0x80-0xFF htslib wrote into U+FFFD.
+    Ok(bytes.iter().map(|&b| b as char).collect())
 }
 
 /// The read features, whose positions are deltas from the previous one.

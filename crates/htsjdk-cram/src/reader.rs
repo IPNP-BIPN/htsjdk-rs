@@ -270,7 +270,7 @@ impl<'a> CramReader<'a> {
         })
     }
 
-    /// The next container's records, or `None` after the EOF container or the end of the bytes.
+    /// The next container's records, or `None` at the end of the bytes.
     pub fn next_container(
         &mut self,
         reference: &mut dyn ReferenceSource,
@@ -282,10 +282,9 @@ impl<'a> CramReader<'a> {
             }
             let (container, end) = read_container(self.cram, self.at, self.major)?;
             self.at = end;
-            if container.header.is_eof() && container.slices.is_empty() {
-                self.finished = true;
-                return Ok(None);
-            }
+            // An EOF container ends the file only where nothing follows it: `samtools cat` before
+            // 1.13 left one per input, and htslib and htsjdk 6.0.0 (#1876) read past them. 5.0.0
+            // stopped at the first; the loop's own end-of-bytes check now ends the file.
             if container.slices.is_empty() {
                 continue;
             }
@@ -780,8 +779,11 @@ fn to_bam_record(
             bam_flags |= 0x8;
         }
     } else {
+        // An unpaired read keeps its PNEXT and its mate bits, which are only in BF, but never has
+        // an RNEXT: htsjdk 6.0.0 and htslib (#1887). 5.0.0 dropped all three.
         out.mate_reference_index = -1;
-        out.mate_alignment_start = 0;
+        out.mate_alignment_start = record.mate_alignment_start.max(0);
+        bam_flags |= (flags.bam & (0x8 | 0x20)) as u16;
     }
     out.flags = bam_flags;
     out.inferred_insert_size = record.template_size;
@@ -815,8 +817,8 @@ fn to_bam_record(
     Ok(out)
 }
 
-/// `ReadTag.readSingleValue`, then what `setAttribute` keeps of it: an array's unsigned flag is
-/// lost, because `setAttribute(tag, byte[])` stores a signed array.
+/// `ReadTag.readSingleValue`, then what `setAttribute` keeps of it. An array keeps its unsigned
+/// flag, as htsjdk 6.0.0 keeps it (#1843): 5.0.0's `setAttribute(tag, byte[])` stored it signed.
 fn tag_value(kind: u8, bytes: &[u8]) -> Result<TagValue, String> {
     let int = |n: usize| -> Result<&[u8], String> {
         bytes
@@ -870,6 +872,7 @@ fn tag_value(kind: u8, bytes: &[u8]) -> Result<TagValue, String> {
                 let b = bytes.get(1..5).ok_or("java.nio.BufferUnderflowException")?;
                 i32::from_le_bytes([b[0], b[1], b[2], b[3]]).max(0) as usize
             };
+            let unsigned = kind.is_ascii_uppercase();
             let body = &bytes[5..];
             let need = |width: usize| -> Result<&[u8], String> {
                 body.get(..count * width)
@@ -878,21 +881,21 @@ fn tag_value(kind: u8, bytes: &[u8]) -> Result<TagValue, String> {
             match kind.to_ascii_lowercase() {
                 b'c' => TagValue::ByteArray {
                     values: need(1)?.iter().map(|&b| b as i8).collect(),
-                    unsigned: false,
+                    unsigned,
                 },
                 b's' => TagValue::ShortArray {
                     values: need(2)?
                         .chunks(2)
                         .map(|b| i16::from_le_bytes([b[0], b[1]]))
                         .collect(),
-                    unsigned: false,
+                    unsigned,
                 },
                 b'i' => TagValue::IntArray {
                     values: need(4)?
                         .chunks(4)
                         .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                         .collect(),
-                    unsigned: false,
+                    unsigned,
                 },
                 b'f' => TagValue::FloatArray(
                     need(4)?

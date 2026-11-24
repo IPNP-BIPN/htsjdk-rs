@@ -150,17 +150,15 @@ pub struct FileWalk {
     pub containers: Vec<ContainerWalk>,
 }
 
-/// Walk a file: the definition, the SAM header container, then every container until the EOF one.
+/// Walk a file: the definition, the SAM header container, then every container to the end of the
+/// bytes. An EOF container with more bytes after it is walked past, as htsjdk 6.0.0 walks it
+/// (#1876): `samtools cat` before 1.13 left one per input. 5.0.0 stopped at the first.
 pub fn read_file(cram: &[u8]) -> Result<FileWalk, FileError> {
     let (definition, sam_header, mut at) = read_preamble(cram)?;
     let mut containers = Vec::new();
     while at < cram.len() {
         let (container, end) = read_container(cram, at, definition.major)?;
-        let eof = container.header.is_eof();
         containers.push(container);
-        if eof {
-            break;
-        }
         at = end;
     }
 

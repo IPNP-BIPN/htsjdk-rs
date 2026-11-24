@@ -506,11 +506,8 @@ fn distribute(tokens: &[Vec<EncodeToken>], position: usize) -> Vec<Option<Vec<u8
                 put(token.kind, &token.relative_int().to_le_bytes())
             }
             TOKEN_STRING => {
-                let mut text: Vec<u8> = token
-                    .relative_text()
-                    .iter()
-                    .map(|&b| if b.is_ascii() { b } else { b'?' })
-                    .collect();
+                // The name's own bytes, as htsjdk 6.0.0 writes them (#1840); 5.0.0 wrote `?`.
+                let mut text = token.relative_text();
                 text.push(0);
                 put(TOKEN_STRING, &text);
             }
