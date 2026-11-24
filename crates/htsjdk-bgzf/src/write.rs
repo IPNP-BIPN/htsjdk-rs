@@ -244,8 +244,9 @@ fn deflate_on_worker(
 ///
 /// What the queue costs is [`file_pointer`](Self::file_pointer), whose block address is the sum
 /// of every compressed block before it. It drains the queue before answering, so it stays exact,
-/// and a caller that asks for it on every record (an indexing BAM writer) gets serial throughput
-/// back rather than a wrong offset.
+/// and a caller that asks for it on every record gets serial throughput back rather than a wrong
+/// offset. One that only needs the pointers later (an indexing BAM writer) asks for
+/// [`logical_file_pointer`](Self::logical_file_pointer) instead and resolves them at the end.
 pub struct BgzfWriter<W: Write> {
     inner: W,
     buffer: Vec<u8>,
@@ -272,6 +273,14 @@ pub struct BgzfWriter<W: Write> {
     gathered: Vec<GatheredBlock>,
     /// One block as it goes out, so that it is one write rather than four.
     frame: Vec<u8>,
+    /// The start address of every block from the first [`logical_file_pointer`] on, the block
+    /// being filled last; empty until that first call.
+    ///
+    /// shortcut: 8 bytes per block kept until finish (~40 MB per 100 GB BAM); resolve per
+    /// reference if that ever matters.
+    ///
+    /// [`logical_file_pointer`]: Self::logical_file_pointer
+    addresses: Vec<u64>,
 }
 
 /// A block waiting for its worker, and where to send the answer.
@@ -319,6 +328,7 @@ impl<W: Write> BgzfWriter<W> {
             spare: Vec::new(),
             gathered: Vec::new(),
             frame: Vec::new(),
+            addresses: Vec::new(),
         }
     }
 
@@ -471,6 +481,9 @@ impl<W: Write> BgzfWriter<W> {
             .extend_from_slice(&(uncompressed_size as u32).to_le_bytes());
         self.inner.write_all(&self.frame)?;
         self.block_address += total as u64;
+        if !self.addresses.is_empty() {
+            self.addresses.push(self.block_address);
+        }
         Ok(total)
     }
 
@@ -492,6 +505,40 @@ impl<W: Write> BgzfWriter<W> {
             vfp::make_file_pointer(self.block_address, self.buffer.len() as u32)
                 .expect("block offset is bounded by the uncompressed block size"),
         )
+    }
+
+    /// A stand-in for [`file_pointer`](Self::file_pointer) that does not wait for the blocks in
+    /// flight: the block is named by its sequence number rather than its address, and
+    /// [`resolve_file_pointer`](Self::resolve_file_pointer) turns it into the real pointer once
+    /// that block is written.
+    ///
+    /// Block `n` (counted from the first call) is address `2 * (n + 1)`. The map to real pointers
+    /// is strictly increasing, so every comparison a BAM index makes answers the same; the stride
+    /// of two keeps `are_in_same_or_adjacent_blocks` (`b1 + 1 == b2`) false across blocks, as it
+    /// is for byte offsets; and starting at two leaves 0 and -1 free for the index's fillers.
+    pub fn logical_file_pointer(&mut self) -> io::Result<u64> {
+        if self.addresses.is_empty() {
+            self.drain()?;
+            self.addresses.push(self.block_address);
+        }
+        let seq = (self.addresses.len() - 1 + self.in_flight.len()) as u64;
+        Ok(
+            vfp::make_file_pointer(2 * (seq + 1), self.buffer.len() as u32)
+                .expect("block offset is bounded by the uncompressed block size"),
+        )
+    }
+
+    /// The real virtual file pointer for one [`logical_file_pointer`](Self::logical_file_pointer)
+    /// returned, whose block must have been written ([`finish`](Self::finish) writes them all).
+    /// 0 is no block and is returned as it is.
+    pub fn resolve_file_pointer(&self, logical: u64) -> u64 {
+        let block = vfp::block_address(logical);
+        if block == 0 {
+            return logical;
+        }
+        let address = self.addresses[(block / 2 - 1) as usize];
+        vfp::make_file_pointer(address, vfp::block_offset(logical) as u32)
+            .expect("a written block's address fits a virtual file pointer")
     }
 
     /// Flushes any buffered data and appends the BGZF terminator block, as

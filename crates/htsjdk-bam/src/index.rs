@@ -325,14 +325,34 @@ impl BamIndexer {
     }
 
     /// `BAMIndexer.finish`, then `BinaryBAMIndexWriter` over the whole result.
-    pub fn finish(mut self) -> Vec<u8> {
+    pub fn finish(self) -> Vec<u8> {
+        self.finish_resolving(|pointer| pointer)
+    }
+
+    /// [`finish`](Self::finish) for an index built from stand-in pointers, which `resolve` maps to
+    /// the real ones as they are written: `BgzfWriter::resolve_file_pointer`. The map must be
+    /// strictly increasing, so the index's order-dependent choices were already made right.
+    pub fn finish_resolving(mut self, resolve: impl Fn(u64) -> u64) -> Vec<u8> {
         let n_ref = self.sequence_lengths.len() as i32;
         self.advance_to_reference(n_ref);
 
         let mut out = Vec::new();
         out.extend_from_slice(&BAM_INDEX_MAGIC);
         out.extend_from_slice(&n_ref.to_le_bytes());
-        for entry in &self.finished {
+        // -1 is "no pointer" and stays as it is.
+        let resolve = |v: i64| if v == -1 { v } else { resolve(v as u64) as i64 };
+        for entry in &mut self.finished {
+            if let Some((content, meta)) = entry {
+                for chunk in content.bins.iter_mut().flat_map(|bin| &mut bin.chunks) {
+                    chunk.start = resolve(chunk.start as i64) as u64;
+                    chunk.end = resolve(chunk.end as i64) as u64;
+                }
+                for e in &mut content.linear_index {
+                    *e = resolve(*e);
+                }
+                meta.first_offset = resolve(meta.first_offset);
+                meta.last_offset = resolve(meta.last_offset);
+            }
             write_reference(&mut out, entry.as_ref());
         }
         // `writeNoCoordinateRecordCount`, always written, even as zero.
