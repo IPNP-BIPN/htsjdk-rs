@@ -267,7 +267,8 @@ pub fn smart_merge_headers(
                 continue;
             };
 
-            if *line == other {
+            // htsjdk 6.0.0 (#1878): the same contig met at another index is the same line.
+            if *line == other || is_the_same_contig_at_another_index(line, &other) {
                 continue;
             }
             if std::mem::discriminant(line) != std::mem::discriminant(&other) {
@@ -376,11 +377,35 @@ pub fn smart_merge_headers(
         }
     }
 
+    // Diverges from htsjdk 5.0.0 on purpose, as htsjdk 6.0.0 does (samtools/htsjdk#1878, issue
+    // #1574): each contig line kept the index it had in its own header, so headers whose
+    // dictionaries differ left several contigs at one index and the writer's sorted view, which
+    // keeps one contig per index, lost the others. Contigs are renumbered in first-seen order, as
+    // bcftools merge orders them; agreeing dictionaries are unchanged.
+    let mut contig_index = 0;
     let merged = order
         .into_iter()
         .filter_map(|key| map.remove(&key))
+        .map(|line| match line {
+            HeaderLine::Contig { fields, .. } => {
+                contig_index += 1;
+                HeaderLine::Contig {
+                    index: contig_index - 1,
+                    fields,
+                }
+            }
+            other => other,
+        })
         .collect();
     Ok((merged, warnings))
+}
+
+/// Whether two lines are contig lines that differ only in the index they had in their own headers.
+fn is_the_same_contig_at_another_index(line: &HeaderLine, other: &HeaderLine) -> bool {
+    matches!(
+        (line, other),
+        (HeaderLine::Contig { fields: a, .. }, HeaderLine::Contig { fields: b, .. }) if a == b
+    )
 }
 
 #[cfg(test)]
@@ -600,5 +625,61 @@ mod tests {
             .collect();
         // A before B because the first source is read in *sorted* order, not the order given.
         assert_eq!(ids, vec!["A", "B", "C"]);
+    }
+
+    fn contigs(names: &[&str]) -> VcfHeader {
+        header(
+            names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| HeaderLine::contig(name, 1000, index as i32))
+                .collect(),
+        )
+    }
+
+    fn merged_contigs(first: &VcfHeader, second: &VcfHeader) -> (Vec<String>, Vec<Warning>) {
+        let (merged, warnings) = merge_two(first, second).expect("merges");
+        let header = header(merged);
+        let names = header
+            .sorted_lines()
+            .into_iter()
+            .filter_map(|line| match line {
+                HeaderLine::Contig { index, fields } => Some(format!("{}@{index}", fields[0].1)),
+                _ => None,
+            })
+            .collect();
+        (names, warnings)
+    }
+
+    #[test]
+    fn a_subset_dictionary_first_keeps_every_contig_in_the_order_first_seen() {
+        // samtools/htsjdk#1878: 5.0.0 left chr1 at chr3's index 0 and chr2 at chr4's index 1; its
+        // writer's TreeSet kept only chr3 and chr4, and this port's sorted view interleaved them.
+        let (names, warnings) = merged_contigs(
+            &contigs(&["chr3", "chr4"]),
+            &contigs(&["chr1", "chr2", "chr3", "chr4"]),
+        );
+        assert_eq!(names, vec!["chr3@0", "chr4@1", "chr1@2", "chr2@3"]);
+        // chr3 and chr4 met again at other indexes are the same lines, not conflicting ones.
+        assert_eq!(warnings, Vec::new());
+    }
+
+    #[test]
+    fn disjoint_dictionaries_keep_every_contig() {
+        let (names, _) = merged_contigs(&contigs(&["x", "y"]), &contigs(&["p", "q"]));
+        assert_eq!(names, vec!["x@0", "y@1", "p@2", "q@3"]);
+    }
+
+    #[test]
+    fn a_contig_redefined_with_another_length_keeps_the_first() {
+        let second = header(vec![HeaderLine::contig("chr2", 5000, 0)]);
+        let (merged, warnings) = merge_two(&contigs(&["chr1", "chr2"]), &second).expect("merges");
+        let chr2: Vec<String> = merged
+            .iter()
+            .filter(|line| line.render().contains("ID=chr2"))
+            .map(HeaderLine::render)
+            .collect();
+        assert_eq!(chr2, vec!["contig=<ID=chr2,length=1000>"]);
+        assert_eq!(warnings.len(), 1);
     }
 }
