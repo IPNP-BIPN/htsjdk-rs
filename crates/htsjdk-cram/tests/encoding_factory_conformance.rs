@@ -102,6 +102,15 @@ fn every_refusal_is_the_reference_refusal() {
     for row in rows(&corpus, "err") {
         let (type_name, id_name, params, class, message) =
             (row[0], row[1], unhex(row[2]), row[3], row[4]);
+        // The one refusal htsjdk 6.0.0 lifts (#1854) and this port takes: see
+        // docs/htsjdk-upstream.md. 5.0.0 could not read such a slice at all, so no output moves.
+        if (type_name, id_name) == ("BYTE_ARRAY", "HUFFMAN") {
+            let encoding = create_encoding(value_type(type_name), encoding_id(id_name), &params)
+                .expect("htsjdk 6.0.0 reads it");
+            assert_eq!(encoding.java_class(), "CanonicalHuffmanByteArrayEncoding");
+            compared += 1;
+            continue;
+        }
         let error = create_encoding(value_type(type_name), encoding_id(id_name), &params)
             .expect_err("refused");
         assert_eq!(error.java_exception(), class, "{type_name}/{id_name}");
@@ -186,4 +195,57 @@ fn the_null_identifier_is_refused_by_every_type() {
             )
         );
     }
+}
+
+/// htsjdk 6.0.0 #1854: a QS series encoded HUFFMAN. The record reader builds QS as a BYTE_ARRAY
+/// for every slice, so 5.0.0 refused the whole slice whether or not a record kept its qualities.
+/// A LONG series named HUFFMAN still falls through to the refusal.
+#[test]
+fn a_byte_array_series_can_be_huffman() {
+    use htsjdk_cram::codecs::read_byte_array;
+    use htsjdk_cram::external_codecs::{SliceReadStreams, SliceWriteStreams};
+    use htsjdk_cram::huffman::{serialize_byte_params, CanonicalHuffman};
+
+    // One symbol of length 0: the constant series, which writes no bits.
+    let constant = create_encoding(
+        DataSeriesType::ByteArray,
+        EncodingId::Huffman,
+        &serialize_byte_params(&[30], &[0]),
+    )
+    .expect("read");
+    let blocks = SliceWriteStreams::new().finish();
+    let mut streams = SliceReadStreams::new(&blocks);
+    assert_eq!(
+        read_byte_array(&constant, &mut streams, Some(4)).unwrap(),
+        [30u8; 4]
+    );
+
+    // Two symbols of one bit each, read off the core bit stream a symbol at a time.
+    let (symbols, bit_lengths) = ([20i8, 40], [1, 1]);
+    let two = create_encoding(
+        DataSeriesType::ByteArray,
+        EncodingId::Huffman,
+        &serialize_byte_params(&symbols, &bit_lengths),
+    )
+    .expect("read");
+    let huffman = CanonicalHuffman::new(&symbols, &bit_lengths).unwrap();
+    let mut write = SliceWriteStreams::new();
+    for symbol in [40i8, 20, 20, 40, 40] {
+        huffman.write(write.core(), symbol).unwrap();
+    }
+    let blocks = write.finish();
+    let mut streams = SliceReadStreams::new(&blocks);
+    assert_eq!(
+        read_byte_array(&two, &mut streams, Some(5)).unwrap(),
+        [40u8, 20, 20, 40, 40]
+    );
+
+    assert!(matches!(
+        create_encoding(
+            DataSeriesType::Long,
+            EncodingId::Huffman,
+            &[0x01, 0x2a, 0x01, 0x00]
+        ),
+        Err(FactoryError::NotFound { .. })
+    ));
 }
