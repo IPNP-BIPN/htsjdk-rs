@@ -753,6 +753,10 @@ pub struct WriterOptions {
     pub minor_version: u8,
     /// Which deflater the GZIP blocks get from `new DeflaterFactory()`.
     pub gzip: crate::gzip::Deflater,
+    /// The SAM header block's level: `Block.createGZIPFileHeaderBlock` takes a
+    /// `new GZIPExternalCompressor()`, which is at `Defaults.COMPRESSION_LEVEL` rather than the
+    /// profile's, and GATK sets that property to 2.
+    pub header_gzip_level: i32,
 }
 
 impl Default for WriterOptions {
@@ -760,6 +764,7 @@ impl Default for WriterOptions {
         Self {
             minor_version: MINOR,
             gzip: crate::gzip::Deflater::Libdeflate,
+            header_gzip_level: GZIP_LEVEL,
         }
     }
 }
@@ -811,7 +816,8 @@ impl<'a> CramWriter<'a> {
         let text = header.encode_replacing_version();
         let mut content = (text.len() as i32).to_le_bytes().to_vec();
         content.extend_from_slice(text.as_bytes());
-        let compressed = crate::gzip::compress_with(&content, GZIP_LEVEL, options.gzip);
+        let compressed =
+            crate::gzip::compress_with(&content, options.header_gzip_level, options.gzip);
         let block = block_bytes(
             CompressionMethod::Gzip,
             ContentType::FileHeader,
