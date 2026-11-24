@@ -306,7 +306,13 @@ pub fn parse_line_with<F>(
 where
     F: FnMut(&str) -> Option<i32>,
 {
-    let fields: Vec<&str> = line.split('\t').collect();
+    // `StringUtil.split` drops one trailing empty token, so 5.0.0 reads a record ending in a tab
+    // (htsjdk 6.0.0 #1929 restores that after its own regression); a second tab is an empty field.
+    let fields: Vec<&str> = line
+        .strip_suffix('\t')
+        .unwrap_or(line)
+        .split('\t')
+        .collect();
     if fields.len() < NUM_REQUIRED_FIELDS {
         return Err(ParseError::NotEnoughFields(fields.len()));
     }
@@ -446,6 +452,20 @@ mod tests {
     }
 
     const PLAIN: &str = "read1\t99\tchr1\t100\t60\t4M\t=\t300\t250\tACGT\t?@AB";
+
+    /// 5.0.0's `StringUtil.split` drops one trailing empty token, so a record ending in a tab
+    /// reads; a second tab leaves an empty twelfth field.
+    #[test]
+    fn one_trailing_tab_is_dropped_as_htsjdk_drops_it() {
+        let bare = format!("{PLAIN}\t");
+        assert!(parse_line(&bare, resolver).unwrap().tags.is_empty());
+        let tagged = parse_line(&format!("{PLAIN}\tXY:Z:abc\t"), resolver).unwrap();
+        assert_eq!(tagged.tags.len(), 1);
+        assert_eq!(
+            parse_line(&format!("{PLAIN}\t\t"), resolver),
+            Err(ParseError::EmptyField(11))
+        );
+    }
 
     #[test]
     fn a_plain_line_parses_to_its_fields() {
