@@ -37,19 +37,19 @@ does, which is a divergence from the oracle in its own right (see the last secti
 
 | Fix | PR | Class | Port |
 |---|---|---|---|
-| A mapped CRAM read without bases keeps its CIGAR, NM and MD (5.x wrote it back as `0M`) | #1837 | b ⚑ | |
+| A mapped CRAM read without bases keeps its CIGAR, NM and MD (5.x wrote it back as `0M`) | #1837 | b ⚑ | ported as a divergence, #298 |
 | CRAMs written readable by htsjdk 4.x (empty blocks RAW, not GZIP) | #1838 | b | |
 | A CRAM labelled 3.0 holds no 3.1 codecs (FAST profile); valid 3.0 from a default strategy | #1838, #1936 | b | |
 | Mate template lengths derived and stored as htslib does | #1843 | b | |
-| Unsigned `B` arrays keep their type through CRAM; bytes 0x80–0xFF in read names and tags kept | #1843, #1840 | b ⚑ | |
+| Unsigned `B` arrays keep their type through CRAM; bytes 0x80–0xFF in read names and tags kept | #1843, #1840 | b ⚑ | ported as a divergence, #298 |
 | CRAM NM counts every inserted base; bases past the reference end kept with NM and MD | #1850 | b | |
 | CRAM reading matches samtools for MD past the reference end, `cF`, unpaired PNEXT | #1850, #1887 | b | |
-| The CRAM writer keeps an unpaired read's pair/mate flags and PNEXT | #1887 | b ⚑ | |
-| The CRAM writer keeps an `RG` tag that names no `@RG` line | #1891 | b ⚑ | |
+| The CRAM writer keeps an unpaired read's pair/mate flags and PNEXT | #1887 | b ⚑ | ported as a divergence, #298 (not the STRICT check) |
+| The CRAM writer keeps an `RG` tag that names no `@RG` line | #1891 | b ⚑ | ported as a divergence, #298 (not the warning) |
 | The CRAM writer takes an empty quality array as missing qualities | #1850 | b | |
 | The CRAM writer no longer crashes on a slice whose placed reads are all unmapped | #1855 | a | ported, #290: only the spans 5.0.0 threw on (the port wrote them negative); upstream's `max(end, start)` would move spans 5.0.0 writes |
 | `@SQ` lines get an `M5` when a CRAM is written | #1855 | b | |
-| A CRAM with an EOF container partway through is read to its end | #1876 | b ⚑ | |
+| A CRAM with an EOF container partway through is read to its end | #1876 | b ⚑ | ported as a divergence, #298 |
 | CRAM quality scores with a byte-array HUFFMAN encoding can be read | #1854 | a | ported, #290 |
 | CRAM iterators over one seekable stream no longer cut each other short | #1908 | a | no counterpart: each reader owns its bytes |
 | A CRAM opened by `Path` is read through a buffer (speed on NFS) | #1822 | a | not present: the stream reader fills 1 MiB at a time |
@@ -59,8 +59,9 @@ does, which is a divergence from the oracle in its own right (see the last secti
 | A CRAM reader on a stream that can't seek throws `IllegalStateException`, not NPE | #1791 | a | no counterpart: no query on a stream |
 | A failed CRAM reference lookup names the sequence and the files it needs | #1790, #1793 | b | message text |
 | CRAM's rANS tables no longer fill the heap (one cache per writer) | #1815 | a | no counterpart (Java heap) |
-| Multi-interval queries return every record when references are not in dictionary order | #1877 | b ⚑ | |
+| Multi-interval queries return every record when references are not in dictionary order | #1877 | b ⚑ | ported as a divergence, #294; gatk-rs's own copy in `reads.rs` follows in its bump |
 | `queryUnmapped()` on a CSI-indexed BAM no longer seeks into the header | #1809 | b | |
+| A read past 2^29 on a longer reference is refused by the BAI indexer, not a panic (5.0.0's `SAMException`, a 0-byte `.bai`); a read below it on such a reference binned by position | — | a | ported, #297: the port panicked in the writer, `build_bam_index` and the CRAM BAI |
 | A BAM writer that can't build or write its index refuses later writes | #1809 | a | not present: 5.0.0 already fails the write, and the port has no later write |
 | A BAI/TBI metadata bin with the wrong chunk count suggests a CSI | #1821 | b | message text |
 | A sort-order check no longer fails because the caller changed a record it was given | #1844 | a | no counterpart (no asserting iterator) |
@@ -90,16 +91,16 @@ does, which is a divergence from the oracle in its own right (see the last secti
 
 | Fix | PR | Class | Port |
 |---|---|---|---|
-| The BCF writer keeps interior missing values, sizes FORMAT vectors and UTF-8 strings, writes String INFO whatever its comma count, accepts `Flag` with `Number`≠0, masks n_sample to 24 bits | #1828, #1873, #1892 | b ⚑ | |
-| A missing value inside a BCF vector no longer shifts the values after it; one at a 2.2 vector's end is missing, not padding | #1827, #1889 | b ⚑ | |
+| The BCF writer keeps interior missing values, sizes FORMAT vectors and UTF-8 strings, writes String INFO whatever its comma count, accepts `Flag` with `Number`≠0, masks n_sample to 24 bits | #1828, #1873, #1892 | b ⚑ | interior missing values ported as a divergence, #295 (an Integer list with a null threw NPE); the rest unported |
+| A missing value inside a BCF vector no longer shifts the values after it; one at a 2.2 vector's end is missing, not padding | #1827, #1889 | b ⚑ | ported for BCF 2.1 as a divergence, #295; `0x81` as END_OF_VECTOR not ported (5.0.0 writes -127 so) |
 | A BCF GT starting with END_OF_VECTOR reads as a sample without GT | #1894 | b | |
-| INFO values typed by their INFO line, FORMAT values by their FORMAT line | #1879 | b ⚑ | |
+| INFO values typed by their INFO line, FORMAT values by their FORMAT line | #1879 | b ⚑ | not ported: not in the approved list |
 | `getAttributeAs{Int,Double,IntList,DoubleList}` return the default for a missing value | #1849, #1899 | a | ported, #291: 5.0.0 threw `NumberFormatException` |
 | `getAttributeAsBoolean` returns the default for a missing value | #1899 | b | 5.0.0 returns `false` |
 | Spaces in INFO values are accepted | #1825 | a | ported, #291: a tab is still refused (a sites-only line's ninth column) |
 | A malformed genotype is a `TribbleException` naming the sample and key | #1849 | b | message text |
 | `VCFFileReader` opens VCF 3.2/3.3; a 3.x `FILTER=PASS` passes | #1826 | b | |
-| `smartMergeHeaders` promotes Integer/Float either order; keeps every contig when dictionaries differ | #1878 | b ⚑ | |
+| `smartMergeHeaders` promotes Integer/Float either order; keeps every contig when dictionaries differ | #1878 | b ⚑ | contigs ported as a divergence, #296 (the Integer/Float promotion is a 5.0.0 warning, not ported); gatk-rs's `multi_variant.rs` follows in its bump |
 | `sameGenotype` ignoring phase tells polyploid genotypes apart | #1881 | b | |
 | `getStructuralVariantType()` is `DEL` for `SVTYPE=DEL:ME` | #1830 | b | |
 | `hasID()` false for a deserialized record without an ID | #1882 | c | |
@@ -166,26 +167,23 @@ Every class (b) row is one. When GATK and Picard pin htsjdk 6, each becomes a po
 goldens it moves get refrozen against the new oracle. Error and warning text counts as output here,
 because the oracle prints it.
 
-The ⚑ rows repair data loss or a crash on input GATK accepts. They are listed for the maintainer
-to decide, not ported:
+The ⚑ rows repair data loss or a crash on input GATK accepts. The maintainer chose to port the CRAM,
+BCF interior-missing, multi-interval query and contig-merge ones as **deliberate divergences from
+GATK 4.7.0.0 and Picard 3.5.0**: #294, #295, #296 and #298. Each suite row they move is checked as a
+listed divergence with its count, never refrozen. `#1879` (INFO typed by a FORMAT line sharing its
+ID) and the BCF String-INFO and `Flag` writer fixes stay unported.
 
-- **CRAM**: a mapped read without bases comes back `0M`; unsigned `B` arrays and bytes 0x80–0xFF
-  in read names and tags are mangled; an unpaired read's mate flags and PNEXT, and an `RG` that
-  names no `@RG`, are dropped; reading stops silently at an EOF container partway through (the
-  port stops too).
-- **CRAM reference**: one `ReferenceSource` serving CRAMs whose `@SQ` lines are in different
-  orders returns the wrong contig's bases. That's GATK's multi-`-I` case, since
-  `ReadsPathDataSource` shares one factory and checks dictionaries without order. On multi-reference
-  slices the bases, MD and NM come out wrong silently.
-- **BCF**: an interior missing value is dropped and the values after it shift onto the wrong
-  allele (`decodeTypedValue`), or the vector is cut there (`decodeIntArray`). The writer drops
-  interior missing values and refuses some String INFO values. INFO values are typed by a FORMAT
-  line that shares their ID.
-- **Queries**: multi-interval queries miss records when a file's references are not in dictionary
-  order.
-- **Headers**: `smartMergeHeaders` drops contigs when inputs' dictionaries differ.
-- **BGZF**: a record starting just after an empty block that isn't the last is taken for end of
-  file. A 5-record BAM with one after record 2 reads as 2 records under 5.0.0, with no error.
+| Divergence | Inputs it changes | Upstream | htsjdk-rs | Rows lifted |
+|---|---|---|---|---|
+| A mapped CRAM read without bases keeps CIGAR, NM, MD | CRAM with SEQ `*` on mapped reads | #1837 | #298 | `cram_read_features` `no-sequence` (1) |
+| Unsigned `B` arrays and bytes 0x80–0xFF kept in CRAM | CRAM with `B:C/S/I`, non-ASCII names or tags | #1843, #1840 | #298 | — |
+| Unpaired mate flags, PNEXT and orphan `RG` kept in CRAM | CRAM of htslib-style unpaired reads | #1887, #1891 | #298 | — |
+| A CRAM is read past a mid-file EOF container | CRAMs joined by `samtools cat` < 1.13 | #1876 | #298 | — |
+| An interior missing BCF value stays in place | BCF 2.1 with `1,.,3` or AD `5,.,7` | #1827, #1828, #1889 | #295 | `bcf2_conformance` `refuse-nullint` (1); picard-rs `bcf_tools` `refuse-nullint/converter-bcf` |
+| Multi-interval queries keep a cursor per reference | Indexed BAM/CRAM with references out of `@SQ` order | #1877 | #294 | `query_conformance` `filter` rows 4, 6, 8 × 2 (6) |
+| Merged headers keep every contig | VCF inputs whose dictionaries differ | #1878 | #296 | gatk-rs `multi_variant_walker` header rows |
+
+The bump PRs in gatk-rs and picard-rs list the rows they lift there.
 
 ## Where htsjdk-rs already differs from 5.0.0
 
