@@ -206,7 +206,10 @@ pub fn create_read_features(
     reference_bases: &[u8],
 ) -> Result<Vec<ReadFeature>, ReadFeatureError> {
     let manufactured;
-    let bases = if read_bases.is_empty() {
+    // htsjdk 6.0.0 (#1837): for SEQ "*" only clips and insertions get their `N`s; the aligned
+    // bases get no features, and the record's RL and unknown-bases flag stand in for them.
+    let bases_unknown = read_bases.is_empty();
+    let bases = if bases_unknown {
         manufactured = vec![b'N'; cigar.read_length() as usize];
         &manufactured[..]
     } else {
@@ -252,6 +255,7 @@ pub fn create_read_features(
                 }
             }
             // The cigar's own claim is not consulted: all three walk the same comparison.
+            Op::M | Op::X | Op::Eq if bases_unknown => {}
             Op::M | Op::X | Op::Eq => add_mismatch_read_features(
                 reference_bases,
                 alignment_start,
@@ -687,8 +691,14 @@ fn byte_or_default(array: &[u8], at: i32, out_of_bounds: u8) -> u8 {
 }
 
 /// `getAlignmentEnd`: the span recomputed from the features rather than from the cigar.
+///
+/// A read length of 0 takes the query length from the features, as htsjdk 6.0.0 does (#1837).
 pub fn alignment_end(features: &[ReadFeature], alignment_start: i32, read_length: i32) -> i32 {
-    let mut span = read_length;
+    let mut span = if read_length == 0 {
+        query_length_from_features(features)
+    } else {
+        read_length
+    };
     for feature in features {
         match feature {
             ReadFeature::InsertBase { .. } => span -= 1,
@@ -700,6 +710,26 @@ pub fn alignment_end(features: &[ReadFeature], alignment_start: i32, read_length
         }
     }
     alignment_start + span - 1
+}
+
+/// `queryLengthFromFeatures` at htsjdk 6.0.0: where the last feature that consumes read bases
+/// ends, which is the query length of a record stored with RL 0.
+fn query_length_from_features(features: &[ReadFeature]) -> i32 {
+    let mut end = 0;
+    for feature in features {
+        let consumed = match feature {
+            ReadFeature::Substitution { .. }
+            | ReadFeature::ReadBase { .. }
+            | ReadFeature::InsertBase { .. } => 1,
+            ReadFeature::Bases { bases, .. } => bases.len() as i32,
+            ReadFeature::Insertion { sequence, .. } | ReadFeature::SoftClip { sequence, .. } => {
+                sequence.len() as i32
+            }
+            _ => 0,
+        };
+        end = end.max(feature.position() - 1 + consumed);
+    }
+    end
 }
 
 #[cfg(test)]
@@ -940,21 +970,31 @@ mod tests {
         );
     }
 
-    /// A record with no sequence gets Ns, and they mismatch like any other base.
+    /// A record with no sequence gets Ns for its clips and insertions, and no features for its
+    /// aligned bases: htsjdk 6.0.0 (#1837). 5.0.0 gave every aligned base a mismatching N.
     #[test]
-    fn no_sequence_manufactures_ns_that_then_mismatch() {
+    fn no_sequence_manufactures_ns_only_where_a_feature_carries_bases() {
         let manufactured = create_read_features(
-            &cigar("4M"),
+            &cigar("2S4M1I"),
             1,
             &[],
-            Qualities::Present(&[40, 40, 40, 40]),
+            Qualities::Present(&[40; 7]),
             REFERENCE,
         )
         .expect("features");
-        assert_eq!(manufactured.len(), 4);
-        assert!(manufactured
-            .iter()
-            .all(|f| matches!(f, ReadFeature::Substitution { base: b'N', .. })));
+        assert_eq!(
+            manufactured,
+            vec![
+                ReadFeature::SoftClip {
+                    position: 1,
+                    sequence: b"NN".to_vec()
+                },
+                ReadFeature::InsertBase {
+                    position: 7,
+                    base: b'N'
+                },
+            ]
+        );
     }
 
     /// The missing-quality test is an identity test, so an empty array that is not the singleton
@@ -1384,14 +1424,22 @@ pub fn restore_bases_and_tags(
     compute_md_nm: bool,
 ) -> Result<DecodeResult, ReadFeatureError> {
     let whole = |length: i32| Cigar::new(vec![element(length, Op::M)]);
-    if read_length == 0 {
+    // htsjdk 6.0.0 (#1837): a record with RL 0 has no bases. Its cigar consumes none, or it is a
+    // mapped SEQ "*" record written by htsjdk before 6.0.0, which stored RL 0 and every aligned
+    // base as a feature; either way the query length is where the features end. 5.0.0 gave `0M`.
+    if read_length == 0 && features.is_empty() {
         return Ok(DecodeResult {
             read_bases: Vec::new(),
-            cigar: whole(0),
+            cigar: Cigar::default(),
             md: None,
             nm: None,
         });
     }
+    let (unknown_bases, read_length, compute_md_nm) = if read_length == 0 {
+        (true, query_length_from_features(features), false)
+    } else {
+        (unknown_bases, read_length, compute_md_nm)
+    };
     let length = read_length.max(0) as usize;
     let start = alignment_start - 1;
     let offset = if unknown_bases { 0 } else { region_start };
@@ -1708,7 +1756,9 @@ pub fn restore_bases_and_tags(
     } else if read_length > last_pos - 1 {
         elements.push(element(read_length - last_pos + 1, Op::M));
     }
-    let cigar = if elements.is_empty() {
+    let cigar = if elements.is_empty() && read_length == 0 {
+        Cigar::default() // only zero-length operations, which htslib also drops
+    } else if elements.is_empty() {
         whole(read_length)
     } else {
         Cigar::new(elements)
