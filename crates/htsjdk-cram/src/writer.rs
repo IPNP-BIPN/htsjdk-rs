@@ -1107,11 +1107,13 @@ impl<'a> CramWriter<'a> {
         let mut contexts: BTreeSet<i32> = BTreeSet::new();
         let mut start = i32::MAX;
         let mut end = 0;
+        let mut last_start = 0;
         for record in records.iter() {
             if record.is_placed() {
                 contexts.insert(record.reference_index);
                 start = start.min(record.alignment_start);
                 end = end.max(record.alignment_end);
+                last_start = last_start.max(record.alignment_start);
             } else {
                 contexts.insert(UNMAPPED_UNPLACED_ID);
             }
@@ -1121,7 +1123,7 @@ impl<'a> CramWriter<'a> {
             1 => {
                 let id = *contexts.iter().next().unwrap();
                 if id >= 0 {
-                    (id, start, end - start + 1)
+                    (id, start, placed_span(start, end, last_start))
                 } else {
                     (UNMAPPED_UNPLACED_ID, 0, 0)
                 }
@@ -1278,6 +1280,18 @@ impl<'a> CramWriter<'a> {
     }
 }
 
+/// A single-reference slice's span. Only placed reads that are all unmapped (an alignment end of
+/// 0) and start past 1 make `end - start + 1` negative; 5.0.0 then threw on the reference
+/// lookup, and htsjdk 6.0.0 (#1855) spans their starts instead, as this does. Every span 5.0.0
+/// wrote is unchanged: upstream's `max(end, start)` would also move those.
+fn placed_span(start: i32, end: i32, last_start: i32) -> i32 {
+    if end < start - 1 {
+        last_start - start + 1
+    } else {
+        end - start + 1
+    }
+}
+
 /// `Slice.getBAIEntries` for a slice being written, whose counts its constructor kept.
 fn bai_entries(
     records: &[WriteRecord],
@@ -1298,13 +1312,14 @@ fn bai_entries(
         landmark_index,
     };
     let mut contexts: BTreeSet<i32> = BTreeSet::new();
-    let (mut start, mut end) = (i32::MAX, 0);
+    let (mut start, mut end, mut last_start) = (i32::MAX, 0, 0);
     let (mut mapped, mut unmapped, mut unplaced) = (0, 0, 0);
     for r in records {
         if r.is_placed() {
             contexts.insert(r.reference_index);
             start = start.min(r.alignment_start);
             end = end.max(r.alignment_end);
+            last_start = last_start.max(r.alignment_start);
             if r.is_unmapped() {
                 unmapped += 1;
             } else {
@@ -1333,7 +1348,10 @@ fn bai_entries(
         if id < 0 {
             return vec![entry(UNMAPPED_UNPLACED_ID, counts(0, 0))];
         }
-        return vec![entry(id, counts(start, end - start + 1))];
+        return vec![entry(
+            id,
+            counts(start, placed_span(start, end, last_start)),
+        )];
     }
     // `getMultiRefAlignmentSpans` and `mergeRecordSpan`.
     let mut spans: std::collections::BTreeMap<i32, Span> = std::collections::BTreeMap::new();
