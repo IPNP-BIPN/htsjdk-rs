@@ -405,7 +405,9 @@ fn parse_info(
     if text == MISSING_VALUE {
         return Ok(attributes);
     }
-    if text.contains('\t') || text.contains(' ') {
+    // htsjdk 6.0.0 (#1825, issue #1667) reads a space in INFO, as this does. A tab stays refused:
+    // it is a sites-only line's ninth column folded into INFO.
+    if text.contains('\t') {
         return Err(generate_exception(
             line_number,
             &format!(

@@ -375,6 +375,10 @@ fn every_record_decodes_as_the_reference_decodes_it() {
                     "{label}: the port skipped the line, the golden did not"
                 );
             }
+            // htsjdk 6.0.0 (#1825, issue #1667), taken by this port: 5.0.0 refused a space in INFO.
+            Ok(Some(decoded)) if *label == "info-with-space" => {
+                assert_eq!(decoded.variant.attributes[0].0, "DP");
+            }
             Ok(Some(decoded)) => {
                 let ours = render(&decoded.variant, &header.samples);
                 let expected = row(&text, &format!("rec\t{label}\t")).unwrap_or_else(|| {
