@@ -79,6 +79,9 @@ impl Param {
             delta_context_table: Vec::new(),
         };
         if param.do_qmap {
+            // Indexed as the Java is: a stream claiming more than 256 symbols reads 256 bytes and then
+            // fails here, where an iterator over the map would stop short without failing.
+            #[allow(clippy::needless_range_loop)]
             for i in 0..max_symbols as usize {
                 param.quality_map[i] = u32::from(input.byte()?);
             }
@@ -86,8 +89,8 @@ impl Param {
         if param.quality_context_bits > 0 && param.do_qtab {
             read_array(input, &mut param.quality_context_table, 256)?;
         } else {
-            for i in 0..256 {
-                param.quality_context_table[i] = i as u32;
+            for (i, entry) in param.quality_context_table.iter_mut().enumerate().take(256) {
+                *entry = i as u32;
             }
         }
         if param.do_pos {

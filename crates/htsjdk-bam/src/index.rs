@@ -207,9 +207,9 @@ impl BinningIndexBuilder {
             self.largest_index_seen = end_window as i64;
         }
 
-        for win in start_window..=end_window {
-            if self.linear[win] == UNINITIALIZED_WINDOW || chunk_start < self.linear[win] {
-                self.linear[win] = chunk_start;
+        for window in &mut self.linear[start_window..=end_window] {
+            if *window == UNINITIALIZED_WINDOW || chunk_start < *window {
+                *window = chunk_start;
             }
         }
     }
@@ -659,9 +659,9 @@ mod tests {
 
         assert_eq!(content.linear_index.len(), 6);
         assert_eq!(content.linear_index[0], vfp(0, 0) as i64);
-        for w in 1..=4 {
+        for (w, &offset) in content.linear_index.iter().enumerate().skip(1).take(4) {
             assert_eq!(
-                content.linear_index[w],
+                offset,
                 vfp(0, 0) as i64,
                 "window {w} must inherit, not be zero or -1"
             );

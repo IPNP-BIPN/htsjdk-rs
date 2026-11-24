@@ -24,7 +24,7 @@ echo "== cross-building the port for linux/amd64"
 # unifies FEATURES across it too, which pulled `gkl-deflate/isal` into a build with no assembler
 # and failed in `isal-sys`'s configure. Each package builds with the features it declares, plus
 # `mimalloc`: the benches then allocate through mimalloc, the global allocator picard-rs links.
-docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.97 \
+docker run --rm --platform linux/amd64 -v "$PWD":/src -v "$OUT":/out -w /src rust:1.98 \
   bash -c 'set -e
     cargo build --release -p htsjdk-bgzf --features mimalloc --bin bgzf-bench --target-dir /out/amd64 2>&1 | tail -1
     cargo build --release -p htsjdk-bam --features mimalloc --bin record-bench --bin bam-ops-bench \

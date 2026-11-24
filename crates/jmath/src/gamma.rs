@@ -64,6 +64,8 @@ const INV_GAMMA1P_M1_Q2: f64 = 0.5464213086042296536016E-01;
 const INV_GAMMA1P_M1_Q3: f64 = 0.4956830093825887312020E-02;
 const INV_GAMMA1P_M1_Q4: f64 = 0.2692369466186361192876E-03;
 const INV_GAMMA1P_M1_C: f64 = -0.422784335098467139393487909917598E+00;
+// commons-math3's own literal, kept as written rather than swapped for `EULER_GAMMA`.
+#[allow(clippy::approx_constant)]
 const INV_GAMMA1P_M1_C0: f64 = 0.577215664901532860606512090082402E+00;
 const INV_GAMMA1P_M1_C1: f64 = -0.655878071520253881077019515145390E+00;
 const INV_GAMMA1P_M1_C2: f64 = -0.420026350340952355290039348754298E-01;
@@ -538,6 +540,8 @@ pub fn erf_inv(x: f64) -> f64 {
 }
 
 /// `Gamma.GAMMA`, the Euler-Mascheroni constant as commons-math3 transcribes it.
+// commons-math3's own literal, kept as written rather than swapped for `EULER_GAMMA`.
+#[allow(clippy::approx_constant)]
 const GAMMA: f64 = 0.577_215_664_901_532_9;
 /// `Gamma.S_LIMIT`, below which `digamma` uses "method 5 from Bernardo AS103".
 const S_LIMIT: f64 = 1e-5;

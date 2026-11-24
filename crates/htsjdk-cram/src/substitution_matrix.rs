@@ -245,8 +245,8 @@ impl SubstitutionMatrix {
         for reference in BASES {
             out.push(reference as char);
             out.push(':');
-            for code in 0..CODES_PER_BASE {
-                out.push(self.base_by_code[reference as usize][code] as char);
+            for &base in &self.base_by_code[reference as usize][..CODES_PER_BASE] {
+                out.push(base as char);
             }
             out.push('\t');
         }
@@ -254,8 +254,8 @@ impl SubstitutionMatrix {
             let lower = reference.to_ascii_lowercase();
             out.push(lower as char);
             out.push(':');
-            for code in 0..CODES_PER_BASE {
-                out.push(self.base_by_code[lower as usize][code] as char);
+            for &base in &self.base_by_code[lower as usize][..CODES_PER_BASE] {
+                out.push(base as char);
             }
             out.push('\t');
         }
