@@ -48,6 +48,16 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Fixed
 
+- **A read past 2^29 on a long reference is refused as 5.0.0 refuses it, not a panic.** Indexing
+  it overran the 32770-window linear index. `BamWriter::write` now returns `WriteError::Index`
+  (`SAMException: Exception when processing alignment for BAM index <record>`) with the record
+  written, indexes nothing more and finishes with an empty index, which is 5.0.0's 0-byte `.bai`;
+  `build_bam_index` returns `BuildIndexError::Index` (`Exception creating BAM index for record
+  <record>`); the CRAM BAI indexer returns `ArrayIndexOutOfBoundsException: Index 33569 out of
+  bounds for length 32770`. `BamIndexer::process` computes the bin itself and returns the refusal,
+  so it lost its `index_bin` argument.
+- **A read on a reference longer than 2^29 is indexed in its position's bin**, as `BAMIndexer`
+  does, where the port indexed it in bin 0, the value the record's own bin field carries.
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.
