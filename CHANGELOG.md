@@ -13,6 +13,14 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **BCF: a missing value inside a vector stays missing in its place** (htsjdk 6.0.0 #1827, #1828),
+  a deliberate divergence from htsjdk 5.0.0 / GATK 4.7.0.0, which lose data there. Reading, 5.0.0
+  dropped it, so `AC=1,.,3` read as `[1, 3]` and the 3 moved onto the second allele, and cut AD/PL
+  at it, so AD `5,.,7` read as `[5]`; AD/PL with a missing value among the values is now absent, as
+  the VCF reader makes it. Writing, a Float, Integer or String list writes MISSING (or `.`) in
+  place where 5.0.0 skipped it, and an Integer INFO list with a missing value is written where
+  5.0.0 threw `NullPointerException`. BCF 2.1 only: trailing MISSING is still padding, and
+  END_OF_VECTOR is not recognised, since 5.0.0 writes -127 as the INT8 byte 6.0.0 reads as it.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:

@@ -114,13 +114,18 @@ impl<'a> Decoder<'a> {
         if size == 1 {
             return self.decode_single_value(t);
         }
+        // htsjdk 6.0.0 (#1827): a MISSING among the values stays a null in its place; only the
+        // trailing ones are BCF 2.1 padding. 5.0.0 dropped them all, shifting Number=A/R values.
         let mut values = Vec::new();
+        let mut last_value = 0;
         for _ in 0..size.max(0) {
-            match self.decode_single_value(t)? {
-                Typed::Null => continue,
-                v => values.push(v),
+            let v = self.decode_single_value(t)?;
+            if !matches!(v, Typed::Null) {
+                last_value = values.len() + 1;
             }
+            values.push(v);
         }
+        values.truncate(last_value);
         Ok(if values.is_empty() {
             Typed::Null
         } else {
@@ -201,8 +206,10 @@ impl<'a> Decoder<'a> {
         }
     }
 
-    /// `decodeIntArray(size, type)`: `null` when the first value is missing, cut at the first
-    /// missing value after it.
+    /// `decodeIntArray(size, type)` as htsjdk 6.0.0 (#1827) reads BCF 2.1: `null` when the first
+    /// value is missing, cut where only MISSING padding follows, and `null` for a missing value
+    /// among the values, which an `int[]` cannot hold (the VCF reader's `10,.,5`). 5.0.0 cut the
+    /// vector there, so AD `5,.,7` read as `[5]`.
     fn decode_int_array(&mut self, size: i32, t: Bcf2Type) -> Result<Option<Vec<i32>>, Bcf2Error> {
         if size == 0 {
             return Ok(None);
@@ -219,10 +226,11 @@ impl<'a> Decoder<'a> {
         for i in 1..size {
             let v = self.decode_int(t)?;
             if v == t.missing_bytes() {
+                let mut padding = true;
                 for _ in i + 1..size {
-                    self.decode_int(t)?;
+                    padding &= self.decode_int(t)? == t.missing_bytes();
                 }
-                return Ok(Some(ints));
+                return Ok(padding.then_some(ints));
             }
             ints.push(v);
         }
