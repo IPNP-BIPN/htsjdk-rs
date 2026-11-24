@@ -51,12 +51,12 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.
-- **Reading past the end of an external block is `IllegalStateException`** naming the bytes
-  asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
-  naming it, where 4.2.0 returned what it had.
 - **A SAM record ending in one tab is read, as 5.0.0 reads it**, where the port refused it as an
   empty field; and a FASTA whose first lines are `;` comments is read (htsjdk 6.0.0 #1922), where
   5.0.0 refused it (`docs/htsjdk-upstream.md`).
+- **Reading past the end of an external block is `IllegalStateException`** naming the bytes
+  asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
+  naming it, where 4.2.0 returned what it had.
 
 ## [0.4.0] - 2026-10-22
 
