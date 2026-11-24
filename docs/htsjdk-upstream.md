@@ -179,11 +179,14 @@ ID) and the BCF String-INFO and `Flag` writer fixes stay unported.
 | Unsigned `B` arrays and bytes 0x80–0xFF kept in CRAM | CRAM with `B:C/S/I`, non-ASCII names or tags | #1843, #1840 | #298 | — |
 | Unpaired mate flags, PNEXT and orphan `RG` kept in CRAM | CRAM of htslib-style unpaired reads | #1887, #1891 | #298 | — |
 | A CRAM is read past a mid-file EOF container | CRAMs joined by `samtools cat` < 1.13 | #1876 | #298 | — |
-| An interior missing BCF value stays in place | BCF 2.1 with `1,.,3` or AD `5,.,7` | #1827, #1828, #1889 | #295 | `bcf2_conformance` `refuse-nullint` (1); picard-rs `bcf_tools` `refuse-nullint/converter-bcf` |
+| An interior missing BCF value stays in place | BCF 2.1 with `1,.,3` or AD `5,.,7` | #1827, #1828, #1889 | #295 | `bcf2_conformance` `refuse-nullint` (1); picard-rs `bcf_tools` `refuse-nullint` × 6 steps, `bcf_partial` `late-missing/bcf` (1) |
 | Multi-interval queries keep a cursor per reference | Indexed BAM/CRAM with references out of `@SQ` order | #1877 | #294 | `query_conformance` `filter` rows 4, 6, 8 × 2 (6) |
-| Merged headers keep every contig | VCF inputs whose dictionaries differ | #1878 | #296 | gatk-rs `multi_variant_walker` header rows |
+| Merged headers keep every contig | VCF inputs whose dictionaries differ | #1878 | #296 | gatk-rs `multi_variant_walker` `header` of `dictionaries-union` and `dictionaries-union-reversed` (2) |
 
-The bump PRs in gatk-rs and picard-rs list the rows they lift there.
+gatk-rs keeps its own copies of two of these paths, and its bump adopts both: the interval filter in
+`gatk-engine/src/reads.rs` and the contig drop in `gatk-tools/src/multi_variant.rs`. The bump PRs
+(gatk-rs#1527, picard-rs#485) list the rows they lift. A trailing `.` in a BCF 2.1 vector is
+padding, as in 6.0.0, so `AC=1,.` reads back as `AC=1`.
 
 ## Where htsjdk-rs already differs from 5.0.0
 
