@@ -164,11 +164,11 @@ impl<W: Write> BamWriter<W> {
     /// This must be enabled before the first record: the index records the virtual file
     /// pointer around every record, and there is no way to recover the ones already written.
     ///
-    /// Blocks are then deflated on the writing thread: the pointer asked for around every record
-    /// waits for every block in flight, so a worker would only add its wake-up to each block.
+    /// The index is built from [`BgzfWriter::logical_file_pointer`], which does not wait for the
+    /// blocks in flight, and resolved to real pointers at [`Self::finish_with_index`], so blocks
+    /// are still deflated in parallel.
     pub fn with_index(mut self) -> Self {
         self.indexer = Some(BamIndexer::new(self.reference_lengths.clone()));
-        self.bgzf = self.bgzf.parallel(false);
         self
     }
 
@@ -206,12 +206,12 @@ impl<W: Write> BamWriter<W> {
         // exactly this record's bytes. Taking it after the write for the start, or including
         // the next record, shifts every chunk in the index.
         //
-        // Only an indexing writer asks: a pointer waits for every block in flight, so asking on
-        // every record would deflate the whole file on this thread.
+        // Only an indexing writer asks, for the stand-in pointer: a real one waits for every
+        // block in flight, so asking on every record would deflate the whole file on this thread.
         let indexing = self.indexer.is_some();
         let pointer = |bgzf: &mut BgzfWriter<_>| {
             if indexing {
-                bgzf.file_pointer().map_err(WriteError::Io)
+                bgzf.logical_file_pointer().map_err(WriteError::Io)
             } else {
                 Ok(0)
             }
@@ -262,8 +262,10 @@ impl<W: Write> BamWriter<W> {
     /// Panics unless [`Self::with_index`] was called.
     pub fn finish_with_index(self) -> io::Result<(W, Vec<u8>)> {
         let indexer = self.indexer.expect("with_index was not enabled");
-        let index = indexer.finish();
-        Ok((self.bgzf.into_inner()?, index))
+        let mut bgzf = self.bgzf;
+        bgzf.finish()?;
+        let index = indexer.finish_resolving(|pointer| bgzf.resolve_file_pointer(pointer));
+        Ok((bgzf.into_inner()?, index))
     }
 }
 
@@ -432,5 +434,103 @@ mod tests {
         );
         assert_eq!(a, b, "the records are the records whatever compressed them");
         assert!(jdk.starts_with(&[0x1f, 0x8b]) && gatk.starts_with(&[0x1f, 0x8b]));
+    }
+
+    /// Indexing through stand-in pointers writes the BAM and the BAI that real, draining
+    /// pointers write, serial or parallel, across many blocks and references, with a record that
+    /// ends exactly on a block boundary and an unmapped tail.
+    #[test]
+    fn logical_pointers_index_like_draining_ones() {
+        use crate::record::READ_UNMAPPED_FLAG;
+        let mut h = SamHeader::new();
+        h.set_sort_order("coordinate");
+        h.sequences.push(SequenceRecord::new("chr1", 1_000_000));
+        h.sequences.push(SequenceRecord::new("chr2", 1_000_000));
+        h.sequences.push(SequenceRecord::new("chr3", 1_000_000));
+
+        let size = |r: &BamRecord| {
+            let mut b = Vec::new();
+            r.encode_into(&mut b).unwrap();
+            b.len()
+        };
+        let block = htsjdk_bgzf::DEFAULT_UNCOMPRESSED_BLOCK_SIZE;
+        let mut used = {
+            let mut b = Vec::new();
+            write_header_binary(&mut b, &stamp_sort_order(&h), false).unwrap();
+            b.len()
+        };
+        let mut records = Vec::new();
+        let mut boundaries = 0;
+        for i in 0..30_000 {
+            let mut r = BamRecord {
+                read_name: format!("r{i}"),
+                reference_index: i / 12_000,
+                alignment_start: 1 + (i % 12_000) * 37,
+                ..BamRecord::default()
+            };
+            // Stretch the name so this record ends exactly where the block does, when it can.
+            let room = block - used % block;
+            let base = size(&r);
+            if room > base && room - base <= 200 {
+                r.read_name.push_str(&"x".repeat(room - base));
+                boundaries += 1;
+            }
+            used += size(&r);
+            records.push(r);
+        }
+        assert!(boundaries > 0, "no record ends on a block boundary");
+        for i in 0..500 {
+            let mut r = BamRecord {
+                read_name: format!("u{i}"),
+                reference_index: -1,
+                alignment_start: 0,
+                ..BamRecord::default()
+            };
+            r.flags |= READ_UNMAPPED_FLAG;
+            records.push(r);
+        }
+
+        // The old path: a real pointer, which drains the queue, around every record.
+        let draining = {
+            let mut bgzf = BgzfWriter::new(Vec::new()).parallel(false);
+            write_header_binary(&mut bgzf, &stamp_sort_order(&h), false).unwrap();
+            let mut indexer = BamIndexer::new(vec![1_000_000; 3]);
+            for r in &records {
+                let mut bytes = Vec::new();
+                r.encode_into(&mut bytes).unwrap();
+                let start = bgzf.file_pointer().unwrap();
+                bgzf.write_all(&bytes).unwrap();
+                let end = bgzf.file_pointer().unwrap();
+                let bin = if r.alignment_start != crate::bin::NO_ALIGNMENT_START {
+                    crate::bin::compute_indexing_bin(r.alignment_start, r.alignment_end())
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                indexer.process(
+                    r.reference_index,
+                    r.alignment_start,
+                    r.alignment_end(),
+                    bin,
+                    r.read_unmapped(),
+                    Chunk { start, end },
+                );
+            }
+            let index = indexer.finish();
+            (bgzf.into_inner().unwrap(), index)
+        };
+
+        // rayon's global pool: parallel(true) is only parallel where it has several threads.
+        for parallel in [false, true] {
+            let mut w = BamWriter::new(Vec::new(), &h).unwrap().with_index();
+            w.bgzf = w.bgzf.parallel(parallel);
+            for r in &records {
+                w.write(r).unwrap();
+            }
+            let written = w.finish_with_index().unwrap();
+            assert!(written.0 == draining.0, "parallel = {parallel}: BAM bytes");
+            assert!(written.1 == draining.1, "parallel = {parallel}: BAI bytes");
+        }
+        assert!(used > 10 * block, "a multi-block file");
     }
 }
