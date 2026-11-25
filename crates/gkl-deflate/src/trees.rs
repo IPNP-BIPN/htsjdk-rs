@@ -112,29 +112,29 @@ impl Tables {
 
         // The static literal tree: four runs of fixed lengths, defined by the deflate spec.
         let mut bl_count = [0u16; MAX_BITS + 1];
-        for n in 0..=143 {
-            tables.static_ltree[n].len = 8;
+        for entry in &mut tables.static_ltree[0..=143] {
+            entry.len = 8;
             bl_count[8] += 1;
         }
-        for n in 144..=255 {
-            tables.static_ltree[n].len = 9;
+        for entry in &mut tables.static_ltree[144..=255] {
+            entry.len = 9;
             bl_count[9] += 1;
         }
-        for n in 256..=279 {
-            tables.static_ltree[n].len = 7;
+        for entry in &mut tables.static_ltree[256..=279] {
+            entry.len = 7;
             bl_count[7] += 1;
         }
-        for n in 280..=287 {
-            tables.static_ltree[n].len = 8;
+        for entry in &mut tables.static_ltree[280..=287] {
+            entry.len = 8;
             bl_count[8] += 1;
         }
         // The static tree is built with a length of 9 rather than MAX_BITS, so that the codes come
         // out in the order the spec fixes rather than in canonical order.
         gen_codes(&mut tables.static_ltree, L_CODES + 1, &mut bl_count);
 
-        for n in 0..D_CODES {
-            tables.static_dtree[n].len = 5;
-            tables.static_dtree[n].code = bit_reverse(n as u32, 5) as u16;
+        for (n, entry) in tables.static_dtree[..D_CODES].iter_mut().enumerate() {
+            entry.len = 5;
+            entry.code = bit_reverse(n as u32, 5) as u16;
         }
         tables
     }

@@ -89,7 +89,7 @@ impl MersenneTwister {
         if n <= 0 {
             return 0;
         }
-        if (n & -n) == n {
+        if n.isolate_lowest_one() == n {
             return ((i64::from(n) * i64::from(self.next(31))) >> 31) as i32;
         }
         loop {

@@ -235,9 +235,9 @@ impl CramBaiIndexer {
         if end_window as i64 > self.largest_window {
             self.largest_window = end_window as i64;
         }
-        for window in start_window..=end_window {
-            if self.linear[window] == 0 || pointer < self.linear[window] {
-                self.linear[window] = pointer;
+        for window in &mut self.linear[start_window..=end_window] {
+            if *window == 0 || pointer < *window {
+                *window = pointer;
             }
         }
         Ok(())
