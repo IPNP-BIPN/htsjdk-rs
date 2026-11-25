@@ -54,6 +54,7 @@ impl Stream {
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
     }
 
+    #[cfg(test)]
     fn string(&mut self) -> Result<Vec<u8>, NxError> {
         let rest = self.bytes.get(self.pos..).ok_or(NxError::Truncated)?;
         let end = rest
@@ -141,7 +142,203 @@ impl TokenStreams {
 }
 
 /// `NameTokenisationDecode.uncompress`: the names, each followed by `separator`.
+///
+/// htsjdk keeps every name it has decoded as a list of token strings, for later names to match
+/// against. Here the names are written straight into the output and each keeps only where its
+/// tokens end in it ([`Names`]): a later name's MATCH, DELTA or DUP reads that slice of the
+/// output. The streams are read in the same order, so a damaged block is refused at the same
+/// point with the same error.
 pub fn uncompress(bytes: &[u8], separator: u8) -> Result<Vec<u8>, NxError> {
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return uncompress_reference(bytes, separator);
+    }
+    let mut input = Input::new(bytes);
+    let header = input.take(9)?;
+    let length = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
+    let names = u32::from_le_bytes([header[4], header[5], header[6], header[7]]) as usize;
+    let use_arith = header[8] != 0;
+    let mut streams = TokenStreams::read(&mut input, use_arith, names)?;
+
+    let mut decoded = Names {
+        out: Vec::with_capacity(length),
+        bounds: Vec::new(),
+        first: Vec::with_capacity(names.min(length) + 1),
+    };
+    for i in 0..names {
+        decode_name(&mut streams, &mut decoded, i)?;
+        decoded.out.push(separator);
+    }
+    Ok(decoded.out)
+}
+
+/// The names decoded so far, and where their tokens lie in the output.
+///
+/// Name `i`'s boundaries are `bounds[first[i]..first[i + 1]]`: the offset of its first byte in
+/// `out`, then the offset just past each of its tokens, the END token's included. Its token at
+/// position `p` (counted from 1, as the streams are) is `out[bounds[first[i] + p - 1]..bounds[first[i] + p]]`.
+struct Names {
+    out: Vec<u8>,
+    bounds: Vec<usize>,
+    first: Vec<usize>,
+}
+
+impl Names {
+    /// The output range of an earlier name's token at `position`, as `decoded.get(reference)
+    /// .get(position - 1)` finds it in the reference: absent for a name not decoded yet, or one
+    /// with fewer tokens.
+    fn token(&self, reference: usize, position: usize) -> Result<std::ops::Range<usize>, NxError> {
+        let (from, to) = match (self.first.get(reference), self.first.get(reference + 1)) {
+            (Some(&from), Some(&to)) => (from, to),
+            _ => return Err(NxError::Truncated),
+        };
+        if position == 0 || position >= to - from {
+            return Err(NxError::Truncated);
+        }
+        Ok(self.bounds[from + position - 1]..self.bounds[from + position])
+    }
+}
+
+/// Write `value` in decimal after `width - digits` zeros, as `leftPadWith0(String.valueOf(v))`
+/// does: the zeros go before a minus sign too.
+fn push_decimal(out: &mut Vec<u8>, value: i64, width: usize) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    let mut rest = value.unsigned_abs();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+        if rest == 0 {
+            break;
+        }
+    }
+    let length = digits.len() - at + usize::from(value < 0);
+    out.resize(out.len() + width.saturating_sub(length), b'0');
+    if value < 0 {
+        out.push(b'-');
+    }
+    out.extend_from_slice(&digits[at..]);
+}
+
+/// `NameTokenisationDecode.decodeSingleName`, appending the name to `decoded.out`.
+fn decode_name(
+    streams: &mut TokenStreams,
+    decoded: &mut Names,
+    index: usize,
+) -> Result<(), NxError> {
+    let reference_type = streams.get(0, TOKEN_TYPE)?.byte()?;
+    let distance = streams.get(0, reference_type)?.int()?;
+    let reference = (index as i64 - i64::from(distance as i32)) as usize;
+
+    // The name about to be written starts here; `first` has one entry per name begun, so an
+    // earlier name's range is complete once the next one has an entry.
+    let start = decoded.out.len();
+    decoded.first.push(decoded.bounds.len());
+    decoded.bounds.push(start);
+    let is_decoded = reference < index;
+
+    if reference_type == TOKEN_DUP {
+        if !is_decoded {
+            return Err(NxError::Truncated);
+        }
+        // The same tokens again: the earlier name's bytes, and its boundaries moved to here.
+        let (from, to) = (decoded.first[reference], decoded.first[reference + 1]);
+        let (name_start, name_end) = (decoded.bounds[from], decoded.bounds[to - 1]);
+        decoded.out.extend_from_within(name_start..name_end);
+        for k in from + 1..to {
+            let bound = decoded.bounds[k] - name_start + start;
+            decoded.bounds.push(bound);
+        }
+        return Ok(());
+    } else if reference_type != TOKEN_DIFF {
+        return Err(NxError::Cram(format!(
+            "Invalid nameType {reference_type}. nameType must be either TOKEN_DIFF or TOKEN_DUP"
+        )));
+    }
+
+    let mut position = 1usize;
+    loop {
+        let token_type = streams.get(position, TOKEN_TYPE)?.byte()?;
+        match token_type {
+            TOKEN_CHAR => {
+                let c = streams.get(position, TOKEN_CHAR)?.byte()?;
+                decoded.out.push(c);
+            }
+            TOKEN_STRING => {
+                let stream = streams.get(position, TOKEN_STRING)?;
+                let rest = stream.bytes.get(stream.pos..).ok_or(NxError::Truncated)?;
+                let end = rest
+                    .iter()
+                    .position(|&b| b == 0)
+                    .ok_or(NxError::Truncated)?;
+                decoded.out.extend_from_slice(&rest[..end]);
+                stream.pos += end + 1;
+            }
+            TOKEN_DIGITS => {
+                let value = streams.get(position, TOKEN_DIGITS)?.int()?;
+                push_decimal(&mut decoded.out, i64::from(value), 0);
+            }
+            TOKEN_DIGITS0 => {
+                let value = streams.get(position, TOKEN_DIGITS0)?.int()?;
+                let width = streams.get(position, TOKEN_DZLEN)?.byte()? as usize;
+                push_decimal(&mut decoded.out, i64::from(value), width);
+            }
+            TOKEN_DELTA | TOKEN_DELTA0 => {
+                let prior = if is_decoded {
+                    decoded.token(reference, position)?
+                } else {
+                    return Err(NxError::Truncated);
+                };
+                let value: i32 = std::str::from_utf8(&decoded.out[prior.clone()])
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or_else(|| {
+                        NxError::Cram(format!(
+                            "The token in the prior name must be of type {}",
+                            if token_type == TOKEN_DELTA {
+                                "DIGITS or DELTA"
+                            } else {
+                                "DIGITS0 or DELTA0"
+                            }
+                        ))
+                    })?;
+                let delta = i64::from(streams.get(position, token_type)?.byte()?);
+                let width = if token_type == TOKEN_DELTA0 {
+                    prior.len()
+                } else {
+                    0
+                };
+                push_decimal(&mut decoded.out, i64::from(value) + delta, width);
+            }
+            TOKEN_MATCH => {
+                let prior = if is_decoded {
+                    decoded.token(reference, position)?
+                } else {
+                    return Err(NxError::Truncated);
+                };
+                decoded.out.extend_from_within(prior);
+            }
+            TOKEN_END | TOKEN_NOP => {}
+            other => {
+                return Err(NxError::Cram(format!(
+                    "Invalid tokenType : {other}. tokenType must be one of the valid token types"
+                )))
+            }
+        }
+        decoded.bounds.push(decoded.out.len());
+        if token_type == TOKEN_END {
+            break;
+        }
+        position += 1;
+    }
+    Ok(())
+}
+
+/// [`uncompress`] as first ported, a list of token strings per name: what the tests hold the
+/// decoder to.
+#[cfg(test)]
+fn uncompress_reference(bytes: &[u8], separator: u8) -> Result<Vec<u8>, NxError> {
     let mut input = Input::new(bytes);
     let header = input.take(9)?;
     let length = u32::from_le_bytes([header[0], header[1], header[2], header[3]]) as usize;
@@ -152,14 +349,15 @@ pub fn uncompress(bytes: &[u8], separator: u8) -> Result<Vec<u8>, NxError> {
     let mut decoded: Vec<Rc<Vec<Vec<u8>>>> = Vec::with_capacity(names);
     let mut out = Vec::with_capacity(length);
     for i in 0..names {
-        let name = decode_name(&mut streams, &mut decoded, i)?;
+        let name = decode_name_reference(&mut streams, &mut decoded, i)?;
         out.extend_from_slice(&name);
         out.push(separator);
     }
     Ok(out)
 }
 
-fn decode_name(
+#[cfg(test)]
+fn decode_name_reference(
     streams: &mut TokenStreams,
     decoded: &mut Vec<Rc<Vec<Vec<u8>>>>,
     index: usize,
@@ -247,6 +445,7 @@ fn decode_name(
 }
 
 /// `leftPadWith0`.
+#[cfg(test)]
 fn pad(value: Vec<u8>, width: usize) -> Vec<u8> {
     if value.len() >= width {
         return value;
@@ -588,6 +787,134 @@ fn serialize(
             out.extend_from_slice(&compressed);
             registry.push((compressed, position, kind));
         }
+    }
+}
+
+/// Switches [`uncompress`] to the decoder as first ported, for the tests that compare the two.
+#[cfg(test)]
+mod reference {
+    thread_local! {
+        pub(super) static ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// Each side's answer, `None` where it panicked.
+    type Answer = Option<Result<Vec<u8>, NxError>>;
+
+    fn both(stream: &[u8]) -> (Answer, Answer) {
+        let run = || std::panic::catch_unwind(|| uncompress(stream, 0)).ok();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let fast = run();
+        reference::ON.with(|on| on.set(true));
+        let first = run();
+        reference::ON.with(|on| on.set(false));
+        std::panic::set_hook(hook);
+        (fast, first)
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+    }
+
+    /// Names of every token type the encoder writes: Illumina-like with deltas, zero-padded
+    /// numbers, duplicates, signs and strings.
+    fn names(random: &mut Lcg, count: usize) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut x = 1000u64;
+        for i in 0..count {
+            x += random.next() % 40;
+            let name = match random.next() % 6 {
+                0 | 1 => format!(
+                    "HWI-ST{}:8:1101:{}:{}#0/1",
+                    100 + i % 3,
+                    x,
+                    2000 + random.next() % 900
+                ),
+                2 => format!("SRR{:08}.{}", 62 + i / 50, i),
+                3 => "dup-name".to_string(),
+                4 => format!("r-{}_{:05}", random.next() % 7, x % 100_000),
+                _ => format!("m{}/ccs", x * 1_234_567),
+            };
+            out.extend_from_slice(name.as_bytes());
+            out.push(0);
+        }
+        out
+    }
+
+    /// Numbers are written as `pad(value.to_string(), width)` writes them, minus sign and all:
+    /// a damaged block can make a DELTA0 of a negative STRING token.
+    #[test]
+    fn numbers_are_padded_as_the_first_port_pads_them() {
+        for value in [
+            0i64,
+            7,
+            -7,
+            42,
+            -42,
+            1 << 31,
+            -(1 << 31) - 255,
+            i64::from(u32::MAX),
+        ] {
+            for width in 0..14 {
+                let mut out = b"x".to_vec();
+                push_decimal(&mut out, value, width);
+                assert_eq!(
+                    out[1..],
+                    pad(value.to_string().into_bytes(), width),
+                    "{value} {width}"
+                );
+            }
+        }
+    }
+
+    /// The decoder against the first port's, on whole blocks, every prefix of a short one, cuts
+    /// of long ones and blocks with one bit changed: the same names or the same refusal each time.
+    #[test]
+    fn the_decoder_answers_as_the_first_port_does() {
+        let mut random = Lcg(5);
+        let mut compared = 0;
+        for count in [3usize, 40, 2000] {
+            let text = names(&mut random, count);
+            let stream = compress(&text, 0).expect("compresses");
+            let (fast, first) = both(&stream);
+            assert_eq!(fast, Some(Ok(text.clone())));
+            assert_eq!(fast, first);
+            let cuts: Vec<usize> = if stream.len() < 800 {
+                (0..stream.len()).collect()
+            } else {
+                (0..300)
+                    .map(|_| (random.next() as usize) % stream.len())
+                    .collect()
+            };
+            for cut in cuts {
+                let (fast, first) = both(&stream[..cut]);
+                assert_eq!(fast, first, "{count} names, cut at {cut}");
+                compared += 1;
+            }
+            for _ in 0..1500 {
+                let mut damaged = stream.clone();
+                // Past the name count, which would only change what is allocated.
+                let at = 9 + (random.next() as usize) % (damaged.len() - 9);
+                damaged[at] ^= 1 << (random.next() % 8);
+                let (fast, first) = both(&damaged);
+                assert_eq!(fast, first, "{count} names, bit changed at {at}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 4000);
     }
 }
 
