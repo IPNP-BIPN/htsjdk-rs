@@ -48,6 +48,10 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Fixed
 
+- **`##ALT`, `##META`, `##SAMPLE` and (from VCFv4.3) `##PEDIGREE` lines are structured**, keyed by
+  their ID as `AbstractVCFCodec` builds them, where they were kept verbatim under their key alone:
+  two `##ALT` lines no longer collapse into one when headers are merged, and each renders `ID`
+  first.
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.

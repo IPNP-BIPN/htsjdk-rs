@@ -144,6 +144,25 @@ pub fn parse_meta_line(
     if let Some(value) = line.strip_prefix("##contig=") {
         return contig(value, contig_index);
     }
+    // `ALT_HEADER_START` has no `=`, and the codec cuts `ALT_HEADER_OFFSET` (its length plus one)
+    // whatever that character is; `VCFAltHeaderLine` alone keeps an expected tag order.
+    if line.starts_with("##ALT") {
+        return simple(
+            "ALT",
+            line.get(6..).unwrap_or(""),
+            Some(&["ID", "Description"]),
+        );
+    }
+    // Pedigree lines are only modelled as structured lines from VCFv4.3 on.
+    if line.starts_with("##PEDIGREE") && version.is_at_least(VcfVersion::Vcf4_3) {
+        return simple("PEDIGREE", line.get(11..).unwrap_or(""), None);
+    }
+    if line.starts_with("##META") {
+        return simple("META", line.get(7..).unwrap_or(""), None);
+    }
+    if line.starts_with("##SAMPLE") {
+        return simple("SAMPLE", line.get(9..).unwrap_or(""), None);
+    }
     // The fallback: a `##key=value` line, kept verbatim. A line with no `=` at all is dropped
     // upstream rather than kept, which is why this returns an error the caller reads as "skip".
     let rest = &line[2..];
@@ -316,6 +335,20 @@ fn filter(value: &str) -> Result<HeaderLine, HeaderLineError> {
     })
 }
 
+/// `VCFAltHeaderLine`, `VCFPedigreeHeaderLine`, `VCFMetaHeaderLine` and `VCFSampleHeaderLine`: a
+/// `VCFSimpleHeaderLine` under its own key, so two of them differ by ID rather than by key.
+fn simple(
+    key: &str,
+    value: &str,
+    expected: Option<&[&str]>,
+) -> Result<HeaderLine, HeaderLineError> {
+    let mapping = parse_structured_value(value, expected, &[])?;
+    Ok(HeaderLine::Structured {
+        key: key.to_string(),
+        fields: simple_fields(key, &mapping)?,
+    })
+}
+
 /// `VCFContigHeaderLine(String line, VCFHeaderVersion version, String key, int contigIndex)`, whose
 /// expected tag order is `null`: a contig line may carry its fields in any order.
 fn contig(value: &str, contig_index: i32) -> Result<HeaderLine, HeaderLineError> {
@@ -363,4 +396,44 @@ fn simple_fields(
     let mut fields = vec![("ID".to_string(), name.clone())];
     fields.extend(mapping.iter().filter(|(k, _)| k != "ID").cloned());
     Ok(fields)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alt_meta_and_sample_lines_are_keyed_by_id_and_render_id_first() {
+        let alt = parse_meta_line(
+            "##ALT=<ID=DEL,Description=\"Deletion\">",
+            VcfVersion::Vcf4_2,
+            0,
+        )
+        .unwrap();
+        assert_eq!(alt.render(), "ALT=<ID=DEL,Description=\"Deletion\">");
+        let meta = parse_meta_line(
+            "##META=<Type=String,ID=Assay,Number=.>",
+            VcfVersion::Vcf4_3,
+            0,
+        )
+        .unwrap();
+        assert_eq!(meta.render(), "META=<ID=Assay,Type=String,Number=.>");
+        let sample = parse_meta_line("##SAMPLE=<ID=S1,Assay=WGS>", VcfVersion::Vcf4_2, 0).unwrap();
+        assert!(matches!(sample, HeaderLine::Structured { ref key, .. } if key == "SAMPLE"));
+        // An ALT line without an ID is refused as every simple line is.
+        assert!(parse_meta_line("##ALT=<Description=\"x\">", VcfVersion::Vcf4_2, 0).is_err());
+    }
+
+    #[test]
+    fn pedigree_lines_are_structured_only_from_4_3() {
+        let line = "##PEDIGREE=<ID=Child,Father=F>";
+        assert!(matches!(
+            parse_meta_line(line, VcfVersion::Vcf4_3, 0).unwrap(),
+            HeaderLine::Structured { .. }
+        ));
+        assert!(matches!(
+            parse_meta_line(line, VcfVersion::Vcf4_2, 0).unwrap(),
+            HeaderLine::Unstructured { .. }
+        ));
+    }
 }
