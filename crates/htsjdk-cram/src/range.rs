@@ -139,21 +139,22 @@ impl RangeCoder {
     }
 }
 
-/// One symbol of a model. Frequencies stay below `MAX_FREQ + STEP`, which is `u16::MAX`, and a
-/// model has at most 256 symbols, so `u8` holds any of them.
-#[derive(Clone, Copy)]
-struct Entry {
-    freq: u16,
-    symbol: u8,
-}
+/// One symbol of a model: its frequency at [`FREQ`], the symbol at [`SYMBOL`]. Frequencies stay
+/// below `MAX_FREQ + STEP`, which is `u16::MAX`, and a model has at most 256 symbols. An array of
+/// integers rather than a struct so that a zeroed table of them is allocated zeroed, not written.
+type Entry = [u16; 2];
+const FREQ: usize = 0;
+const SYMBOL: usize = 1;
 
 /// `ByteModel`: frequencies and symbols, kept roughly sorted by one swap per update.
 ///
 /// One allocation, four bytes a symbol. Three designs that look faster were measured and are not:
 /// cumulative frequencies with a branchless search or a vector count took 30% more cycles, a walk
 /// over separate arrays eight symbols at a time 3% more, and all the models of a stream side by
-/// side in one allocation 4% more instructions for 3% less peak memory. Models are sorted and
-/// qualities drift, so the walk is short and its exit predictable.
+/// side in one allocation 4% more instructions for 3% less peak memory on the bench's blocks. On
+/// real fqzcomp blocks, where a stream uses some 15000 of its 65536 quality models, that last one
+/// is 13% fewer cycles: see [`ModelTable`]. Models are sorted and qualities drift, so the walk is
+/// short and its exit predictable.
 #[derive(Clone)]
 pub(crate) struct ByteModel {
     total: u32,
@@ -164,12 +165,7 @@ impl ByteModel {
     pub(crate) fn new(symbols: usize) -> Self {
         Self {
             total: symbols as u32,
-            entries: (0..symbols)
-                .map(|symbol| Entry {
-                    freq: 1,
-                    symbol: symbol as u8,
-                })
-                .collect(),
+            entries: (0..symbols).map(|symbol| [1, symbol as u16]).collect(),
         }
     }
 
@@ -192,20 +188,20 @@ impl ByteModel {
 fn renormalize(total: &mut u32, entries: &mut [Entry]) {
     *total = 0;
     for entry in entries.iter_mut() {
-        entry.freq -= entry.freq >> 1;
-        *total += u32::from(entry.freq);
+        entry[FREQ] -= entry[FREQ] >> 1;
+        *total += u32::from(entry[FREQ]);
     }
 }
 
 /// `ByteModel.updateSymbol`: one model's frequencies, wherever they are kept.
 #[inline(always)]
 fn update(total: &mut u32, entries: &mut [Entry], x: usize) {
-    entries[x].freq += STEP as u16;
+    entries[x][FREQ] += STEP as u16;
     *total += STEP;
     if *total > MAX_FREQ {
         renormalize(total, entries);
     }
-    if x > 0 && entries[x].freq > entries[x - 1].freq {
+    if x > 0 && entries[x][FREQ] > entries[x - 1][FREQ] {
         entries.swap(x, x - 1);
     }
 }
@@ -222,7 +218,7 @@ fn decode(
     let mut cumulative = 0;
     let mut x = 0;
     for entry in entries.iter() {
-        let next = cumulative + u32::from(entry.freq);
+        let next = cumulative + u32::from(entry[FREQ]);
         if next > target {
             break;
         }
@@ -232,9 +228,9 @@ fn decode(
     let Some(entry) = entries.get(x).copied() else {
         return Err(NxError::Truncated);
     };
-    coder.decode(input, cumulative, u32::from(entry.freq))?;
+    coder.decode(input, cumulative, u32::from(entry[FREQ]))?;
     update(total, entries, x);
-    Ok(u32::from(entry.symbol))
+    Ok(u32::from(entry[SYMBOL]))
 }
 
 /// `ByteModel.modelEncode`: one model's frequencies, wherever they are kept.
@@ -243,13 +239,13 @@ fn encode(total: &mut u32, entries: &mut [Entry], coder: &mut RangeCoder, symbol
     let mut cumulative = 0;
     let mut i = 0;
     for entry in entries.iter() {
-        if u32::from(entry.symbol) == symbol {
+        if u32::from(entry[SYMBOL]) == symbol {
             break;
         }
-        cumulative += u32::from(entry.freq);
+        cumulative += u32::from(entry[FREQ]);
         i += 1;
     }
-    coder.encode(cumulative, u32::from(entries[i].freq), *total);
+    coder.encode(cumulative, u32::from(entries[i][FREQ]), *total);
     update(total, entries, i);
 }
 
@@ -267,8 +263,8 @@ impl ModelTable {
         Self {
             symbols,
             totals: vec![0; models],
-            // Zeroed memory: the pages of models never used are never touched.
-            entries: vec![Entry { freq: 0, symbol: 0 }; models * symbols],
+            // Allocated zeroed, not written: the pages of models never used are never touched.
+            entries: vec![[0; 2]; models * symbols],
         }
     }
 
@@ -303,10 +299,7 @@ impl ModelTable {
 fn build(total: &mut u32, entries: &mut [Entry]) {
     *total = entries.len() as u32;
     for (symbol, entry) in entries.iter_mut().enumerate() {
-        *entry = Entry {
-            freq: 1,
-            symbol: symbol as u8,
-        };
+        *entry = [1, symbol as u16];
     }
 }
 
