@@ -25,10 +25,15 @@
 //!
 //! On a fresh stream the body kernel's first-byte path hashes a register that still holds the
 //! address of the `isal_zstream` (`rcx`, read as `tmp2`) and uses that bucket as the one for the
-//! third byte. So GKL looks up and overwrites one pointer-dependent bucket of its hash table. Here
-//! that bucket is a slot outside the table holding the table's initial value, which is what the
-//! real bucket holds unless the address happens to hash to one of the first two bytes' buckets. In
-//! that case GKL's own output varies from run to run, so no fixed answer is GKL's.
+//! third byte. So GKL looks up and overwrites one pointer-dependent bucket of its hash table, the
+//! bucket of `crc32c(addr >> 16)`. Here that bucket is a slot outside the table holding the
+//! table's initial value. That gives GKL's bytes unless the address hashes to a bucket the first
+//! bytes use: most often the third byte's own, where GKL then keeps the third byte as a match
+//! source that the port never recorded. Then GKL's
+//! own output varies from run to run with ASLR, so no fixed answer is GKL's. The chance grows as
+//! the hash mask shrinks on short inputs (127 for 126 bytes), which is how a linked ISA-L made
+//! the cross-check flaky. The tests pass the port ISA-L's stream address
+//! ([`deflate_for_stream_at`]) and match it at every address.
 
 /// The bytes a level buffer leaves for intermediate tokens after its fixed part, the same at both
 /// levels: `level_buf_size - (sizeof(struct level_buf) - MAX_LVL_BUF_SIZE + hash table) - 4`.
@@ -83,7 +88,17 @@ pub fn deflate(data: &[u8], level: usize) -> Vec<u8> {
         u32::try_from(data.len()).is_ok(),
         "ISA-L counts input in 32 bits"
     );
-    let mut stream = Stream::new(data, level);
+    deflate_for_stream_at(data, level, None)
+}
+
+/// [`deflate`] as GKL would answer with its `isal_zstream` at `stream_addr`, which picks the bucket
+/// the first-byte path uses (see the module doc). `None` is the slot outside the table.
+pub(crate) fn deflate_for_stream_at(
+    data: &[u8],
+    level: usize,
+    stream_addr: Option<u64>,
+) -> Vec<u8> {
+    let mut stream = Stream::new(data, level, stream_addr);
     if stream.run() {
         stream.mem.truncate(stream.next_out);
         stream.mem
@@ -193,6 +208,8 @@ struct Stream<'a> {
     hash_mask: u64,
     /// The hash table, plus one slot past the mask for the bucket GKL derives from a pointer.
     table: Vec<u16>,
+    /// That bucket: the slot past the mask, or the real one for a known stream address.
+    pointer_bucket: u64,
 
     // The output side: `mem[..out_cap]` is the caller's buffer, then the header scratch buffer.
     mem: Vec<u8>,
@@ -254,7 +271,7 @@ fn dist_icf_code(d: u64) -> u32 {
 }
 
 impl<'a> Stream<'a> {
-    fn new(data: &'a [u8], level: usize) -> Self {
+    fn new(data: &'a [u8], level: usize, stream_addr: Option<u64>) -> Self {
         let n = data.len() as u64;
         let stored_len = if n == 0 { 5 } else { 5 * n.div_ceil(65535) + n };
         let mut hash_mask = if level == 2 { 32767 } else { 8191 };
@@ -273,6 +290,8 @@ impl<'a> Stream<'a> {
             has_hist: false,
             hash_mask,
             table: vec![0; hash_mask as usize + 2],
+            // `shr tmp2, 16; compute_hash hash2, tmp2`, with `tmp2` still `rcx`, the stream.
+            pointer_bucket: stream_addr.map_or(hash_mask + 1, |a| crc32c(a >> 16) & hash_mask),
             mem: vec![0; hdr_at + MAX_HDR_SIZE + 16],
             hdr_at,
             next_out: 0,
@@ -501,7 +520,7 @@ impl<'a> Stream<'a> {
             OutputEnd,
         }
         let mask = self.hash_mask;
-        let phantom = self.hash_mask + 1;
+        let phantom = self.pointer_bucket;
         let m_out_start = self.icf_next;
         let mut mo = self.icf_next;
         let m_out_end = self.icf_next + self.icf_avail_out - SLOP;
@@ -1575,20 +1594,11 @@ mod tests {
         assert_eq!(super::deflate(&INPUT, 1), EXPECTED);
     }
 
-    /// With the `isal` feature, the port against the library itself on many more inputs. Only a
-    /// build whose ISA-L reproduces GKL can say anything, which is x86-64 with nasm; elsewhere
-    /// the library is its own readable C and the comparison would be against the wrong answer.
+    /// The inputs `agrees_with_linked_isal` compares on: mixtures of noise, a small alphabet,
+    /// zero runs and copies of earlier spans, at lengths that hit the small hash masks, the
+    /// level buffer's edge and multi-block streams.
     #[cfg(feature = "isal")]
-    #[test]
-    fn agrees_with_linked_isal() {
-        if !crate::igzip_isal::usable() {
-            #[cfg(target_arch = "x86_64")]
-            assert!(
-                !std::arch::is_x86_feature_detected!("sse4.2"),
-                "x86-64 with SSE4.2 and ISA-L does not reproduce GKL: was it built without nasm?"
-            );
-            return;
-        }
+    fn inputs() -> Vec<Vec<u8>> {
         let mut seed = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = move || {
             seed ^= seed << 13;
@@ -1596,39 +1606,107 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        let mut compared = 0;
-        for round in 0..400 {
-            let len = match round % 4 {
-                0 => (next() % 400) as usize,
-                1 => (next() % 70_000) as usize,
-                2 => 65_498,
-                _ => (next() % 300_000) as usize,
-            };
-            // Mixtures of noise, a small alphabet, zero runs and copies of earlier spans.
-            let mut data = Vec::with_capacity(len);
-            while data.len() < len {
-                let span = (next() % 5000) as usize + 1;
-                match next() % 4 {
-                    0 => data.extend((0..span).map(|_| next() as u8)),
-                    1 => data.extend((0..span).map(|_| b"ACGT"[(next() & 3) as usize])),
-                    2 => data.extend(std::iter::repeat_n(0u8, span)),
-                    _ if !data.is_empty() => {
-                        let from = (next() as usize) % data.len();
-                        let end = (from + span).min(data.len());
-                        data.extend_from_within(from..end);
+        (0..400)
+            .map(|round| {
+                let len = match round % 4 {
+                    0 => (next() % 400) as usize,
+                    1 => (next() % 70_000) as usize,
+                    2 => 65_498,
+                    _ => (next() % 300_000) as usize,
+                };
+                let mut data = Vec::with_capacity(len);
+                while data.len() < len {
+                    let span = (next() % 5000) as usize + 1;
+                    match next() % 4 {
+                        0 => data.extend((0..span).map(|_| next() as u8)),
+                        1 => data.extend((0..span).map(|_| b"ACGT"[(next() & 3) as usize])),
+                        2 => data.extend(std::iter::repeat_n(0u8, span)),
+                        _ if !data.is_empty() => {
+                            let from = (next() as usize) % data.len();
+                            let end = (from + span).min(data.len());
+                            data.extend_from_within(from..end);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
-            }
-            data.truncate(len);
+                data.truncate(len);
+                data
+            })
+            .collect()
+    }
+
+    /// Whether linked ISA-L reproduces GKL here, failing if it should and does not.
+    #[cfg(feature = "isal")]
+    fn isal_usable() -> bool {
+        let usable = crate::igzip_isal::usable();
+        #[cfg(target_arch = "x86_64")]
+        assert!(
+            usable || !std::arch::is_x86_feature_detected!("sse4.2"),
+            "x86-64 with SSE4.2 and ISA-L does not reproduce GKL: was it built without nasm?"
+        );
+        usable
+    }
+
+    /// With the `isal` feature, the port against the library itself on many more inputs. Only a
+    /// build whose ISA-L reproduces GKL can say anything, which is x86-64 with nasm; elsewhere
+    /// the library is its own readable C and the comparison would be against the wrong answer.
+    /// The port is told where ISA-L's stream lives, since that address enters the bytes.
+    #[cfg(feature = "isal")]
+    #[test]
+    fn agrees_with_linked_isal() {
+        if !isal_usable() {
+            return;
+        }
+        let mut stream = Box::new(unsafe { std::mem::zeroed() });
+        let addr = &*stream as *const _ as u64;
+        let mut compared = 0;
+        for (round, data) in inputs().iter().enumerate() {
             for level in 1..=2 {
                 assert!(
-                    super::deflate(&data, level) == crate::igzip_isal::deflate(&data, level),
-                    "round {round}, {len} bytes, level {level}"
+                    super::deflate_for_stream_at(data, level, Some(addr))
+                        == crate::igzip_isal::deflate(data, level, &mut stream),
+                    "round {round}, {} bytes, level {level}, stream at {addr:#x}",
+                    data.len()
                 );
                 compared += 1;
             }
         }
         assert_eq!(compared, 800);
+    }
+
+    /// GKL's own bytes depend on where its `isal_zstream` lives. On the 126 bytes that failed CI
+    /// (round 12, level 1, hash mask 127), ISA-L moved to 256 addresses 64 KB apart, so
+    /// `addr >> 16` takes 256 values, must change its answer at some of them, and the port must
+    /// follow it at every one.
+    #[cfg(feature = "isal")]
+    #[test]
+    fn follows_linked_isal_wherever_its_stream_lives() {
+        use crate::igzip_isal::isal::isal_zstream;
+        if !isal_usable() {
+            return;
+        }
+        let data = &inputs()[12];
+        assert_eq!(data.len(), 126);
+        const STEPS: usize = 256;
+        let (size, align) = (size_of::<isal_zstream>(), align_of::<isal_zstream>());
+        let mut arena = vec![0u8; (STEPS - 1) * 65536 + size + align];
+        let base = arena.as_mut_ptr().align_offset(align);
+        let mut moved = 0;
+        for step in 0..STEPS {
+            // Slots overlap when the struct is over 64 KB; only one is live at a time.
+            let slot = &mut arena[base + step * 65536..][..size];
+            let stream = unsafe { &mut *slot.as_mut_ptr().cast::<isal_zstream>() };
+            let addr = stream as *const _ as u64;
+            let gkl = crate::igzip_isal::deflate(data, 1, stream);
+            assert!(
+                super::deflate_for_stream_at(data, 1, Some(addr)) == gkl,
+                "stream at {addr:#x}"
+            );
+            moved += (gkl != super::deflate(data, 1)) as usize;
+        }
+        assert!(
+            moved > 0,
+            "no address changed ISA-L's bytes: the pointer bucket is not modelled"
+        );
     }
 }
