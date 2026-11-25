@@ -13,6 +13,7 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **`jmath::math::log` and `log10` run their fast phase with FMA on x86-64 hosts that have it**, detected at run time. Without it, every `mul_add` of the double-double products was a call into the C library's `fma`, four or five per logarithm. Same bits, since a `mul_add` is one rounding of the exact `a * b + c` either way; a test holds the two copies together on two million inputs.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
