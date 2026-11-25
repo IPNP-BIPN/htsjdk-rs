@@ -48,6 +48,9 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Fixed
 
+- **`binomialCoefficient` answers past `n = 61`** through Commons Math's gcd-splitting arm, so
+  `binomialCoefficientLog` no longer refuses depths 62 to 66. An overflow past 66 is
+  `CombinatoricsError::Overflow`, renamed from `Unmeasured`.
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.

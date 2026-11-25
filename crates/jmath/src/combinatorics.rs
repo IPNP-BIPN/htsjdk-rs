@@ -16,15 +16,16 @@
 //! `binomialCoefficientLog(1000, 500)` is `689.4672615678512` through the double route and a
 //! different last digit through the sum of logs.
 //!
-//! # What this port refuses
+//! # Past `n = 61`
 //!
-//! Two arms of `binomialCoefficient` beyond `n <= 61`: a gcd-splitting one for `n <= 66` and an
-//! overflow-checking one past that. Nothing measured reaches either. They are refused rather than
-//! guessed, on the same rule as `gamma` past 20.
+//! `binomialCoefficient` divides the gcd of each factor pair out before multiplying, which is
+//! exact. Up to 66 the coefficient fits a `long`; past it `mulAndCheck` throws on overflow. The
+//! integers are the coefficients themselves, so no golden is needed to know them. gatk-rs's
+//! FilterMutectCalls reaches the arm through `binomialCoefficientLog` at a depth of 65.
 //!
 //! # The sum-of-logs route is measured now
 //!
-//! It was refused with them until gatk-rs's `contamination-filter` golden reached it: a site of
+//! It was refused until gatk-rs's `contamination-filter` golden reached it: a site of
 //! depth 1050 goes through `BetaBinomialDistribution.logProbability`, which asks for
 //! `binomialCoefficientLog(1050, 200)`. The route never forms the coefficient at all, and its
 //! `k > n / 2` reflection comes **before** the loops, so a large `k` is answered by a shorter sum
@@ -39,8 +40,8 @@ pub enum CombinatoricsError {
     TooLarge { n: i64, k: i64 },
     /// `NotPositiveException`: a negative `n`.
     Negative { n: i64 },
-    /// A total the reference could compute through an arm this port has not measured.
-    Unmeasured { n: i64 },
+    /// `MathArithmeticException`: the exact coefficient overflows a `long`.
+    Overflow { n: i64 },
 }
 
 /// `checkBinomial(n, k)`.
@@ -54,7 +55,7 @@ fn check_binomial(n: i64, k: i64) -> Result<(), CombinatoricsError> {
     Ok(())
 }
 
-/// `binomialCoefficient(n, k)`, the exact `long` route, for `n <= 61`.
+/// `binomialCoefficient(n, k)`, the exact `long` route.
 pub fn binomial_coefficient(n: i64, k: i64) -> Result<i64, CombinatoricsError> {
     check_binomial(n, k)?;
     if n == k || k == 0 {
@@ -66,16 +67,33 @@ pub fn binomial_coefficient(n: i64, k: i64) -> Result<i64, CombinatoricsError> {
     if k > n / 2 {
         return binomial_coefficient(n, n - k);
     }
-    if n > 61 {
-        return Err(CombinatoricsError::Unmeasured { n });
-    }
     // `(n choose k) == ((n - k + 1) * ... * n) / (1 * ... * k)`, in an order where every partial
     // product is already an integer, so the truncating division never loses anything.
     let mut result: i64 = 1;
+    if n <= 61 {
+        for j in 1..=k {
+            result = result * (n - k + j) / j;
+        }
+        return Ok(result);
+    }
+    // Past 61 `result * i` may overflow, so the gcd of `i` and `j` is divided out first: `result`
+    // is divisible by `j / d`. Up to 66 the answer fits; past it `mulAndCheck` throws on overflow.
     for j in 1..=k {
-        result = result * (n - k + j) / j;
+        let i = n - k + j;
+        let d = gcd(i, j);
+        result = (result / (j / d))
+            .checked_mul(i / d)
+            .ok_or(CombinatoricsError::Overflow { n })?;
     }
     Ok(result)
+}
+
+/// `ArithmeticUtils.gcd` of two positive values.
+fn gcd(mut a: i64, mut b: i64) -> i64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 /// `binomialCoefficientDouble(n, k)`, the rounded-product route.
@@ -188,15 +206,17 @@ mod tests {
             binomial_coefficient(-1, -1),
             Err(CombinatoricsError::Negative { n: -1 })
         );
-        // The two unported arms of the exact route. The sum-of-logs route used to be refused
-        // beside them and is measured now.
+        // Past 61 the gcd arm answers exactly, up to the largest coefficient a `long` holds.
+        assert_eq!(binomial_coefficient(62, 31), Ok(465_428_353_255_261_088));
+        assert_eq!(binomial_coefficient(66, 33), Ok(7_219_428_434_016_265_740));
+        assert_eq!(binomial_coefficient(67, 2), Ok(2_211));
         assert_eq!(
-            binomial_coefficient(62, 31),
-            Err(CombinatoricsError::Unmeasured { n: 62 })
+            binomial_coefficient(68, 34),
+            Err(CombinatoricsError::Overflow { n: 68 })
         );
         assert_eq!(
             binomial_coefficient_double(62, 31),
-            Err(CombinatoricsError::Unmeasured { n: 62 })
+            Ok(465_428_353_255_261_088.0)
         );
     }
 
