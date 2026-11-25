@@ -163,8 +163,12 @@ impl<W: Write> BamWriter<W> {
     ///
     /// This must be enabled before the first record: the index records the virtual file
     /// pointer around every record, and there is no way to recover the ones already written.
+    ///
+    /// Blocks are then deflated on the writing thread: the pointer asked for around every record
+    /// waits for every block in flight, so a worker would only add its wake-up to each block.
     pub fn with_index(mut self) -> Self {
         self.indexer = Some(BamIndexer::new(self.reference_lengths.clone()));
+        self.bgzf = self.bgzf.parallel(false);
         self
     }
 
