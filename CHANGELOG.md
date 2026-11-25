@@ -13,6 +13,13 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM 3.1 fqzcomp qualities decode 13% faster, same bytes, same refusals.** The 65536
+  quality models are one allocation, built in place when first used, rather than one each behind
+  a pointer, and a record's qualities are decoded in a loop of their own, which keeps the range
+  coder in registers. 52 rather than 60 Gcycles on the quality blocks of a CRAM written as
+  htsjdk 5.0.0 writes it (htsjdk 5.0.0 decodes them at 23 MB/s, this at 33); a whole read of it
+  12% fewer cycles. The encoder uses the same table and writes the same bytes, 2% faster.
+
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:

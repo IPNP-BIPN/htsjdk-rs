@@ -5,7 +5,7 @@
 //! position in the read and a running count of changes; the read lengths that delimit records
 //! are coded inline, because the codec needs them and nothing else in the block carries them.
 
-use crate::range::{ByteModel, RangeCoder};
+use crate::range::{ByteModel, ModelTable, RangeCoder};
 use crate::rans_nx16::{Input, NxError};
 
 const SUPPORTED_VERSION: u8 = 5;
@@ -196,8 +196,7 @@ fn read_array(input: &mut Input<'_>, table: &mut [u32], size: usize) -> Result<(
 
 /// The adaptive models, the 65536 quality ones built when first used.
 pub(crate) struct Models {
-    quality: Vec<Option<ByteModel>>,
-    quality_symbols: usize,
+    pub(crate) quality: ModelTable,
     pub(crate) length: Vec<ByteModel>,
     pub(crate) reverse: ByteModel,
     pub(crate) duplicate: ByteModel,
@@ -207,18 +206,12 @@ pub(crate) struct Models {
 impl Models {
     pub(crate) fn new(max_symbol: u32, max_selector: u32) -> Self {
         Self {
-            quality: (0..1 << 16).map(|_| None).collect(),
-            quality_symbols: max_symbol as usize + 1,
+            quality: ModelTable::new(1 << 16, max_symbol as usize + 1),
             length: vec![ByteModel::new(256); 4],
             reverse: ByteModel::new(2),
             duplicate: ByteModel::new(2),
             selector: (max_selector > 0).then(|| ByteModel::new(max_selector as usize + 1)),
         }
-    }
-
-    pub(crate) fn quality(&mut self, context: usize) -> &mut ByteModel {
-        let symbols = self.quality_symbols;
-        self.quality[context].get_or_insert_with(|| ByteModel::new(symbols))
     }
 }
 
@@ -318,14 +311,16 @@ pub fn uncompress(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
             last = 0;
         }
         let param = params.params.get(current).ok_or(NxError::Truncated)?;
-        let quality = models.quality(last).decode(&mut input, &mut coder)?;
-        out[i] = if param.do_qmap {
-            param.quality_map[quality as usize] as u8
-        } else {
-            quality as u8
-        };
-        i += 1;
-        last = update_context(param, &mut state, quality);
+        qualities(
+            &mut models.quality,
+            &mut coder,
+            &mut input,
+            param,
+            &mut state,
+            &mut out,
+            &mut i,
+            &mut last,
+        )?;
     }
 
     if do_reverse {
@@ -343,6 +338,51 @@ pub fn uncompress(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
         }
     }
     Ok(out)
+}
+
+/// The rest of a record's qualities, the loop `FQZCompDecode.uncompress` runs between records.
+///
+/// Apart from the record loop so that the coder and the input cursor live in registers: in
+/// one function with the record decoding they were kept on the stack, and every symbol paid
+/// a store and a reload of each on its critical path.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn qualities(
+    models: &mut ModelTable,
+    coder: &mut RangeCoder,
+    input: &mut Input<'_>,
+    param: &Param,
+    state: &mut State,
+    out: &mut [u8],
+    i: &mut usize,
+    last: &mut usize,
+) -> Result<(), NxError> {
+    let mut local = std::mem::replace(coder, RangeCoder::new());
+    let mut cursor = Input {
+        bytes: input.bytes,
+        pos: input.pos,
+    };
+    let (mut at, mut context) = (*i, *last);
+    let result = loop {
+        if at >= out.len() || state.bases == 0 {
+            break Ok(());
+        }
+        let quality = match models.decode(context, &mut cursor, &mut local) {
+            Ok(quality) => quality,
+            Err(e) => break Err(e),
+        };
+        out[at] = if param.do_qmap {
+            param.quality_map[quality as usize] as u8
+        } else {
+            quality as u8
+        };
+        at += 1;
+        context = update_context(param, state, quality);
+    };
+    *coder = local;
+    input.pos = cursor.pos;
+    (*i, *last) = (at, context);
+    result
 }
 
 /// `decodeFQZNewRecord`.
@@ -453,8 +493,7 @@ pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<
     if params.do_reverse {
         reverse_in_place(&mut quality, lengths, bam_flags);
     }
-    let mut models: Vec<Option<ByteModel>> = (0..CTX_SIZE).map(|_| None).collect();
-    let symbols = params.max_symbol + 1;
+    let mut models = ModelTable::new(CTX_SIZE, params.max_symbol + 1);
     let mut length_models = vec![ByteModel::new(256); 4];
     let mut reverse_model = ByteModel::new(2);
     let mut dup_model = ByteModel::new(2);
@@ -507,9 +546,7 @@ pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<
             record += 1;
         }
         let q = params.qmap[quality[i] as usize];
-        models[last]
-            .get_or_insert_with(|| ByteModel::new(symbols))
-            .encode(&mut coder, q);
+        models.encode(last, &mut coder, q);
         qctx = (qctx << params.qshift).wrapping_add(params.qtab[q as usize]);
         let mut context = (qctx & params.qmask) << params.qloc;
         if let Some(t) = &ptab {
