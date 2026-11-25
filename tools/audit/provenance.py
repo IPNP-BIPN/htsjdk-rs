@@ -40,6 +40,11 @@ ALLOWED = {
     "zlib": "zlib, zlib licence",
     # ISA-L, BSD-3-Clause. igzip is the backend GKL uses at levels 1 and 2. See decision 0028.
     "isa-l": "ISA-L, BSD-3-Clause",
+    # htscodecs (BSD-3-Clause, its rANS and range coder primitives public domain) and HTSlib
+    # (MIT/Expat, its CRAM code BSD-3-Clause). Decoders only: their output is fixed by the format,
+    # while an encoder's bytes must stay htsjdk's. See decision 0052.
+    "htscodecs": "htscodecs, BSD-3-Clause",
+    "htslib": "HTSlib, MIT/Expat and BSD-3-Clause",
 }
 
 # Anything matching these is GPL2 and must not be transcribed. Listed explicitly rather than

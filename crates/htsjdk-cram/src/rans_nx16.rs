@@ -279,8 +279,431 @@ fn fill_table(table: &mut Table, freq: &[u32; NUMBER_OF_SYMBOLS], only: Option<&
     }
 }
 
+/// One slot of a context's reverse lookup, packed so that the hot loop reads one word per symbol:
+/// the symbol, its frequency, and the slot's distance from the symbol's start.
+///
+/// With it, `RANSDecodingSymbol.advanceSymbolStep`,
+/// ```java
+/// freq * (r >> scaleBits) + (r & mask) - start
+/// ```
+/// becomes `freq * (r >> shift) + bias`, the same value: `bias` is `(r & mask) - start` worked out
+/// once per slot instead of once per symbol. That is the layout htscodecs' decoders use.
+///
+/// There are two packings. `u64` holds any frequency a damaged table can carry. `u32` holds the
+/// tables a conforming encoder writes, where every context's frequencies add up to exactly
+/// `1 << shift` ([`conforming`]): each slot then belongs to a symbol of frequency 1 to 4096, which
+/// fits 12 bits as `freq - 1`, and the table is half the size in cache.
+trait Slot: Copy {
+    fn pack(freq: u32, bias: u32, symbol: u8) -> Self;
+    fn symbol(self) -> u8;
+    /// The state advanced past this slot's symbol.
+    fn advance(self, x: u64, shift: u32) -> u64;
+}
+
+impl Slot for u64 {
+    fn pack(freq: u32, bias: u32, symbol: u8) -> Self {
+        (u64::from(freq) << 32) | (u64::from(bias) << 8) | u64::from(symbol)
+    }
+    #[inline(always)]
+    fn symbol(self) -> u8 {
+        self as u8
+    }
+    #[inline(always)]
+    fn advance(self, x: u64, shift: u32) -> u64 {
+        // Wrapping, as the reference's `long` arithmetic is, for a damaged table's frequencies.
+        (self >> 32)
+            .wrapping_mul(x >> shift)
+            .wrapping_add((self >> 8) & 0xFF_FFFF)
+    }
+}
+
+impl Slot for u32 {
+    fn pack(freq: u32, bias: u32, symbol: u8) -> Self {
+        (freq.wrapping_sub(1) << 20) | ((bias & 0xFFF) << 8) | u32::from(symbol)
+    }
+    #[inline(always)]
+    fn symbol(self) -> u8 {
+        self as u8
+    }
+    #[inline(always)]
+    fn advance(self, x: u64, shift: u32) -> u64 {
+        u64::from((self >> 20) + 1) * (x >> shift) + u64::from((self >> 8) & 0xFFF)
+    }
+}
+
+/// Whether a context's normalised frequencies add up to exactly `1 << shift`, as every table a
+/// conforming encoder writes does. Then no slot is left to `Table`'s defaults, and every
+/// frequency fits the `u32` packing.
+fn conforming(freq: &[u32; NUMBER_OF_SYMBOLS], shift: u32) -> bool {
+    freq.iter().map(|&f| u64::from(f)).sum::<u64>() == 1 << shift
+}
+
+/// Fill one context's packed lookup the way [`fill_table`] fills a [`Table`], so that every slot
+/// decodes to the symbol, frequency and start the reference would read.
+///
+/// A slot no symbol covers keeps `Table`'s defaults, symbol 0 with `freq[0]` and start 0, and the
+/// sums wrap as the reference's `int` arithmetic does. Both only matter for a damaged table.
+fn fill_packed<S: Slot>(
+    table: &mut [S],
+    freq: &[u32; NUMBER_OF_SYMBOLS],
+    only: Option<&[bool; 256]>,
+) {
+    for (m, s) in table.iter_mut().enumerate() {
+        *s = S::pack(freq[0], m as u32, 0);
+    }
+    let len = table.len() as u32;
+    let mut cumulative = 0u32;
+    for j in 0..NUMBER_OF_SYMBOLS {
+        if only.is_some_and(|a| !a[j]) {
+            continue;
+        }
+        let end = cumulative.wrapping_add(freq[j]).min(len);
+        for m in cumulative.min(end)..end {
+            table[m as usize] = S::pack(freq[j], m - cumulative, j as u8);
+        }
+        cumulative = cumulative.wrapping_add(freq[j]);
+    }
+}
+
+/// `Utils.RANSDecodeRenormalizeNx16` without a branch, for a round that cannot run out of input.
+///
+/// The two bytes are read whether or not the state needs them, and the cursor moves only if it
+/// does. The caller has checked that `2 * ways` bytes remain, so the read is always in bounds.
+#[inline(always)]
+fn renormalize_unchecked(x: u64, bytes: &[u8], pos: &mut usize) -> u64 {
+    let refill = (x << 16) | u64::from(u16::from_le_bytes([bytes[*pos], bytes[*pos + 1]]));
+    let need = x < LOWER_BOUND;
+    *pos += 2 * usize::from(need);
+    if need {
+        refill
+    } else {
+        x
+    }
+}
+
 /// `uncompressOrder0WayN`.
+///
+/// The reference's loop, with the lookup packed ([`Slot`]) and the states in a fixed-size array.
+/// Each round of `ways` symbols first checks that the input holds the `2 * ways` bytes the round
+/// could read; while it does, nothing can run out, so the round skips the per-byte checks. Rounds
+/// past that point go through [`renormalize`], which refuses exactly where the reference does.
 pub(crate) fn order0(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxError> {
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return order0_reference(input, out, ways);
+    }
+    let alphabet = read_alphabet(input)?;
+    let mut freq = [0u32; NUMBER_OF_SYMBOLS];
+    for j in 0..NUMBER_OF_SYMBOLS {
+        if alphabet[j] {
+            freq[j] = input.uint7()? as u32;
+        }
+    }
+    normalise_shift(&mut freq, TOTAL_FREQ_SHIFT);
+    // `<4, u32>` reads "four states, slots packed in 32 bits".
+    match (ways == 4, conforming(&freq, TOTAL_FREQ_SHIFT)) {
+        (true, true) => order0_ways::<4, u32>(input, out, &freq, &alphabet),
+        (true, false) => order0_ways::<4, u64>(input, out, &freq, &alphabet),
+        (false, true) => order0_ways::<32, u32>(input, out, &freq, &alphabet),
+        (false, false) => order0_ways::<32, u64>(input, out, &freq, &alphabet),
+    }
+}
+
+fn order0_ways<const W: usize, S: Slot>(
+    input: &mut Input<'_>,
+    out: &mut [u8],
+    freq: &[u32; NUMBER_OF_SYMBOLS],
+    alphabet: &[bool; NUMBER_OF_SYMBOLS],
+) -> Result<(), NxError> {
+    let mut table = vec![S::pack(0, 0, 0); 1 << TOTAL_FREQ_SHIFT];
+    fill_packed(&mut table, freq, Some(alphabet));
+
+    let mut x = [0u64; W];
+    for r in x.iter_mut() {
+        *r = input.u32_le()?;
+    }
+    let size = out.len();
+    let end = size / W * W;
+    let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
+    let bytes = input.bytes;
+
+    for chunk in out[..end].chunks_exact_mut(W) {
+        if input.pos + 2 * W <= bytes.len() {
+            let mut pos = input.pos;
+            for r in 0..W {
+                let entry = table[(x[r] & mask) as usize];
+                chunk[r] = entry.symbol();
+                x[r] =
+                    renormalize_unchecked(entry.advance(x[r], TOTAL_FREQ_SHIFT), bytes, &mut pos);
+            }
+            input.pos = pos;
+        } else {
+            for r in 0..W {
+                let entry = table[(x[r] & mask) as usize];
+                chunk[r] = entry.symbol();
+                x[r] = renormalize(entry.advance(x[r], TOTAL_FREQ_SHIFT), input)?;
+            }
+        }
+    }
+    for (r, slot) in out[end..].iter_mut().enumerate() {
+        let entry = table[(x[r] & mask) as usize];
+        x[r] = renormalize(entry.advance(x[r], TOTAL_FREQ_SHIFT), input)?;
+        *slot = entry.symbol();
+    }
+    Ok(())
+}
+
+/// `uncompressOrder1WayN`.
+///
+/// Each state decodes its own stretch of the output, `interleave` bytes long, with the previous
+/// symbol of that stretch as the context; the last state then decodes what is left. As in
+/// [`order0`], the lookups are packed and a round that cannot run out of input skips the checks.
+///
+/// The packed tables of the contexts the alphabet names sit one after the other in one buffer,
+/// and a context the alphabet leaves out points at a shared table of `Table::new()`'s defaults.
+/// That keeps memory at the few contexts a block uses rather than 256 full tables.
+///
+/// A shift past 12 is left to [`order1_reference`]: the reference sizes an absent context's
+/// table at 4096 slots whatever the shift, and refuses a state that indexes past it.
+fn order1(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxError> {
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return order1_reference(input, out, ways);
+    }
+    let start = input.pos;
+    let first = input.byte()?;
+    let shift = u32::from(first >> 4);
+    if shift > TOTAL_FREQ_SHIFT {
+        input.pos = start;
+        return order1_reference(input, out, ways);
+    }
+    let mut rows: Vec<(usize, [u32; NUMBER_OF_SYMBOLS])> = Vec::new();
+    let mut add = |context: usize, freq: &[u32; NUMBER_OF_SYMBOLS]| rows.push((context, *freq));
+    if first & 1 != 0 {
+        let uncompressed_length = input.uint7()? as usize;
+        let compressed_length = input.uint7()? as usize;
+        let compressed = input.take(compressed_length)?;
+        let mut table_bytes = vec![0u8; uncompressed_length];
+        // `new RANSNx16Params(~(ORDER | N32))`: order 0, four ways.
+        order0(&mut Input::new(compressed), &mut table_bytes, 4)?;
+        read_order1_freqs(&mut Input::new(&table_bytes), shift, &mut add)?;
+    } else {
+        read_order1_freqs(input, shift, &mut add)?;
+    }
+    // Every state starts in context 0, so the `u32` packing also needs context 0 to have a row:
+    // then every symbol decoded is one the alphabet names, and the shared table is never read.
+    let packs = rows.first().is_some_and(|&(c, _)| c == 0)
+        && rows.iter().all(|(_, freq)| conforming(freq, shift));
+    match (ways == 4, packs) {
+        (true, true) => order1_ways::<4, u32>(input, out, shift, &rows),
+        (true, false) => order1_ways::<4, u64>(input, out, shift, &rows),
+        (false, true) => order1_ways::<32, u32>(input, out, shift, &rows),
+        (false, false) => order1_ways::<32, u64>(input, out, shift, &rows),
+    }
+}
+
+fn order1_ways<const W: usize, S: Slot + 'static>(
+    input: &mut Input<'_>,
+    out: &mut [u8],
+    shift: u32,
+    rows: &[(usize, [u32; NUMBER_OF_SYMBOLS])],
+) -> Result<(), NxError> {
+    let slots = 1usize << shift.max(1);
+    // The table every absent context shares sits first, at offset 0.
+    let mut tables = vec![S::pack(0, 0, 0); slots * (rows.len() + 1)];
+    fill_packed(&mut tables[..slots], &[0; NUMBER_OF_SYMBOLS], None);
+    let mut offset = [0usize; NUMBER_OF_SYMBOLS];
+    for (k, (context, freq)) in rows.iter().enumerate() {
+        let at = slots * (k + 1);
+        fill_packed(&mut tables[at..at + slots], freq, None);
+        offset[*context] = at;
+    }
+
+    let size = out.len();
+    let interleave = size / W;
+    let mut x = [0u64; W];
+    for r in x.iter_mut() {
+        *r = input.u32_le()?;
+    }
+    let mut base = [offset[0]; W];
+    let mask = (1u64 << shift) - 1;
+    let bytes = input.bytes;
+
+    let mut i = 0;
+    #[cfg(target_arch = "x86_64")]
+    if let (Some(tables), Some(x), Some(base)) = (
+        (&tables as &dyn std::any::Any).downcast_ref::<Vec<u32>>(),
+        (&mut x as &mut dyn std::any::Any).downcast_mut::<[u64; 32]>(),
+        (&mut base as &mut dyn std::any::Any).downcast_mut::<[usize; 32]>(),
+    ) {
+        if std::arch::is_x86_feature_detected!("avx2") {
+            // SAFETY: the CPU has AVX2, and `tables` and `offset` are the conforming tables the
+            // function's contract asks for.
+            i = unsafe {
+                avx2::order1_rounds(
+                    tables,
+                    &offset,
+                    shift,
+                    x,
+                    base,
+                    bytes,
+                    &mut input.pos,
+                    out,
+                    interleave,
+                )
+            };
+        }
+    }
+
+    while i < interleave {
+        if input.pos + 2 * W <= bytes.len() {
+            let mut pos = input.pos;
+            for r in 0..W {
+                let entry = tables[base[r] + (x[r] & mask) as usize];
+                let symbol = entry.symbol();
+                out[r * interleave + i] = symbol;
+                x[r] = renormalize_unchecked(entry.advance(x[r], shift), bytes, &mut pos);
+                base[r] = offset[symbol as usize];
+            }
+            input.pos = pos;
+        } else {
+            for r in 0..W {
+                let entry = tables[base[r] + (x[r] & mask) as usize];
+                let symbol = entry.symbol();
+                out[r * interleave + i] = symbol;
+                x[r] = renormalize(entry.advance(x[r], shift), input)?;
+                base[r] = offset[symbol as usize];
+            }
+        }
+        i += 1;
+    }
+    let last = W - 1;
+    for slot in out[W * interleave..].iter_mut() {
+        let entry = tables[base[last] + (x[last] & mask) as usize];
+        let symbol = entry.symbol();
+        *slot = symbol;
+        x[last] = renormalize(entry.advance(x[last], shift), input)?;
+        base[last] = offset[symbol as usize];
+    }
+    Ok(())
+}
+
+/// The 32-state order-1 loop on AVX2, eight states to a vector.
+///
+/// Ported from htscodecs 1.6 `rans_uncompress_O1_32x16_avx2` (`rANS_static32x16pr_avx2.c`),
+/// written over this file's tables. A decoder only, which decision 0052 allows: its output is
+/// the scalar loop's.
+///
+/// It is the scalar loop's arithmetic lane by lane, so the two can hand over between rounds. The
+/// states fit 32 bits because the tables conform ([`conforming`]): a state below `2^32` advances
+/// to below `freq * 2^(32 - shift) <= 2^32`, and a refilled one is below `2^31`. Refills take the
+/// next 16-bit words in state order, as the scalar loop does: a lane that needs one gets the word
+/// whose index is the number of lanes before it that need one too.
+#[cfg(target_arch = "x86_64")]
+mod avx2 {
+    use std::arch::x86_64::*;
+
+    /// For each mask of the eight lanes that need a refill, the word each of them takes.
+    static REFILL: [[u32; 8]; 256] = {
+        let mut table = [[0u32; 8]; 256];
+        let mut mask = 0;
+        while mask < 256 {
+            let (mut lane, mut taken) = (0, 0);
+            while lane < 8 {
+                if mask >> lane & 1 == 1 {
+                    table[mask][lane] = taken;
+                    taken += 1;
+                }
+                lane += 1;
+            }
+            mask += 1;
+        }
+        table
+    };
+
+    /// Rounds `0..interleave` of the 32 states, for as long as a round cannot run out of input
+    /// (`pos + 64 <= bytes.len()`), updating the states, their context offsets and the cursor as
+    /// the scalar loop does. Returns the round it stopped before.
+    ///
+    /// # Safety
+    ///
+    /// The CPU has AVX2; `tables` are conforming `u32` slots; `offset` points every context into
+    /// `tables` with room for `1 << shift` slots.
+    #[target_feature(enable = "avx2")]
+    #[allow(clippy::too_many_arguments)]
+    pub(super) unsafe fn order1_rounds(
+        tables: &[u32],
+        offset: &[usize; 256],
+        shift: u32,
+        x: &mut [u64; 32],
+        base: &mut [usize; 32],
+        bytes: &[u8],
+        pos: &mut usize,
+        out: &mut [u8],
+        interleave: usize,
+    ) -> usize {
+        let offsets: [i32; 256] = std::array::from_fn(|c| offset[c] as i32);
+        let slot_mask = _mm256_set1_epi32(((1u32 << shift) - 1) as i32);
+        let count = _mm_cvtsi32_si128(shift as i32);
+        let low12 = _mm256_set1_epi32(0xFFF);
+        let low8 = _mm256_set1_epi32(0xFF);
+        let one = _mm256_set1_epi32(1);
+        let below = _mm256_set1_epi32((1 << 15) - 1);
+        let lanes = |values: [i32; 8]| _mm256_loadu_si256(values.as_ptr().cast());
+        let mut s: [__m256i; 4] =
+            std::array::from_fn(|v| lanes(std::array::from_fn(|k| x[8 * v + k] as u32 as i32)));
+        let mut b: [__m256i; 4] =
+            std::array::from_fn(|v| lanes(std::array::from_fn(|k| base[8 * v + k] as i32)));
+        let mut symbols = [0u32; 32];
+        let mut i = 0;
+        while i < interleave && *pos + 64 <= bytes.len() {
+            for v in 0..4 {
+                let slot = _mm256_add_epi32(b[v], _mm256_and_si256(s[v], slot_mask));
+                let entry = _mm256_i32gather_epi32::<4>(tables.as_ptr().cast(), slot);
+                let freq = _mm256_add_epi32(_mm256_srli_epi32::<20>(entry), one);
+                let bias = _mm256_and_si256(_mm256_srli_epi32::<8>(entry), low12);
+                let symbol = _mm256_and_si256(entry, low8);
+                let state = _mm256_add_epi32(
+                    _mm256_mullo_epi32(freq, _mm256_srl_epi32(s[v], count)),
+                    bias,
+                );
+                // `state < 2^15`, unsigned: the minimum with 2^15 - 1 is the state itself.
+                let need = _mm256_cmpeq_epi32(_mm256_min_epu32(state, below), state);
+                let mask = _mm256_movemask_ps(_mm256_castsi256_ps(need)) as usize;
+                let words = _mm256_cvtepu16_epi32(_mm_loadu_si128(bytes.as_ptr().add(*pos).cast()));
+                let order = _mm256_loadu_si256(REFILL[mask].as_ptr().cast());
+                let refill = _mm256_or_si256(
+                    _mm256_slli_epi32::<16>(state),
+                    _mm256_permutevar8x32_epi32(words, order),
+                );
+                s[v] = _mm256_blendv_epi8(state, refill, need);
+                *pos += 2 * mask.count_ones() as usize;
+                b[v] = _mm256_i32gather_epi32::<4>(offsets.as_ptr(), symbol);
+                _mm256_storeu_si256(symbols.as_mut_ptr().add(8 * v).cast(), symbol);
+            }
+            for (r, &symbol) in symbols.iter().enumerate() {
+                out[r * interleave + i] = symbol as u8;
+            }
+            i += 1;
+        }
+        let mut lane = [0u32; 8];
+        for v in 0..4 {
+            _mm256_storeu_si256(lane.as_mut_ptr().cast(), s[v]);
+            for k in 0..8 {
+                x[8 * v + k] = u64::from(lane[k]);
+            }
+            _mm256_storeu_si256(lane.as_mut_ptr().cast(), b[v]);
+            for k in 0..8 {
+                base[8 * v + k] = lane[k] as usize;
+            }
+        }
+        i
+    }
+}
+
+/// `uncompressOrder0WayN` as first ported, symbol by symbol: what [`order0`] is checked against.
+#[cfg(test)]
+fn order0_reference(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxError> {
     let alphabet = read_alphabet(input)?;
     let mut freq = [0u32; NUMBER_OF_SYMBOLS];
     for j in 0..NUMBER_OF_SYMBOLS {
@@ -326,8 +749,9 @@ pub(crate) fn order0(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Resu
     Ok(())
 }
 
-/// `uncompressOrder1WayN`.
-fn order1(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxError> {
+/// `uncompressOrder1WayN` as first ported, symbol by symbol. [`order1`] falls back to it for a
+/// frequency shift past 12, which no conforming encoder writes, and is checked against it.
+fn order1_reference(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxError> {
     let first = input.byte()?;
     let compressed_table = first & 1 != 0;
     let shift = u32::from(first >> 4);
@@ -389,10 +813,26 @@ fn order1(input: &mut Input<'_>, out: &mut [u8], ways: usize) -> Result<(), NxEr
     Ok(())
 }
 
-/// `readFrequencyTableOrder1`.
+/// `readFrequencyTableOrder1`, for [`order1_reference`].
 fn read_order1_tables(input: &mut Input<'_>, shift: u32) -> Result<Vec<Option<Table>>, NxError> {
-    let alphabet = read_alphabet(input)?;
     let mut tables: Vec<Option<Table>> = (0..NUMBER_OF_SYMBOLS).map(|_| None).collect();
+    read_order1_freqs(input, shift, &mut |i, freq| {
+        let mut table = Table::new();
+        table.reverse = vec![0u8; 1 << shift.max(1)];
+        fill_table(&mut table, freq, None);
+        tables[i] = Some(table);
+    })?;
+    Ok(tables)
+}
+
+/// `readFrequencyTableOrder1`: the alphabet, then for each context in it the normalised
+/// frequencies of the symbols that follow it, handed to `context` as they are read.
+fn read_order1_freqs(
+    input: &mut Input<'_>,
+    shift: u32,
+    context: &mut dyn FnMut(usize, &[u32; NUMBER_OF_SYMBOLS]),
+) -> Result<(), NxError> {
+    let alphabet = read_alphabet(input)?;
     for i in 0..NUMBER_OF_SYMBOLS {
         if !alphabet[i] {
             continue;
@@ -413,12 +853,9 @@ fn read_order1_tables(input: &mut Input<'_>, shift: u32) -> Result<Vec<Option<Ta
             }
         }
         normalise_shift(&mut freq, shift);
-        let mut table = Table::new();
-        table.reverse = vec![0u8; 1 << shift.max(1)];
-        fill_table(&mut table, &freq, None);
-        tables[i] = Some(table);
+        context(i, &freq);
     }
-    Ok(tables)
+    Ok(())
 }
 
 /// `decodeRLEMeta`: the symbols that carry runs, and the run lengths after them.
@@ -452,7 +889,59 @@ fn decode_rle_meta(
 }
 
 /// `decodeRLE`.
+///
+/// The output is allocated once at its declared length and filled by position. A run that would
+/// overshoot that length is refused before it is written: the reference's array refuses it too,
+/// and checking first keeps a damaged run length from writing past the end on the way there. A
+/// run length that `readUint7` overflows to a negative number writes the symbol not even once, as
+/// the reference's `for (j = 0; j <= run; j++)` does.
+///
+/// Most runs are short, so a run that leaves room is written as one 16-byte store and the cursor
+/// moves by the run's length: the bytes past it are overwritten by what follows.
 fn decode_rle(
+    input: &[u8],
+    symbols: &[bool; NUMBER_OF_SYMBOLS],
+    meta: &[u8],
+    meta_pos: usize,
+    length: usize,
+) -> Result<Vec<u8>, NxError> {
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return decode_rle_reference(input, symbols, meta, meta_pos, length);
+    }
+    const SHORT: usize = 16;
+    let mut out = vec![0u8; length];
+    let mut runs = Input {
+        bytes: meta,
+        pos: meta_pos,
+    };
+    let mut literals = input.iter();
+    let mut at = 0;
+    while at < length {
+        let symbol = *literals.next().ok_or(NxError::Truncated)?;
+        if symbols[symbol as usize] {
+            let run = runs.uint7()?;
+            let count = if run < 0 { 0 } else { run as usize + 1 };
+            if count > length - at {
+                return Err(NxError::Truncated);
+            }
+            if count <= SHORT && at + SHORT <= length {
+                out[at..at + SHORT].fill(symbol);
+            } else {
+                out[at..at + count].fill(symbol);
+            }
+            at += count;
+        } else {
+            out[at] = symbol;
+            at += 1;
+        }
+    }
+    Ok(out)
+}
+
+/// `decodeRLE` as first ported, one byte at a time: what [`decode_rle`] is checked against.
+#[cfg(test)]
+fn decode_rle_reference(
     input: &[u8],
     symbols: &[bool; NUMBER_OF_SYMBOLS],
     meta: &[u8],
@@ -472,6 +961,11 @@ fn decode_rle(
             let run = runs.uint7()?;
             for _ in 0..=run {
                 out.push(symbol);
+                // Past the length the answer is already the refusal below; stopping here keeps a
+                // damaged run from allocating gigabytes in the tests.
+                if out.len() > length {
+                    break;
+                }
             }
         } else {
             out.push(symbol);
@@ -1001,6 +1495,109 @@ fn encode_rle(input: &[u8], out: &mut Vec<u8>, flags: u8) -> Vec<u8> {
     write_uint7(compressed_meta.len() as i32, out);
     out.extend_from_slice(&compressed_meta);
     literals
+}
+
+/// Switches the decoders to the ones first ported, for the tests that compare the two.
+#[cfg(test)]
+mod reference {
+    thread_local! {
+        pub(super) static ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// Each side's answer, `None` where it panicked: a size that `readUint7` overflows to a
+    /// negative number asks both for more memory than exists.
+    type Answer = Option<Result<Vec<u8>, NxError>>;
+
+    fn both(stream: &[u8]) -> (Answer, Answer) {
+        let run = || std::panic::catch_unwind(|| uncompress(stream)).ok();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let fast = run();
+        reference::ON.with(|on| on.set(true));
+        let first = run();
+        reference::ON.with(|on| on.set(false));
+        std::panic::set_hook(hook);
+        (fast, first)
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+    }
+
+    /// Quality-like text: a few symbols, in runs, with the order-1 structure the 32-state
+    /// decoders are fastest on.
+    fn qualities(random: &mut Lcg, length: usize) -> Vec<u8> {
+        let mut text = Vec::with_capacity(length);
+        let mut symbol = b'F';
+        while text.len() < length {
+            if random.next().is_multiple_of(4) {
+                symbol = b"#,:FF"[(random.next() % 5) as usize];
+            }
+            let run = 1 + (random.next() % 6) as usize;
+            text.extend(std::iter::repeat_n(symbol, run.min(length - text.len())));
+        }
+        text
+    }
+
+    /// The decoders of this file against the ones first ported, on every flag combination over
+    /// conforming streams, every prefix of short ones, and streams with bytes changed: the same
+    /// bytes or the same refusal each time. On x86-64 with AVX2 this covers the vector loop too.
+    #[test]
+    fn fast_decoders_answer_as_the_first_port_does() {
+        let mut random = Lcg(7);
+        let mut texts = vec![qualities(&mut random, 100_000), qualities(&mut random, 777)];
+        texts.push((0..5000u32).map(|i| (i * 7 % 13) as u8).collect());
+        texts.push(b"ACGT".repeat(300));
+        let flags = [
+            0u8, 1, 4, 5, 0x40, 0x41, 0x44, 0x45, 0x80, 0x81, 0xC5, 0x08, 0x09,
+        ];
+        let mut compared = 0;
+        for text in &texts {
+            for &flag in &flags {
+                let stream = compress(text, flag);
+                let (fast, first) = both(&stream);
+                assert_eq!(fast, Some(Ok(text.clone())), "flags {flag:#x}");
+                assert_eq!(fast, first, "flags {flag:#x}");
+                let cuts: Vec<usize> = if stream.len() < 600 {
+                    (0..stream.len()).collect()
+                } else {
+                    (0..200)
+                        .map(|_| (random.next() as usize) % stream.len())
+                        .collect()
+                };
+                for cut in cuts {
+                    let (fast, first) = both(&stream[..cut]);
+                    assert_eq!(fast, first, "flags {flag:#x}, cut at {cut}");
+                    compared += 1;
+                }
+                for _ in 0..300 {
+                    let mut damaged = stream.clone();
+                    // Past the flags and the size, which would only change what is allocated.
+                    let at = 6 + (random.next() as usize) % (damaged.len() - 6).max(1);
+                    if at < damaged.len() {
+                        damaged[at] ^= 1 << (random.next() % 8);
+                    }
+                    let (fast, first) = both(&damaged);
+                    assert_eq!(fast, first, "flags {flag:#x}, bit changed at {at}");
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 10_000);
+    }
 }
 
 #[cfg(test)]
