@@ -25,6 +25,41 @@
 //!
 //! Not returned. The reference throws `ConvergenceException`, and the two messages differ, so the
 //! refusal names which one it was.
+//!
+//! # What is evaluated, and why ratios rather than numerators and denominators
+//!
+//! The fraction is `a0 + b1 / (a1 + b2 / (a2 + ...))`, with `a_n = get_a(n, x)` and
+//! `b_n = get_b(n, x)`. Its value after `n` terms is a ratio `A_n / B_n`, and the textbook
+//! three-term recurrences for `A_n` and `B_n` grow or shrink geometrically, so a direct evaluation
+//! has to rescale both every few terms to stay inside the doubles. Lentz's method never forms
+//! them. It carries two ratios that stay near one instead,
+//!
+//! ```text
+//! C_n = A_n / A_(n-1) = a_n + b_n / C_(n-1)
+//! D_n = B_(n-1) / B_n = 1 / (a_n + b_n * D_(n-1))
+//! h_n = h_(n-1) * C_n * D_n
+//! ```
+//!
+//! which is the whole of the loop below, and is why there is no scaling step to port. The
+//! "modified" part is the zero test above: either ratio's denominator may land on zero, and the
+//! textbook replacement of an exact zero by a tiny value is widened here to a band.
+//!
+//! # The convergence test is relative
+//!
+//! The loop stops when `|C_n * D_n - 1| < epsilon`, that is when the latest term changed the
+//! convergent by a relative amount below `epsilon`. It is not a test on `|h_n - h_(n-1)|`, and it
+//! is strict: see the comment on the test itself.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `impl Fn(i32, f64) -> f64` is a parameter that accepts any function of an `int` and a
+//!   `double` returning a `double`. It stands in for the reference's abstract `getA` and `getB`:
+//!   where Java subclasses `ContinuedFraction`, the caller here passes two lambdas.
+//! - `Result<f64, ContinuedFractionError>` is "a `double` or an error". `Ok(v)` is a normal
+//!   return, `return Err(...)` is how this codebase models the reference's `throw`.
+//! - An `enum` whose variants carry fields (`Diverged { x, kind }`) is a closed set of exception
+//!   classes, each with the arguments its message is built from.
+//! - `let mut` declares a variable that may be reassigned; without `mut` a binding is final.
 
 /// `ContinuedFraction.DEFAULT_EPSILON`. See the module note: no ported call site uses it.
 pub const DEFAULT_EPSILON: f64 = 10e-9;
@@ -59,6 +94,13 @@ fn is_zero(value: f64) -> bool {
 /// `evaluate(x, epsilon, maxIterations)`, with the abstract `getA` and `getB` passed in.
 ///
 /// `get_a(0, x)` is the seed, and the loop runs from `n = 1`.
+///
+/// `x` is not used here except to be handed to `get_a` and `get_b` and named in a refusal; the
+/// fraction's dependence on it lives entirely in the two functions.
+///
+/// The loop body runs at most `max_iterations - 1` times: `n` starts at one and the loop test is
+/// `n < max_iterations`. The one caller, `regularized_beta` in `beta.rs`, passes
+/// `Integer.MAX_VALUE`. (`gamma.rs` keeps its own copy of this loop for the regularized gamma.)
 pub fn evaluate(
     get_a: impl Fn(i32, f64) -> f64,
     get_b: impl Fn(i32, f64) -> f64,
@@ -74,6 +116,8 @@ pub fn evaluate(
     }
 
     let mut n = 1;
+    // `D_0 = 0` and `C_0 = h_0`, Lentz's starting values. `h_n` is declared outside the loop
+    // because it is the answer after the loop ends.
     let mut d_prev = 0.0;
     let mut c_prev = h_prev;
     let mut h_n = h_prev;
@@ -82,6 +126,8 @@ pub fn evaluate(
         let a = get_a(n, x);
         let b = get_b(n, x);
 
+        // `D_n`'s denominator first, then `C_n`, each guarded against zero before it is used as
+        // a divisor: `d_n` is inverted two lines down, and `c_n` is the next iteration's `c_prev`.
         let mut d_n = a + b * d_prev;
         if is_zero(d_n) {
             d_n = SMALL;
@@ -91,10 +137,14 @@ pub fn evaluate(
             c_n = SMALL;
         }
 
+        // From here on `d_n` holds the reciprocal, which is what `D_n` means; `d_prev` is
+        // therefore always a reciprocal too.
         d_n = 1.0 / d_n;
         let delta_n = c_n * d_n;
         h_n = h_prev * delta_n;
 
+        // Infinity is tested before NaN, and both before convergence, so a convergent that
+        // overflowed is refused even when its `delta_n` would have passed the epsilon test.
         if h_n.is_infinite() {
             return Err(ContinuedFractionError::Diverged {
                 x,
@@ -119,6 +169,7 @@ pub fn evaluate(
         n += 1;
     }
 
+    // A `break` leaves `n < max_iterations`; only running out of iterations leaves it equal.
     if n >= max_iterations {
         return Err(ContinuedFractionError::NotConvergent { max_iterations, x });
     }

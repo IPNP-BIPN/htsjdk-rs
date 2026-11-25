@@ -29,6 +29,32 @@
 //! `binomialCoefficientLog(1050, 200)`. The route never forms the coefficient at all, and its
 //! `k > n / 2` reflection comes **before** the loops, so a large `k` is answered by a shorter sum
 //! rather than a longer one.
+//!
+//! # Why not `lgamma`
+//!
+//! The textbook form, `lgamma(n + 1) - lgamma(k + 1) - lgamma(n - k + 1)`, is a fourth route, and
+//! not the one these call sites get: GATK 4.7.0.0 names this function directly, for example in
+//! `GenotypeIndexCalculator`:
+//!
+//! ```java
+//! final double logGTCnt = CombinatoricsUtils.binomialCoefficientLog(ploidy+a-1, a-1);
+//! ```
+//!
+//! and in `BetaBinomialDistribution.logProbability`, `StrandArtifactFilter`, `Mutect2Engine`,
+//! `AlleleFrequencyCalculator` and `AlleleFractionLikelihoods`. Every logarithm here is
+//! [`fast_math::log`], commons-math's own table-driven `FastMath.log`, which is not correctly
+//! rounded: neither Rust's `f64::ln` (the platform's libm) nor a correctly rounded log is a
+//! stand-in for it.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `Result<T, CombinatoricsError>` is "a `T` or an error", this codebase's model of a thrown
+//!   exception. `Ok(x)` is the value, `Err(e)` the exception.
+//! - `?` after a call that returns a `Result` passes an error straight up to the caller, as an
+//!   uncaught exception would; otherwise it unwraps the value.
+//! - `1..=k` is the inclusive range `1, 2, ..., k`, Java's `for (int j = 1; j <= k; j++)`.
+//! - `i64` is Java's `long`, `f64` its `double`; `x as f64` is the widening `(double) x`, exact
+//!   below 2^53.
 
 use crate::fast_math;
 
@@ -43,7 +69,8 @@ pub enum CombinatoricsError {
     Unmeasured { n: i64 },
 }
 
-/// `checkBinomial(n, k)`.
+/// `checkBinomial(n, k)`. `k > n` is tested before `n < 0`, so `(-1, -1)` is refused as negative
+/// and `(-1, 0)` as too large.
 fn check_binomial(n: i64, k: i64) -> Result<(), CombinatoricsError> {
     if n < k {
         return Err(CombinatoricsError::TooLarge { n, k });
@@ -55,6 +82,10 @@ fn check_binomial(n: i64, k: i64) -> Result<(), CombinatoricsError> {
 }
 
 /// `binomialCoefficient(n, k)`, the exact `long` route, for `n <= 61`.
+///
+/// The special cases and the `k > n / 2` reflection run before the `n` cut, so `(62, 1)` or
+/// `(100, 99)` are answered, and only a genuine product past 61 is
+/// [`CombinatoricsError::Unmeasured`].
 pub fn binomial_coefficient(n: i64, k: i64) -> Result<i64, CombinatoricsError> {
     check_binomial(n, k)?;
     if n == k || k == 0 {
@@ -70,7 +101,9 @@ pub fn binomial_coefficient(n: i64, k: i64) -> Result<i64, CombinatoricsError> {
         return Err(CombinatoricsError::Unmeasured { n });
     }
     // `(n choose k) == ((n - k + 1) * ... * n) / (1 * ... * k)`, in an order where every partial
-    // product is already an integer, so the truncating division never loses anything.
+    // product is already an integer, so the truncating division never loses anything. After step
+    // `j` the result is `(n - k + j) choose j`. Below 62 the largest product before a division is
+    // about 6.98e18 (enumerated over every `n` and `k`), under a `long`'s 9.22e18.
     let mut result: i64 = 1;
     for j in 1..=k {
         result = result * (n - k + j) / j;
@@ -79,6 +112,11 @@ pub fn binomial_coefficient(n: i64, k: i64) -> Result<i64, CombinatoricsError> {
 }
 
 /// `binomialCoefficientDouble(n, k)`, the rounded-product route.
+///
+/// Below 67 it is the exact route converted to a double; from 67 a running product of `k`
+/// fractions, each a separately rounded division, rounded to the nearest integer at the end. So
+/// it need not be the correctly rounded coefficient, and a port that computed the coefficient
+/// exactly could differ from it.
 pub fn binomial_coefficient_double(n: i64, k: i64) -> Result<f64, CombinatoricsError> {
     check_binomial(n, k)?;
     if n == k || k == 0 {
@@ -102,6 +140,9 @@ pub fn binomial_coefficient_double(n: i64, k: i64) -> Result<f64, CombinatoricsE
 }
 
 /// `binomialCoefficientLog(n, k)`, all three routes.
+///
+/// Unlike the other two functions, the reflection comes after the `n < 67` and `n < 1030` cuts:
+/// those routes reflect inside the function they call, and only the sum of logs reflects here.
 pub fn binomial_coefficient_log(n: i64, k: i64) -> Result<f64, CombinatoricsError> {
     check_binomial(n, k)?;
     if n == k || k == 0 {
