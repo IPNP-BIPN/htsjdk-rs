@@ -464,8 +464,8 @@ mod tests {
         for i in 0..30_000 {
             let mut r = BamRecord {
                 read_name: format!("r{i}"),
-                reference_index: (i / 12_000) as i32,
-                alignment_start: 1 + (i % 12_000) as i32 * 37,
+                reference_index: i / 12_000,
+                alignment_start: 1 + (i % 12_000) * 37,
                 ..BamRecord::default()
             };
             // Stretch the name so this record ends exactly where the block does, when it can.
