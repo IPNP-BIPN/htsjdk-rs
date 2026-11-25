@@ -18,10 +18,16 @@
 //! and the MD5 the slice header carries is checked against exactly those bytes, truncated to what
 //! the contig has.
 
-use crate::file::{read_container, read_preamble, ContainerWalk, FileError};
+use crate::compression_header::CompressionHeader;
+use crate::external_codecs::SliceBlockBytes;
+use crate::file::{
+    decompress, read_container, read_container_deferred, read_preamble, ContainerWalk,
+    DeferredBlock, FileError,
+};
 use crate::read_features::{alignment_end, restore_bases_and_tags, ReadFeature};
 use crate::record_flags::{MF_MATE_NEG_STRAND, MF_MATE_UNMAPPED};
 use crate::record_read::{read_record, CramRecord, RecordReadError, RecordReaders, SliceContext};
+use crate::slice_header::SliceHeader;
 use crate::substitution_matrix::SubstitutionMatrix;
 use htsjdk_bam::cigar::Cigar;
 use htsjdk_bam::header::SamHeader;
@@ -319,6 +325,8 @@ pub struct CramReader<'a> {
     pub header_text: String,
     pub header: SamHeader,
     region: ReferenceRegion,
+    /// Containers read and decoded ahead of the one the caller is given, in file order.
+    ahead: std::collections::VecDeque<Pending>,
 }
 
 impl<'a> CramReader<'a> {
@@ -352,45 +360,204 @@ impl<'a> CramReader<'a> {
             header_text,
             header,
             region: ReferenceRegion::default(),
+            ahead: std::collections::VecDeque::new(),
         })
     }
 
     /// The next container's records, or `None` after the EOF container or the end of the bytes.
+    ///
+    /// Containers are read ahead, as many as rayon has threads, each handed to a worker as soon
+    /// as its structure is read, which decompresses its blocks and decodes its records; what
+    /// needs the reference (restoring bases, the MD5, mates) stays on this thread, in file order.
+    /// Every answer is the one reading them one at a time gives, and comes when that reading
+    /// would give it: the records of the containers before a refusal first, and a panic where
+    /// the refusal would be. After a block that does not decompress the reader stands where that
+    /// reading stands, before the container, so the next call refuses it again.
     pub fn next_container(
         &mut self,
         reference: &mut dyn ReferenceSource,
     ) -> Result<Option<Vec<BamRecord>>, CramError> {
-        loop {
+        self.read_ahead();
+        let ahead = match self.ahead.pop_front() {
+            None => return Ok(None),
+            Some(Pending::Ready(ahead)) => ahead,
+            Some(Pending::Decoding { answer, .. }) => {
+                match answer.recv().expect("a worker answers every container") {
+                    Ok(ahead) => ahead,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
+        };
+        match ahead {
+            Ahead::Decoded(decoded) => self.container_records(*decoded, reference).map(Some),
+            Ahead::Refused { error } => {
+                // Read whole, a streamed container can still pass where its structure alone
+                // failed on what had been read of it then; it is then taken as the loop takes it.
+                let container = self.refusal(error)?;
+                if container.header.is_eof() && container.slices.is_empty() {
+                    self.finished = true;
+                    return Ok(None);
+                }
+                if container.slices.is_empty() {
+                    return self.next_container(reference);
+                }
+                let decoded = decode_walked(container);
+                self.container_records(decoded, reference).map(Some)
+            }
+        }
+    }
+
+    /// Read containers until the window is full, the file ends or one is refused, each handed
+    /// to a worker as it is read. The loop is the one-at-a-time reader's, with the decoding
+    /// taken out of it.
+    fn read_ahead(&mut self) {
+        // Past eight the reader's own thread is the bound: more only holds more records.
+        let threads = rayon::current_num_threads().clamp(1, 8);
+        while self.ahead.len() < threads {
+            if let Some(Pending::Ready(Ahead::Refused { .. })) = self.ahead.back() {
+                return;
+            }
             let major = self.major;
-            let container = match &mut self.source {
+            let (container, deferred, bytes) = match &mut self.source {
                 Source::Bytes { cram, at } => {
                     if self.finished || *at >= cram.len() {
                         self.finished = true;
-                        return Ok(None);
+                        return;
                     }
-                    let (container, end) = read_container(cram, *at, major)?;
-                    *at = end;
-                    container
+                    // A panic while reading the structure is the refusal's to give, in its turn.
+                    let walked =
+                        std::panic::catch_unwind(|| read_container_deferred(cram, *at, major));
+                    match walked.unwrap_or(Err(FileError::Truncated)) {
+                        Ok((container, mut deferred, end)) => {
+                            // The container's own bytes, so that a worker can hold them.
+                            let start = *at;
+                            for block in &mut deferred {
+                                block.range = block.range.start - start..block.range.end - start;
+                            }
+                            *at = end;
+                            let bytes: Arc<[u8]> = cram[start..end.min(cram.len())].into();
+                            (container, deferred, bytes)
+                        }
+                        Err(_) => {
+                            self.ahead
+                                .push_back(Pending::Ready(Ahead::Refused { error: None }));
+                            return;
+                        }
+                    }
                 }
                 Source::Stream(streamed) => {
-                    if !self.finished {
-                        streamed.fill(1)?;
+                    let filled = if self.finished {
+                        Ok(())
+                    } else {
+                        streamed.fill(1)
+                    };
+                    if let Err(error) = filled {
+                        self.ahead
+                            .push_back(Pending::Ready(Ahead::Refused { error: Some(error) }));
+                        return;
                     }
                     if self.finished || streamed.buffer.is_empty() {
                         self.finished = true;
-                        return Ok(None);
+                        return;
                     }
-                    streamed.parse(|bytes| read_container(bytes, 0, major))?
+                    let walked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        streamed.parse(|bytes| {
+                            read_container_deferred(bytes, 0, major).map(
+                                |(container, deferred, end)| {
+                                    let kept: Arc<[u8]> = bytes[..end.min(bytes.len())].into();
+                                    ((container, deferred, kept), end)
+                                },
+                            )
+                        })
+                    }));
+                    match walked {
+                        Ok(Ok(parsed)) => parsed,
+                        Ok(Err(error)) => {
+                            // A refusal of the bytes is only given once the stream has ended;
+                            // before, the stream itself failed.
+                            let error = (!streamed.eof).then_some(error);
+                            self.ahead
+                                .push_back(Pending::Ready(Ahead::Refused { error }));
+                            return;
+                        }
+                        Err(_) => {
+                            self.ahead
+                                .push_back(Pending::Ready(Ahead::Refused { error: None }));
+                            return;
+                        }
+                    }
                 }
             };
             if container.header.is_eof() && container.slices.is_empty() {
                 self.finished = true;
-                return Ok(None);
+                return;
             }
             if container.slices.is_empty() {
                 continue;
             }
-            return self.container_records(&container, reference).map(Some);
+            let streamed = matches!(self.source, Source::Stream(_)).then(|| bytes.clone());
+            let read = Read {
+                container,
+                deferred,
+                bytes,
+            };
+            if threads == 1 {
+                self.ahead.push_back(Pending::Ready(decode_container(read)));
+            } else {
+                let (sender, answer) = std::sync::mpsc::sync_channel(1);
+                rayon::spawn(move || {
+                    let decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        decode_container(read)
+                    }));
+                    // The reader may be gone, and the answer with it.
+                    let _ = sender.send(decoded);
+                });
+                self.ahead.push_back(Pending::Decoding { answer, streamed });
+            }
+        }
+    }
+
+    /// The refusal of the container the reader stands before, as reading it whole gives it:
+    /// a block before the point the structure failed at may fail first. A stream's own failure
+    /// is given as it was.
+    fn refusal(&mut self, error: Option<CramError>) -> Result<ContainerWalk, CramError> {
+        let major = self.major;
+        match (&mut self.source, error) {
+            (_, Some(error)) => Err(error),
+            (Source::Bytes { cram, at }, None) => {
+                let (container, end) = read_container(cram, *at, major)?;
+                *at = end;
+                Ok(container)
+            }
+            (Source::Stream(streamed), None) => {
+                streamed.parse(|bytes| read_container(bytes, 0, major))
+            }
+        }
+    }
+
+    /// Put the reader back before a container whose block did not decompress, as reading one
+    /// at a time leaves it: the containers read after it are dropped and will be read again.
+    fn rewind(&mut self, offset: usize, kept: Option<Arc<[u8]>>) {
+        let later: Vec<Pending> = self.ahead.drain(..).collect();
+        self.finished = false;
+        match &mut self.source {
+            Source::Bytes { at, .. } => *at = offset,
+            Source::Stream(streamed) => {
+                let mut bytes = kept.map(|kept| kept.to_vec()).unwrap_or_default();
+                for pending in later {
+                    match pending {
+                        Pending::Decoding {
+                            streamed: Some(kept),
+                            ..
+                        } => bytes.extend_from_slice(&kept),
+                        Pending::Ready(Ahead::Decoded(decoded)) => bytes
+                            .extend_from_slice(&decoded.kept.unwrap_or_else(|| Arc::from(&[][..]))),
+                        _ => {}
+                    }
+                }
+                bytes.extend_from_slice(&streamed.buffer);
+                streamed.buffer = bytes;
+            }
         }
     }
 
@@ -411,36 +578,42 @@ impl<'a> CramReader<'a> {
         Ok(records)
     }
 
-    /// `Container.getSAMRecords`.
+    /// `Container.getSAMRecords`, from what the workers decoded: each step's answer is taken in
+    /// the order the one-at-a-time reader meets it.
     fn container_records(
         &mut self,
-        container: &ContainerWalk,
+        decoded: Decoded,
         reference: &mut dyn ReferenceSource,
     ) -> Result<Vec<BamRecord>, CramError> {
-        let compression = container
-            .compression_header
-            .as_ref()
-            .expect("a data container has a compression header");
-        let readers = RecordReaders::new(&compression.encodings)?.with_tags(compression);
+        match decoded.blocks {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(Err(error)) => {
+                self.rewind(decoded.offset, decoded.kept);
+                return Err(error.into());
+            }
+            Ok(Ok(())) => {}
+        }
+        let compression = decoded.compression;
         let matrix = SubstitutionMatrix::from_encoded(compression.preservation.substitution_matrix);
+        match decoded.readers {
+            Some(Err(panic)) => std::panic::resume_unwind(panic),
+            Some(Ok(Err(error))) => return Err(error.into()),
+            _ => {}
+        }
         let mut out = Vec::new();
 
-        for slice in &container.slices {
+        for slice in decoded.slices {
             let context = SliceContext {
                 reference_context: slice.header.reference_context_id,
                 alignment_start: slice.header.alignment_start,
             };
-            let blocks = slice.block_bytes();
-            let mut streams = crate::external_codecs::SliceReadStreams::new(&blocks);
+            let blocks = slice.blocks;
 
-            // `deserializeCRAMRecords`.
-            let mut records = Vec::with_capacity(slice.header.record_count.max(0) as usize);
-            let mut previous = slice.header.alignment_start;
-            for _ in 0..slice.header.record_count.max(0) {
-                let record = read_record(&readers, compression, &context, &mut streams, previous)?;
-                previous = record.alignment_start;
-                records.push(record);
-            }
+            // `deserializeCRAMRecords`, done on a worker.
+            let records = match slice.records {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(records) => records?,
+            };
 
             // `normalizeCRAMRecords`.
             let mut embedded = false;
@@ -490,6 +663,206 @@ impl<'a> CramReader<'a> {
         }
         Ok(out)
     }
+}
+
+/// A container whose structure was read, its blocks still compressed: `bytes`, the container's
+/// own bytes, holds them at the ranges `deferred` lists.
+struct Read {
+    container: ContainerWalk,
+    deferred: Vec<DeferredBlock>,
+    bytes: Arc<[u8]>,
+}
+
+/// A container in the window: decoded, or on a worker. A streamed one keeps its bytes, to put
+/// back if a container before it has a block that does not decompress.
+enum Pending {
+    Ready(Ahead),
+    Decoding {
+        answer: std::sync::mpsc::Receiver<std::thread::Result<Ahead>>,
+        streamed: Option<Arc<[u8]>>,
+    },
+}
+
+/// A container read ahead.
+enum Ahead {
+    Decoded(Box<Decoded>),
+    /// Its structure was refused; `error` is the stream's own failure, where there was one.
+    Refused {
+        error: Option<CramError>,
+    },
+}
+
+/// What a worker made of a container, each step's answer kept, a panic included, so that the
+/// reader's thread can meet them in order. A step after one that failed is not run.
+struct Decoded {
+    offset: usize,
+    /// A streamed container's bytes, to put back if a block does not decompress.
+    kept: Option<Arc<[u8]>>,
+    blocks: std::thread::Result<Result<(), FileError>>,
+    compression: CompressionHeader,
+    readers: Option<std::thread::Result<Result<(), RecordReadError>>>,
+    slices: Vec<DecodedSlice>,
+}
+
+struct DecodedSlice {
+    header: SliceHeader,
+    blocks: SliceBlockBytes,
+    records: std::thread::Result<Result<Vec<CramRecord>, RecordReadError>>,
+}
+
+/// One container's blocks decompressed and its slices' records decoded, as the one-at-a-time
+/// reader does them: the blocks in file order, the record readers, then each slice's records.
+fn decode_container(read: Read) -> Ahead {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let Read {
+        mut container,
+        deferred,
+        bytes,
+    } = read;
+    let compression = container
+        .compression_header
+        .take()
+        .expect("a data container has a compression header");
+    let mut decoded = Decoded {
+        offset: container.offset,
+        kept: None,
+        blocks: Ok(Ok(())),
+        compression,
+        readers: None,
+        slices: Vec::new(),
+    };
+
+    // `read_container`'s decompression, block by block in its order.
+    let contents = catch_unwind(AssertUnwindSafe(|| {
+        deferred
+            .iter()
+            .map(|block| {
+                decompress(
+                    block.method,
+                    &bytes[block.range.clone()],
+                    block.uncompressed_size,
+                )
+            })
+            .collect::<Result<Vec<Vec<u8>>, FileError>>()
+    }));
+    decoded.kept = Some(bytes);
+    let contents = match contents {
+        Ok(Ok(contents)) => contents.into_iter(),
+        Ok(Err(error)) => {
+            decoded.blocks = Ok(Err(error));
+            return Ahead::Decoded(Box::new(decoded));
+        }
+        Err(panic) => {
+            decoded.blocks = Err(panic);
+            return Ahead::Decoded(Box::new(decoded));
+        }
+    };
+    Ahead::Decoded(Box::new(decode_records(decoded, container, contents)))
+}
+
+/// A container [`read_container`] read whole, decoded as [`decode_container`] decodes one.
+fn decode_walked(mut container: ContainerWalk) -> Decoded {
+    let compression = container
+        .compression_header
+        .take()
+        .expect("a data container has a compression header");
+    let contents: Vec<Vec<u8>> = container
+        .slices
+        .iter_mut()
+        .flat_map(|slice| {
+            slice
+                .blocks
+                .iter_mut()
+                .map(|block| std::mem::take(&mut block.content))
+        })
+        .collect();
+    let decoded = Decoded {
+        offset: container.offset,
+        kept: None,
+        blocks: Ok(Ok(())),
+        compression,
+        readers: None,
+        slices: Vec::new(),
+    };
+    decode_records(decoded, container, contents.into_iter())
+}
+
+/// The record readers, then each slice's records, from the blocks' contents in file order.
+fn decode_records(
+    mut decoded: Decoded,
+    container: ContainerWalk,
+    mut contents: impl Iterator<Item = Vec<u8>>,
+) -> Decoded {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    let readers = catch_unwind(AssertUnwindSafe(|| {
+        RecordReaders::new(&decoded.compression.encodings)
+            .map(|readers| readers.with_tags(&decoded.compression))
+    }));
+    let readers = match readers {
+        Ok(Ok(readers)) => {
+            decoded.readers = Some(Ok(Ok(())));
+            readers
+        }
+        Ok(Err(error)) => {
+            decoded.readers = Some(Ok(Err(error)));
+            return decoded;
+        }
+        Err(panic) => {
+            decoded.readers = Some(Err(panic));
+            return decoded;
+        }
+    };
+
+    for slice in container.slices {
+        // `SliceWalk::block_bytes`, the contents moved rather than copied.
+        let mut blocks = SliceBlockBytes::default();
+        for block in slice.blocks {
+            let content = contents.next().expect("one content per block");
+            match block.content_type {
+                crate::block::ContentType::Core => blocks.core = content,
+                _ => {
+                    blocks.external.insert(block.content_id, content);
+                }
+            }
+        }
+        let header = slice.header;
+        let records = catch_unwind(AssertUnwindSafe(|| {
+            let context = SliceContext {
+                reference_context: header.reference_context_id,
+                alignment_start: header.alignment_start,
+            };
+            let mut streams = crate::external_codecs::SliceReadStreams::new(&blocks);
+            let mut records = Vec::with_capacity(header.record_count.max(0) as usize);
+            let mut previous = header.alignment_start;
+            for _ in 0..header.record_count.max(0) {
+                let record = read_record(
+                    &readers,
+                    &decoded.compression,
+                    &context,
+                    &mut streams,
+                    previous,
+                )?;
+                previous = record.alignment_start;
+                records.push(record);
+            }
+            Ok(records)
+        }));
+        let failed = !matches!(records, Ok(Ok(_)));
+        // Past its records, a slice's blocks are only wanted for an embedded reference: the
+        // others go now rather than wait in the window.
+        let embedded = header.embedded_reference_content_id;
+        blocks.core = Vec::new();
+        blocks.external.retain(|&id, _| id == embedded);
+        decoded.slices.push(DecodedSlice {
+            header,
+            blocks,
+            records,
+        });
+        if failed {
+            break;
+        }
+    }
+    decoded
 }
 
 /// The FILE_HEADER block's content: a little-endian length, then that many bytes of text.

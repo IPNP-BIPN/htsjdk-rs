@@ -340,3 +340,95 @@ fn a_streamed_cram_reads_as_the_bytes_do() {
         }
     }
 }
+
+/// What a reader gives container by container: each batch, then how it stopped (the end, a
+/// refusal or a panic), then what the next call gives after a refusal.
+fn container_by_container<'a>(
+    reader: Result<CramReader<'a>, htsjdk_cram::reader::CramError>,
+    source: &mut Memory,
+) -> Vec<String> {
+    let mut reader = match reader {
+        Ok(reader) => reader,
+        Err(error) => return vec![format!("open: {error:?}")],
+    };
+    let mut seen = Vec::new();
+    loop {
+        let next = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reader.next_container(source)
+        }));
+        match next {
+            Ok(Ok(Some(batch))) => seen.push(format!("{batch:?}")),
+            Ok(Ok(None)) => {
+                seen.push("end".to_string());
+                return seen;
+            }
+            Ok(Err(error)) => {
+                seen.push(format!("refused: {error:?}"));
+                let again = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reader
+                        .next_container(source)
+                        .map(|batch| batch.map(|b| b.len()))
+                }));
+                seen.push(format!("then: {:?}", again.map_err(|_| "panic")));
+                return seen;
+            }
+            Err(_) => {
+                seen.push("panic".to_string());
+                return seen;
+            }
+        }
+    }
+}
+
+/// Containers decoded on many threads answer as on one: the same records container by
+/// container, then the same end, refusal or panic, and the same answer to the call after it, in
+/// memory and streamed, whole, cut short and with one bit changed.
+#[test]
+fn a_cram_read_on_many_threads_reads_as_on_one() {
+    let (header, mut source) = reference();
+    let written = records(&header, &mut source, 25_000);
+    let cram = write_cram(&header, &written, "file:///p.cram", &mut source).unwrap();
+    let pools: Vec<rayon::ThreadPool> = [1, 8]
+        .into_iter()
+        .map(|n| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .build()
+                .unwrap()
+        })
+        .collect();
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let mut seed = 3u64;
+    let mut next = move || {
+        seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+        (seed >> 33) as usize
+    };
+    let mut variants = vec![cram.clone()];
+    for _ in 0..12 {
+        variants.push(cram[..next() % cram.len()].to_vec());
+    }
+    for _ in 0..40 {
+        let mut damaged = cram.clone();
+        let at = next() % damaged.len();
+        damaged[at] ^= 1 << (next() % 8);
+        variants.push(damaged);
+    }
+    for (i, bytes) in variants.iter().enumerate() {
+        let answers: Vec<[Vec<String>; 2]> = pools
+            .iter()
+            .map(|pool| {
+                pool.install(|| {
+                    [
+                        container_by_container(CramReader::new(bytes), &mut source),
+                        container_by_container(CramReader::from_read(Trickle(bytes)), &mut source),
+                    ]
+                })
+            })
+            .collect();
+        assert!(answers[0] == answers[1], "variant {i}");
+    }
+    std::panic::set_hook(hook);
+    // The whole file has three data containers, so eight threads read them together.
+    assert!(written.len() > 2 * 10_000);
+}
