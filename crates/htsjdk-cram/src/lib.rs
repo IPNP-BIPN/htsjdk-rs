@@ -9,6 +9,7 @@ pub mod bai;
 pub mod bit_stream;
 pub mod block;
 pub mod codecs;
+pub mod commons_bzip2;
 pub mod compression_header;
 pub mod container;
 pub mod core_codecs;
