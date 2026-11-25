@@ -26,7 +26,7 @@ use crate::compression_header::{crc32, raw_block, raw_block_with_id, Compression
 use crate::encoding_factory::{create_encoding, DataSeriesType as FactoryType, Encoding};
 use crate::encoding_map::{DataSeries, EncodingDescriptor, EncodingId, EncodingMap};
 use crate::external_codecs::SliceWriteStreams;
-use crate::negotiation::{self, trial_choice};
+use crate::negotiation;
 use crate::preservation_map::PreservationMap;
 use crate::read_features::{alignment_end, create_read_features, Qualities, ReadFeature, NO_CODE};
 use crate::reader::{CramError, ReferenceSource};
@@ -132,9 +132,11 @@ fn descriptor(name: &str, content_id: i32) -> EncodingDescriptor {
     }
 }
 
-/// `TrialCompressor` over GZIP and rANS order 0, one per tag for the life of the writer.
+/// `TrialCompressor` over GZIP and rANS order 0, one per tag for the life of the writer, with
+/// BZIP2 as a third candidate for SA and XA (`getTagTrialCompressor`).
 struct TrialCompressor {
-    sizes: [i64; 2],
+    sizes: [i64; 3],
+    candidates: usize,
     winner: Option<usize>,
     trials_remaining: i32,
     until_retrial: i32,
@@ -144,9 +146,17 @@ impl TrialCompressor {
     const TRIALS: i32 = 3;
     const SPAN: i32 = 70;
 
-    fn new() -> Self {
+    /// The trial for tag `key`: `getTagTrialCompressor` adds BZIP2 for SA and XA, whose
+    /// repeated contig names and CIGARs its BWT compresses well.
+    fn for_tag(key: i32) -> Self {
+        let name = [(key >> 16) as u8, (key >> 8) as u8];
         Self {
-            sizes: [0; 2],
+            sizes: [0; 3],
+            candidates: if name == *b"SA" || name == *b"XA" {
+                3
+            } else {
+                2
+            },
             winner: None,
             trials_remaining: Self::TRIALS,
             until_retrial: 0,
@@ -158,17 +168,31 @@ impl TrialCompressor {
         data: &[u8],
         gzip: crate::gzip::Deflater,
     ) -> (Vec<u8>, CompressionMethod) {
-        if index == 0 {
-            (
+        match index {
+            0 => (
                 crate::gzip::compress_with(data, GZIP_LEVEL, gzip),
                 CompressionMethod::Gzip,
-            )
-        } else {
-            (
+            ),
+            1 => (
                 crate::rans_nx16::compress(data, 0),
                 CompressionMethod::RansNx16,
-            )
+            ),
+            _ => (
+                crate::commons_bzip2::compress(data),
+                CompressionMethod::Bzip2,
+            ),
         }
+    }
+
+    /// The first index whose value is smallest, as htsjdk's strict `<` scans pick.
+    fn first_smallest(values: impl Iterator<Item = i64>) -> usize {
+        let mut best = (0, i64::MAX);
+        for (index, value) in values.enumerate() {
+            if value < best.1 {
+                best = (index, value);
+            }
+        }
+        best.0
     }
 
     fn compress(
@@ -190,21 +214,20 @@ impl TrialCompressor {
                 *size /= 2;
             }
         }
-        let results = [
-            Self::candidate(0, data, gzip),
-            Self::candidate(1, data, gzip),
-        ];
+        let results: Vec<_> = (0..self.candidates)
+            .map(|index| Self::candidate(index, data, gzip))
+            .collect();
         for (size, result) in self.sizes.iter_mut().zip(&results) {
             *size += result.0.len() as i64;
         }
         self.trials_remaining -= 1;
         if self.trials_remaining == 0 {
-            let winner = trial_choice(self.sizes[0], self.sizes[1]) as usize;
+            let winner = Self::first_smallest(self.sizes[..self.candidates].iter().copied());
             self.winner = Some(winner);
             self.until_retrial = Self::SPAN;
             return results[winner].clone();
         }
-        results[trial_choice(results[0].0.len(), results[1].0.len()) as usize].clone()
+        results[Self::first_smallest(results.iter().map(|r| r.0.len() as i64))].clone()
     }
 }
 
@@ -1019,17 +1042,11 @@ impl<'a> CramWriter<'a> {
             }
         }
         for &key in &discovered {
-            if (key & 0xFFFF00) == ((b'S' as i32) << 16 | (b'A' as i32) << 8)
-                || (key & 0xFFFF00) == ((b'X' as i32) << 16 | (b'A' as i32) << 8)
-            {
-                return Err(CramError::Other {
-                    class: "java.lang.UnsupportedOperationException",
-                    message: "an SA or XA tag in a CRAM output is compressed with bzip2, which is not ported".into(),
-                });
-            }
             tag_encodings.put(key, tag_encoding(key, slices.iter().flatten()));
             self.tag_ids.insert(key);
-            self.trials.entry(key).or_insert_with(TrialCompressor::new);
+            self.trials
+                .entry(key)
+                .or_insert_with(|| TrialCompressor::for_tag(key));
         }
         let mut frequencies = vec![[0i64; SYMBOL_SPACE_SIZE]; SYMBOL_SPACE_SIZE];
         for record in slices.iter().flatten() {
@@ -1329,7 +1346,10 @@ impl<'a> CramWriter<'a> {
                 ),
             });
         }
-        let trial = self.trials.entry(id).or_insert_with(TrialCompressor::new);
+        let trial = self
+            .trials
+            .entry(id)
+            .or_insert_with(|| TrialCompressor::for_tag(id));
         Ok(trial.compress(content, self.options.gzip))
     }
 }

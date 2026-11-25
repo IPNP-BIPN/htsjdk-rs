@@ -30,8 +30,8 @@ libdeflate-sys = "=1.26.1"
 # which this crate reproduces byte for byte.
 gkl-deflate = { path = "../gkl-deflate" }
 # Reading a bzip2 block, which htsjdk's tag trial picks for SA and XA when it is smallest.
-# Decompression is deterministic, so any decoder reads it; writing one is commons-compress's
-# encoder, whose bytes are not libbzip2's, and is not ported.
+# Decompression is deterministic, so any decoder reads it. Writing one is commons-compress's
+# encoder, whose bytes are not libbzip2's: `commons_bzip2` ports it.
 bzip2 = "0.6"
 
 [dev-dependencies]
