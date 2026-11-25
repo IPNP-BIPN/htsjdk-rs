@@ -13,24 +13,33 @@
 //! 0049 lists zlib's refusals against the line here that covers each.
 
 /// Bits of a code looked up directly; longer codes go through a subtable.
-const LIT_ROOT: u32 = 10;
+const LIT_ROOT: u32 = 11;
 const DIST_ROOT: u32 = 8;
 /// A complete code has at most `symbols / 2` prefixes that need a subtable, each of at most
 /// `2^(15 - root)` entries, on top of the root.
 const LIT_TABLE: usize = (1 << LIT_ROOT) + 143 * (1 << (15 - LIT_ROOT));
 const DIST_TABLE: usize = (1 << DIST_ROOT) + 15 * (1 << (15 - DIST_ROOT));
 
-/// A table entry: bits to consume (low five), then the kind, then extra bits or a subtable's size,
-/// then the value in the high half.
-const KIND_LITERAL: u32 = 0 << 5;
-const KIND_BASE: u32 = 1 << 5;
-const KIND_END: u32 = 2 << 5;
-const KIND_INVALID: u32 = 3 << 5;
-const KIND_SUBTABLE: u32 = 4 << 5;
-const KIND_MASK: u32 = 7 << 5;
+/// A table entry, laid out as libdeflate's: the low byte is every bit the entry consumes, its
+/// code's and its extra bits' together, so one shift takes both; bits 8 to 12 are the code's own
+/// length (the extra bits sit above it) or a subtable's size; then three flags; the value is the
+/// high half, and a literal sets the top bit so that one test tells it apart.
+const LITERAL: u32 = 1 << 31;
+/// Anything the fast loop does not decode inline: a subtable, the end of the block, or a symbol
+/// zlib calls invalid, which carries only this flag.
+const EXCEPTIONAL: u32 = 1 << 15;
+const SUBTABLE: u32 = 1 << 14;
+const END: u32 = 1 << 13;
 
-const fn entry(bits: u32, kind: u32, extra: u32, value: u32) -> u32 {
-    bits | kind | (extra << 8) | (value << 16)
+const fn entry(code_bits: u32, extra: u32, value: u32) -> u32 {
+    (code_bits + extra) | (code_bits << 8) | (value << 16)
+}
+
+/// The value an entry yields: its base plus the extra bits above its code, from `buf` as it was
+/// before the entry was consumed.
+#[inline(always)]
+fn value_of(e: u32, buf: u64) -> usize {
+    (e >> 16) as usize + ((buf & ((1u64 << (e & 0xff)) - 1)) >> ((e >> 8) & 0x1f)) as usize
 }
 
 const LENGTH_BASE: [u16; 29] = [
@@ -54,98 +63,139 @@ const CODE_ORDER: [u8; 19] = [
 
 fn literal_entry(symbol: usize, bits: u32) -> u32 {
     match symbol {
-        0..=255 => entry(bits, KIND_LITERAL, 0, symbol as u32),
-        256 => entry(bits, KIND_END, 0, 0),
+        0..=255 => LITERAL | entry(bits, 0, symbol as u32),
+        256 => END | EXCEPTIONAL | bits,
         257..=285 => entry(
             bits,
-            KIND_BASE,
             LENGTH_EXTRA[symbol - 257] as u32,
             LENGTH_BASE[symbol - 257] as u32,
         ),
         // Reachable only through the static code, where zlib calls them invalid.
-        _ => entry(bits, KIND_INVALID, 0, 0),
+        _ => EXCEPTIONAL | bits,
     }
 }
 
 fn distance_entry(symbol: usize, bits: u32) -> u32 {
     match symbol {
-        0..=29 => entry(
-            bits,
-            KIND_BASE,
-            DIST_EXTRA[symbol] as u32,
-            DIST_BASE[symbol] as u32,
-        ),
-        _ => entry(bits, KIND_INVALID, 0, 0),
+        0..=29 => entry(bits, DIST_EXTRA[symbol] as u32, DIST_BASE[symbol] as u32),
+        _ => EXCEPTIONAL | bits,
     }
 }
 
 /// Builds a two-level decoding table from code lengths; `false` unless they exactly fill the
 /// codespace, which is stricter than zlib's rule and also covers its over-subscribed refusals.
-fn build(table: &mut [u32], root: u32, lens: &[u8], make: fn(usize, u32) -> u32) -> bool {
+///
+/// libdeflate's `build_decode_table`: the symbols sorted by length, so codes come in canonical
+/// order; the root filled for the shortest length and doubled for each longer one; a subtable
+/// per root prefix, sized for the codes that share it.
+#[inline(always)]
+fn build(table: &mut [u32], root: u32, lens: &[u8], make: impl Fn(usize, u32) -> u32) -> bool {
     let mut count = [0u16; 16];
     for &len in lens {
         count[len as usize] += 1;
     }
-    count[0] = 0;
+    let mut offsets = [0u16; 16];
     let mut left = 1i32;
-    for &n in &count[1..] {
-        left = (left << 1) - n as i32;
+    for len in 1..16 {
+        left = (left << 1) - count[len] as i32;
         if left < 0 {
             return false;
+        }
+        if len < 15 {
+            offsets[len + 1] = offsets[len] + count[len];
         }
     }
     if left != 0 {
         return false;
     }
-    let longest = (1..16).rev().find(|&l| count[l] != 0).unwrap_or(0) as u32;
-    let sub_bits = longest.saturating_sub(root);
-
-    let mut next = [0u16; 16];
-    let mut code = 0u16;
-    for len in 1..16 {
-        code = (code + count[len - 1]) << 1;
-        next[len] = code;
-    }
-    let root_size = 1usize << root;
-    let mut used = root_size;
-    for slot in &mut table[..root_size] {
-        *slot = 0;
-    }
+    let mut sorted = [0u16; 320];
     for (symbol, &len) in lens.iter().enumerate() {
-        let len = len as u32;
-        if len == 0 {
-            continue;
+        if len != 0 {
+            sorted[offsets[len as usize] as usize] = symbol as u16;
+            offsets[len as usize] += 1;
         }
-        let code = next[len as usize];
-        next[len as usize] += 1;
-        let reversed = (code.reverse_bits() >> (16 - len)) as usize;
-        if len <= root {
-            let value = make(symbol, len);
-            let mut at = reversed;
-            while at < root_size {
-                table[at] = value;
-                at += 1 << len;
-            }
-        } else {
-            let prefix = reversed & (root_size - 1);
-            if table[prefix] == 0 {
-                let size = 1usize << sub_bits;
-                if used + size > table.len() {
-                    return false;
+    }
+    let mut sorted = sorted.iter().map(|&s| s as usize);
+
+    // Codewords are bit-reversed, so the next one is found from the highest bit that is clear.
+    let mut codeword = 0usize;
+    let mut len = 1u32;
+    while count[len as usize] == 0 {
+        len += 1;
+    }
+    let mut remaining = count[len as usize];
+    let mut end = 1usize << len;
+    while len <= root {
+        loop {
+            table[codeword] = make(sorted.next().unwrap_or(0), len);
+            if codeword == end - 1 {
+                // The last codeword: the root is full once the table is doubled up to its size.
+                while len < root {
+                    table.copy_within(..end, end);
+                    end <<= 1;
+                    len += 1;
                 }
-                table[prefix] = entry(root, KIND_SUBTABLE, sub_bits, used as u32);
-                used += size;
+                return true;
             }
-            let offset = (table[prefix] >> 16) as usize;
-            let value = make(symbol, len - root);
-            let mut at = reversed >> root;
-            while at < 1 << sub_bits {
-                table[offset + at] = value;
-                at += 1 << (len - root);
+            let bit = 1 << (usize::BITS - 1 - (codeword ^ (end - 1)).leading_zeros());
+            codeword = (codeword & (bit - 1)) | bit;
+            remaining -= 1;
+            if remaining == 0 {
+                break;
+            }
+        }
+        loop {
+            len += 1;
+            if len <= root {
+                table.copy_within(..end, end);
+                end <<= 1;
+            }
+            remaining = count[len as usize];
+            if remaining != 0 {
+                break;
             }
         }
     }
-    true
+
+    let root_mask = (1usize << root) - 1;
+    let mut end = 1usize << root;
+    let mut prefix = usize::MAX;
+    let mut start = 0usize;
+    loop {
+        if codeword & root_mask != prefix {
+            prefix = codeword & root_mask;
+            start = end;
+            let mut sub_bits = len - root;
+            let mut used = remaining as u32;
+            while used < 1 << sub_bits {
+                sub_bits += 1;
+                used = (used << 1) + count[(root + sub_bits) as usize] as u32;
+            }
+            end = start + (1 << sub_bits);
+            if end > table.len() {
+                return false;
+            }
+            table[prefix] =
+                EXCEPTIONAL | SUBTABLE | root | (sub_bits << 8) | ((start as u32) << 16);
+        }
+        let value = make(sorted.next().unwrap_or(0), len - root);
+        let mut at = start + (codeword >> root);
+        let stride = 1 << (len - root);
+        while at < end {
+            table[at] = value;
+            at += stride;
+        }
+        if codeword == (1 << len) - 1 {
+            return true;
+        }
+        let bit = 1 << (usize::BITS - 1 - (codeword ^ ((1 << len) - 1)).leading_zeros());
+        codeword = (codeword & (bit - 1)) | bit;
+        remaining -= 1;
+        while remaining == 0 {
+            len += 1;
+            remaining = count[len as usize];
+        }
+    }
 }
 
 /// One thread's or one reader's decoding tables.
@@ -154,6 +204,11 @@ pub(crate) struct Inflater {
     distance: Box<[u32]>,
     /// Whether the tables already hold the static code, which many small blocks use in a row.
     static_tables: bool,
+    /// Whether to run the copy compiled for BMI2, whose shifts by a register take one micro-op
+    /// instead of three; libdeflate picks the same variant at run time. Every copy gives the same
+    /// answer, only faster or slower.
+    #[cfg(target_arch = "x86_64")]
+    bmi2: bool,
 }
 
 struct Bits<'a> {
@@ -208,6 +263,19 @@ impl Inflater {
             literal: vec![0; LIT_TABLE].into_boxed_slice(),
             distance: vec![0; DIST_TABLE].into_boxed_slice(),
             static_tables: false,
+            #[cfg(target_arch = "x86_64")]
+            bmi2: std::arch::is_x86_feature_detected!("bmi1")
+                && std::arch::is_x86_feature_detected!("bmi2"),
+        }
+    }
+
+    /// One that never takes a CPU-specific path, so that tests on any machine cover the baseline.
+    #[cfg(test)]
+    pub(crate) fn baseline() -> Self {
+        Inflater {
+            #[cfg(target_arch = "x86_64")]
+            bmi2: false,
+            ..Self::new()
         }
     }
 
@@ -237,6 +305,25 @@ impl Inflater {
     /// `out` must be valid for writes of `size` bytes. Bytes are read back only after being
     /// written, so they need not be initialized.
     unsafe fn inflate_raw(&mut self, deflated: &[u8], out: *mut u8, size: usize) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if self.bmi2 {
+            return self.inflate_bmi2(deflated, out, size);
+        }
+        self.inflate_any(deflated, out, size)
+    }
+
+    /// # Safety
+    /// As for [`Self::inflate_raw`], on a CPU with BMI1 and BMI2.
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "bmi1,bmi2")]
+    unsafe fn inflate_bmi2(&mut self, deflated: &[u8], out: *mut u8, size: usize) -> bool {
+        self.inflate_any(deflated, out, size)
+    }
+
+    /// # Safety
+    /// As for [`Self::inflate_raw`].
+    #[inline(always)]
+    unsafe fn inflate_any(&mut self, deflated: &[u8], out: *mut u8, size: usize) -> bool {
         let mut bits = Bits {
             input: deflated,
             at: 0,
@@ -270,6 +357,7 @@ impl Inflater {
         }
     }
 
+    #[inline(always)]
     fn use_static_tables(&mut self) {
         if self.static_tables {
             return;
@@ -283,6 +371,7 @@ impl Inflater {
     }
 
     /// The header of a dynamic block. Each `false` below is one of zlib's refusals or stricter.
+    #[inline(always)]
     fn read_dynamic_tables(&mut self, bits: &mut Bits<'_>) -> bool {
         self.static_tables = false;
         let Some(counts) = bits.take(14) else {
@@ -305,7 +394,7 @@ impl Inflater {
         // "invalid code lengths set": a precode must fill its codespace.
         let mut precode = [0u32; 128];
         if !build(&mut precode, 7, &order, |symbol, bits| {
-            entry(bits, KIND_LITERAL, 0, symbol as u32)
+            entry(bits, 0, symbol as u32)
         }) {
             return false;
         }
@@ -316,7 +405,7 @@ impl Inflater {
         while i < total {
             bits.refill();
             let e = precode[(bits.buf & 127) as usize];
-            let used = e & 31;
+            let used = e & 0xff;
             if used > bits.left {
                 return false;
             }
@@ -369,7 +458,7 @@ impl Inflater {
     /// # Safety
     /// `out` must be valid for writes of `size` bytes, and `*pos` at most `size`, with everything
     /// below it written.
-    #[inline]
+    #[inline(always)]
     unsafe fn codes(
         &self,
         bits: &mut Bits<'_>,
@@ -385,168 +474,241 @@ impl Inflater {
         const DIST_MASK: u64 = (1 << DIST_ROOT) - 1;
         let mut at = *pos;
         loop {
-            // The fast loop: input for both refills, each of which then leaves at least 56 bits,
-            // and room for a whole match plus a word's overrun, so nothing inside it needs checking
-            // but the distance.
-            while bits.at + 16 <= bits.input.len() && at + 258 + 8 <= size {
-                bits.refill();
-                let mut e = *literal.add((bits.buf & LIT_MASK) as usize);
-                if e & KIND_MASK == KIND_LITERAL {
-                    bits.buf >>= e & 31;
-                    bits.left -= e & 31;
-                    *out.add(at) = (e >> 16) as u8;
-                    at += 1;
-                    e = *literal.add((bits.buf & LIT_MASK) as usize);
-                    if e & KIND_MASK == KIND_LITERAL {
-                        bits.buf >>= e & 31;
-                        bits.left -= e & 31;
+            // The fast loop: input for every refill, and room for a match plus the copy's overrun,
+            // so nothing inside it needs checking but the symbols and the distance.
+            //
+            // libdeflate's: `left` drops whole entries, so only its low byte counts; a refill
+            // leaves at least 56 bits counted and 64 real, so a match (48 bits) needs one refill,
+            // and the next entry can be looked up before the refill that follows, so that the
+            // copy overlaps both.
+            if bits.at + 16 <= bits.input.len() && at + 258 + 40 <= size {
+                let input = bits.input.as_ptr();
+                let in_end = bits.input.len() - 16;
+                let mut inp = bits.at;
+                let mut buf = bits.buf;
+                let mut left = bits.left;
+                macro_rules! refill {
+                    () => {
+                        buf |= u64::from_le(input.add(inp).cast::<u64>().read_unaligned())
+                            << (left as u8);
+                        inp += 7 - ((left >> 3) & 7) as usize;
+                        left |= 56;
+                    };
+                }
+                macro_rules! consume {
+                    ($e:expr) => {
+                        buf >>= $e as u8;
+                        left = left.wrapping_sub($e);
+                    };
+                }
+                macro_rules! leave {
+                    () => {
+                        bits.at = inp;
+                        bits.buf = buf;
+                        bits.left = left & 0xff;
+                    };
+                }
+                refill!();
+                let mut e = *literal.add((buf & LIT_MASK) as usize);
+                loop {
+                    if e & LITERAL != 0 {
+                        // Up to three literals of at most LIT_ROOT bits each fit in one refill.
+                        consume!(e);
                         *out.add(at) = (e >> 16) as u8;
                         at += 1;
-                        continue;
+                        e = *literal.add((buf & LIT_MASK) as usize);
+                        if e & LITERAL != 0 {
+                            consume!(e);
+                            *out.add(at) = (e >> 16) as u8;
+                            at += 1;
+                            e = *literal.add((buf & LIT_MASK) as usize);
+                            if e & LITERAL != 0 {
+                                consume!(e);
+                                *out.add(at) = (e >> 16) as u8;
+                                at += 1;
+                                e = *literal.add((buf & LIT_MASK) as usize);
+                                refill!();
+                                if inp > in_end || at + 258 + 40 > size {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                        // Fewer than 48 bits may be left, and a match takes up to 48.
+                        refill!();
                     }
-                    // Fewer than 48 bits may be left, and a match takes up to 48.
-                    bits.refill();
-                }
-                if e & KIND_MASK == KIND_SUBTABLE {
-                    let root = e & 31;
-                    bits.buf >>= root;
-                    bits.left -= root;
-                    let offset = (e >> 16) as usize;
-                    let sub = (bits.buf & ((1u64 << ((e >> 8) & 31)) - 1)) as usize;
-                    e = *literal.add(offset + sub);
-                }
-                bits.buf >>= e & 31;
-                bits.left -= e & 31;
-                match e & KIND_MASK {
-                    KIND_LITERAL => {
-                        *out.add(at) = (e >> 16) as u8;
-                        at += 1;
-                        continue;
+                    if e & EXCEPTIONAL != 0 {
+                        if e & SUBTABLE != 0 {
+                            consume!(e);
+                            let sub = (buf & ((1u64 << ((e >> 8) & 0x1f)) - 1)) as usize;
+                            e = *literal.add((e >> 16) as usize + sub);
+                            if e & LITERAL != 0 {
+                                consume!(e);
+                                *out.add(at) = (e >> 16) as u8;
+                                at += 1;
+                                e = *literal.add((buf & LIT_MASK) as usize);
+                                refill!();
+                                if inp > in_end || at + 258 + 40 > size {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
+                        if e & EXCEPTIONAL != 0 {
+                            if e & END != 0 {
+                                consume!(e);
+                                leave!();
+                                *pos = at;
+                                return true;
+                            }
+                            // "invalid literal/length code".
+                            return false;
+                        }
                     }
-                    KIND_BASE => {}
-                    KIND_END => {
-                        *pos = at;
-                        return true;
-                    }
-                    // "invalid literal/length code".
-                    _ => return false,
-                }
-                let extra = (e >> 8) & 31;
-                let length = (e >> 16) as usize + (bits.buf & ((1u64 << extra) - 1)) as usize;
-                bits.buf >>= extra;
-                bits.left -= extra;
+                    let length = value_of(e, buf);
+                    consume!(e);
 
-                let mut d = *distance.add((bits.buf & DIST_MASK) as usize);
-                if d & KIND_MASK == KIND_SUBTABLE {
-                    let root = d & 31;
-                    bits.buf >>= root;
-                    bits.left -= root;
-                    let offset = (d >> 16) as usize;
-                    let sub = (bits.buf & ((1u64 << ((d >> 8) & 31)) - 1)) as usize;
-                    d = *distance.add(offset + sub);
-                }
-                // "invalid distance code".
-                if d & KIND_MASK != KIND_BASE {
-                    return false;
-                }
-                bits.buf >>= d & 31;
-                bits.left -= d & 31;
-                let extra = (d >> 8) & 31;
-                let dist = (d >> 16) as usize + (bits.buf & ((1u64 << extra) - 1)) as usize;
-                bits.buf >>= extra;
-                bits.left -= extra;
-                // "invalid distance too far back".
-                if dist > at {
-                    return false;
-                }
-                let dst = out.add(at);
-                let src = dst.sub(dist);
-                if dist >= 8 {
-                    // Each word's source lies wholly behind its destination, so it is all written.
-                    let mut done = 0;
-                    while done < length {
-                        dst.add(done)
-                            .cast::<u64>()
-                            .write_unaligned(src.add(done).cast::<u64>().read_unaligned());
-                        done += 8;
+                    let mut d = *distance.add((buf & DIST_MASK) as usize);
+                    if d & EXCEPTIONAL != 0 {
+                        if d & SUBTABLE == 0 {
+                            // "invalid distance code".
+                            return false;
+                        }
+                        consume!(d);
+                        let sub = (buf & ((1u64 << ((d >> 8) & 0x1f)) - 1)) as usize;
+                        d = *distance.add((d >> 16) as usize + sub);
+                        if d & EXCEPTIONAL != 0 {
+                            return false;
+                        }
                     }
-                } else if dist == 1 {
-                    std::ptr::write_bytes(dst, *src, length);
-                } else {
-                    for i in 0..length {
-                        *dst.add(i) = *src.add(i);
+                    let dist = value_of(d, buf);
+                    consume!(d);
+                    // "invalid distance too far back".
+                    if dist > at {
+                        return false;
+                    }
+                    e = *literal.add((buf & LIT_MASK) as usize);
+                    refill!();
+                    copy_match(out.add(at), dist, length);
+                    at += length;
+                    if inp > in_end || at + 258 + 40 > size {
+                        break;
                     }
                 }
-                at += length;
+                leave!();
             }
 
             // The tail: every step checked against what is really left of the input and the output.
             bits.refill();
             let mut e = *literal.add((bits.buf & LIT_MASK) as usize);
-            if e & KIND_MASK == KIND_SUBTABLE {
-                let root = e & 31;
+            if e & (EXCEPTIONAL | SUBTABLE) == EXCEPTIONAL | SUBTABLE {
+                let root = e & 0xff;
                 if root > bits.left {
                     return false;
                 }
                 bits.buf >>= root;
                 bits.left -= root;
-                let sub = (bits.buf & ((1u64 << ((e >> 8) & 31)) - 1)) as usize;
+                let sub = (bits.buf & ((1u64 << ((e >> 8) & 0x1f)) - 1)) as usize;
                 e = *literal.add((e >> 16) as usize + sub);
             }
-            if e & 31 > bits.left {
+            if e & 0xff > bits.left {
                 return false;
             }
-            bits.buf >>= e & 31;
-            bits.left -= e & 31;
-            match e & KIND_MASK {
-                KIND_LITERAL => {
-                    if at >= size {
-                        return false;
-                    }
-                    *out.add(at) = (e >> 16) as u8;
-                    at += 1;
+            if e & LITERAL != 0 {
+                if at >= size {
+                    return false;
                 }
-                KIND_END => {
+                bits.buf >>= e & 0xff;
+                bits.left -= e & 0xff;
+                *out.add(at) = (e >> 16) as u8;
+                at += 1;
+                continue;
+            }
+            if e & EXCEPTIONAL != 0 {
+                if e & END != 0 {
+                    bits.buf >>= e & 0xff;
+                    bits.left -= e & 0xff;
                     *pos = at;
                     return true;
                 }
-                KIND_BASE => {
-                    let Some(more) = bits.take((e >> 8) & 31) else {
-                        return false;
-                    };
-                    let length = (e >> 16) as usize + more as usize;
-                    bits.refill();
-                    let mut d = *distance.add((bits.buf & DIST_MASK) as usize);
-                    if d & KIND_MASK == KIND_SUBTABLE {
-                        let root = d & 31;
-                        if root > bits.left {
-                            return false;
-                        }
-                        bits.buf >>= root;
-                        bits.left -= root;
-                        let sub = (bits.buf & ((1u64 << ((d >> 8) & 31)) - 1)) as usize;
-                        d = *distance.add((d >> 16) as usize + sub);
-                    }
-                    if d & KIND_MASK != KIND_BASE || d & 31 > bits.left {
-                        return false;
-                    }
-                    bits.buf >>= d & 31;
-                    bits.left -= d & 31;
-                    let Some(more) = bits.take((d >> 8) & 31) else {
-                        return false;
-                    };
-                    let dist = (d >> 16) as usize + more as usize;
-                    if dist > at || at + length > size {
-                        return false;
-                    }
-                    for i in at..at + length {
-                        *out.add(i) = *out.add(i - dist);
-                    }
-                    at += length;
+                return false;
+            }
+            let length = value_of(e, bits.buf);
+            bits.buf >>= e & 0xff;
+            bits.left -= e & 0xff;
+            bits.refill();
+            let mut d = *distance.add((bits.buf & DIST_MASK) as usize);
+            if d & (EXCEPTIONAL | SUBTABLE) == EXCEPTIONAL | SUBTABLE {
+                let root = d & 0xff;
+                if root > bits.left {
+                    return false;
                 }
-                _ => return false,
+                bits.buf >>= root;
+                bits.left -= root;
+                let sub = (bits.buf & ((1u64 << ((d >> 8) & 0x1f)) - 1)) as usize;
+                d = *distance.add((d >> 16) as usize + sub);
+            }
+            if d & EXCEPTIONAL != 0 || d & 0xff > bits.left {
+                return false;
+            }
+            let dist = value_of(d, bits.buf);
+            bits.buf >>= d & 0xff;
+            bits.left -= d & 0xff;
+            if dist > at || at + length > size {
+                return false;
+            }
+            for i in at..at + length {
+                *out.add(i) = *out.add(i - dist);
+            }
+            at += length;
+        }
+    }
+}
+
+/// Copies a match of `length` bytes from `dist` back, writing up to 39 bytes past its end.
+///
+/// # Safety
+/// `dst - dist` to `dst` must be written, and `dst` valid for writes of `length + 39` bytes.
+#[inline(always)]
+unsafe fn copy_match(dst: *mut u8, dist: usize, length: usize) {
+    let end = dst.add(length);
+    let mut d = dst;
+    if dist >= 8 {
+        // Each word's source lies wholly behind its destination, so it is all written: five words
+        // cover most matches without a branch.
+        let mut s = dst.sub(dist);
+        loop {
+            for _ in 0..5 {
+                d.cast::<u64>()
+                    .write_unaligned(s.cast::<u64>().read_unaligned());
+                s = s.add(8);
+                d = d.add(8);
+            }
+            if d >= end {
+                return;
             }
         }
+    }
+    // A period shorter than a word: the period's bytes repeated across a word, written at a stride
+    // that is a whole number of periods, so every word starts in phase. Only the period is read.
+    let src = dst.sub(dist);
+    let (word, stride) = if dist == 1 {
+        (0x0101_0101_0101_0101 * *src as u64, 8)
+    } else {
+        let mut word = 0u64;
+        let mut j = 0;
+        for i in 0..8 {
+            word |= (*src.add(j) as u64) << (8 * i);
+            j += 1;
+            if j == dist {
+                j = 0;
+            }
+        }
+        (word, 8 - 8 % dist)
+    };
+    while d < end {
+        d.cast::<u64>().write_unaligned(word);
+        d = d.add(stride);
     }
 }
 
@@ -554,6 +716,7 @@ impl Inflater {
 ///
 /// # Safety
 /// As for [`Inflater::codes`].
+#[inline(always)]
 unsafe fn stored(bits: &mut Bits<'_>, out: *mut u8, size: usize, pos: &mut usize) -> bool {
     // Whole bytes still in the buffer go back to the input; the rest of this byte is padding.
     bits.at -= (bits.left >> 3) as usize;
@@ -632,7 +795,7 @@ mod tests {
         payloads.push((0..60_000).map(|_| b"ACGTN"[lcg.next() % 5]).collect());
         payloads.push((0..60_000).map(|_| (lcg.next() % 41) as u8).collect());
         payloads.push((0..3_000).map(|_| lcg.next() as u8).collect());
-        let mut inflater = Inflater::new();
+        let mut inflaters = [Inflater::new(), Inflater::baseline()];
         let mut trials = 0;
         for payload in &payloads {
             for (level, deflater) in [
@@ -648,9 +811,11 @@ mod tests {
                     continue;
                 }
                 let stream = deflate_stream(payload, level, deflater);
-                let mut out = vec![0u8; payload.len()];
-                assert!(inflater.inflate(&stream, &mut out), "{level} {deflater:?}");
-                assert_eq!(out, *payload);
+                for inflater in &mut inflaters {
+                    let mut out = vec![0u8; payload.len()];
+                    assert!(inflater.inflate(&stream, &mut out), "{level} {deflater:?}");
+                    assert_eq!(out, *payload);
+                }
 
                 for _ in 0..3_000 {
                     let mut damaged = stream.clone();
@@ -669,8 +834,14 @@ mod tests {
                     } else {
                         payload.len()
                     };
+                    // Every CPU path accepts the same streams, with zlib's bytes.
+                    let [fast, baseline] = &mut inflaters;
                     let mut out = vec![0u8; size];
-                    if inflater.inflate(&damaged, &mut out) {
+                    let mut out_baseline = vec![0u8; size];
+                    let accepted = fast.inflate(&damaged, &mut out);
+                    assert_eq!(accepted, baseline.inflate(&damaged, &mut out_baseline));
+                    if accepted {
+                        assert_eq!(out, out_baseline);
                         assert_eq!(Some(out), zlib(&damaged, size), "level {level}");
                     }
                     trials += 1;

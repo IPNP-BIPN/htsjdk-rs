@@ -19,7 +19,6 @@ use std::io::{self, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::mpsc;
 
-use flate2::Crc;
 use gkl_deflate::{Flavour, ReusableDeflater};
 
 use crate::{
@@ -224,12 +223,10 @@ fn deflate_on_worker(
     STATES.with_borrow_mut(|states| {
         deflate_payload(&uncompressed, level, deflater, states, &mut compressed)
     })?;
-    let mut crc = Crc::new();
-    crc.update(&uncompressed);
     Ok(DeflatedBlock {
+        crc: crate::crc32(&uncompressed),
         compressed,
         uncompressed,
-        crc: crc.sum(),
     })
 }
 
@@ -348,10 +345,8 @@ impl<W: Write> BgzfWriter<W> {
             &mut self.states,
             &mut compressed,
         )?;
-        let mut crc = Crc::new();
-        crc.update(&self.buffer);
-
-        let total = self.write_gzip_block(&compressed, self.buffer.len(), crc.sum())?;
+        let crc = crate::crc32(&self.buffer);
+        let total = self.write_gzip_block(&compressed, self.buffer.len(), crc)?;
         self.compressed = compressed;
         self.buffer.clear();
         Ok(total)

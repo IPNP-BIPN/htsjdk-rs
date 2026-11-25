@@ -20,6 +20,13 @@ pub use read::{decompress_all, BgzfError, BgzfReader, DecompressedBlock};
 pub use termination::{check_termination, FileTermination};
 pub use write::{BgzfWriter, Deflater};
 
+/// A gzip member's CRC-32, by libdeflate, which picks PCLMULQDQ/VPCLMULQDQ or the ARMv8 CRC and
+/// PMULL instructions at run time. A checksum has one answer, so where it comes from moves no byte.
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
+    // SAFETY: the pointer and length are a live slice's; libdeflate only reads them.
+    unsafe { libdeflate_sys::libdeflate_crc32(0, bytes.as_ptr().cast(), bytes.len()) }
+}
+
 // Constants transcribed from BlockCompressedStreamConstants.
 pub const BLOCK_HEADER_LENGTH: usize = 18;
 pub const BLOCK_FOOTER_LENGTH: usize = 8;
