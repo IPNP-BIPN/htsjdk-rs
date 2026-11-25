@@ -326,6 +326,7 @@ dependencies = [
  "libdeflate-sys",
  "md-5",
  "mimalloc",
+ "rayon",
  "sha2",
 ]
 
