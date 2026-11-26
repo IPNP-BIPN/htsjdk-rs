@@ -306,7 +306,12 @@ pub fn parse_line_with<F>(
 where
     F: FnMut(&str) -> Option<i32>,
 {
-    let fields: Vec<&str> = line.split('\t').collect();
+    let mut fields: Vec<&str> = line.split('\t').collect();
+    // `StringUtil.split` keeps the empty token between two tabs, but not the one after a
+    // trailing tab: a line ending in a tab has no empty last field.
+    if fields.len() > 1 && fields.last() == Some(&"") {
+        fields.pop();
+    }
     if fields.len() < NUM_REQUIRED_FIELDS {
         return Err(ParseError::NotEnoughFields(fields.len()));
     }
@@ -481,6 +486,22 @@ mod tests {
     fn an_empty_field_is_refused_with_its_zero_based_position() {
         let line = "read1\t99\tchr1\t100\t60\t4M\t=\t300\t250\t\t?@AB";
         assert_eq!(parse_line(line, resolver), Err(ParseError::EmptyField(9)));
+    }
+
+    /// A trailing tab is not an empty field: `StringUtil.split` drops the empty token after it,
+    /// as Picard's CheckDuplicateMarking test files, whose records end in one, need.
+    #[test]
+    fn a_trailing_tab_is_not_an_empty_field() {
+        let line = "read1\t0\tchr1\t100\t60\t4M\t*\t0\t0\tACGT\t?@AB\tRG:Z:L1\t";
+        let record = parse_line(line, resolver).unwrap();
+        assert_eq!(record.tags.len(), 1);
+        assert_eq!(
+            parse_line(
+                "read1\t0\tchr1\t100\t60\t4M\t*\t0\t0\tACGT\t?@AB\t\t",
+                resolver
+            ),
+            Err(ParseError::EmptyField(11))
+        );
     }
 
     #[test]
