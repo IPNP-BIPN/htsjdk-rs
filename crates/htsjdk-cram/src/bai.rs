@@ -11,6 +11,8 @@
 //! that. The metadata's first offset is something else again: the slice's byte offset from the
 //! end of the container header, which is what `recordMetaData` is handed for a CRAM.
 
+use crate::reader::CramError;
+
 /// `BAIEntry`: one slice's contribution, or one reference's share of a multi-reference slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaiEntry {
@@ -147,7 +149,7 @@ impl CramBaiIndexer {
     }
 
     /// `processContainer`: the container's entries, sorted.
-    pub fn process_container(&mut self, mut entries: Vec<BaiEntry>) -> Result<(), String> {
+    pub fn process_container(&mut self, mut entries: Vec<BaiEntry>) -> Result<(), CramError> {
         entries.sort_by(BaiEntry::compare);
         for entry in entries {
             self.process(entry)?;
@@ -156,16 +158,19 @@ impl CramBaiIndexer {
     }
 
     /// `processBAIEntry`.
-    fn process(&mut self, entry: BaiEntry) -> Result<(), String> {
+    fn process(&mut self, entry: BaiEntry) -> Result<(), CramError> {
         if entry.reference >= 0 {
             if entry.reference != self.current {
                 self.advance(entry.reference);
             }
             if entry.reference != self.current {
-                return Err(format!(
-                    "htsjdk.samtools.SAMException: Unexpected reference {} when constructing index for reference {} for slice",
-                    entry.reference, self.current
-                ));
+                return Err(CramError::Other {
+                    class: "htsjdk.samtools.SAMException",
+                    message: format!(
+                        "Unexpected reference {} when constructing index for reference {} for slice",
+                        entry.reference, self.current
+                    ),
+                });
             }
         }
         // `recordMetaData(BAIEntry)`.
@@ -197,8 +202,9 @@ impl CramBaiIndexer {
             self.bins = Some(vec![None; size]);
         }
         let bins = self.bins.as_mut().unwrap();
-        let slot = bins.get_mut(bin).ok_or_else(|| {
-            format!("java.lang.ArrayIndexOutOfBoundsException: Index {bin} out of bounds")
+        let slot = bins.get_mut(bin).ok_or_else(|| CramError::Other {
+            class: "java.lang.ArrayIndexOutOfBoundsException",
+            message: format!("Index {bin} out of bounds"),
         })?;
         let pointer = ((entry.container_offset as u64) << 16) | entry.landmark_index as u64;
         let chunk = Chunk {
@@ -236,8 +242,18 @@ impl CramBaiIndexer {
             self.largest_window = end_window as i64;
         }
         for window in start_window..=end_window {
-            if self.linear[window] == 0 || pointer < self.linear[window] {
-                self.linear[window] = pointer;
+            // Past 2^29 the window is beyond the fixed linear index, and `CRAMBAIIndexer` throws.
+            let slot = self
+                .linear
+                .get_mut(window)
+                .ok_or_else(|| CramError::Other {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: format!(
+                        "Index {window} out of bounds for length {MAX_LINEAR_INDEX_SIZE}"
+                    ),
+                })?;
+            if *slot == 0 || pointer < *slot {
+                *slot = pointer;
             }
         }
         Ok(())
@@ -325,4 +341,36 @@ fn linear_offset(position: i32) -> usize {
 /// `AbstractBAMFileIndex.getMaxBinNumberForSequenceLength`.
 fn max_bin_for_length(length: i32) -> usize {
     (4681 + (length.max(0) >> 14)) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A slice past 2^29 on a long reference used to overrun the linear index and panic.
+    /// htsjdk 5.0.0 throws this from `CRAMFileWriter.close`, measured with the GATK 4.7.0.0 jar.
+    #[test]
+    fn a_slice_past_the_linear_index_is_refused_not_a_panic() {
+        let mut indexer = CramBaiIndexer::new(vec![600_000_000]);
+        let entry = BaiEntry {
+            reference: 0,
+            alignment_start: 550_000_000,
+            alignment_span: 10,
+            mapped: 1,
+            unmapped: 0,
+            unplaced: 0,
+            container_offset: 100,
+            slice_offset: 0,
+            landmark_index: 0,
+        };
+        let error = indexer.process_container(vec![entry]).unwrap_err();
+        assert_eq!(
+            error.java_exception(),
+            "java.lang.ArrayIndexOutOfBoundsException"
+        );
+        assert_eq!(
+            error.message(),
+            "Index 33569 out of bounds for length 32770"
+        );
+    }
 }
