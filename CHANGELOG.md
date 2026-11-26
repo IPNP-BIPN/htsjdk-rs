@@ -48,6 +48,11 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Fixed
 
+- **Two VCF fixes from htsjdk 6.0.0 that turn a 5.0.0 refusal into a read** (`docs/htsjdk-upstream.md`):
+  a space in INFO is read (#1825, issue #1667), and `as_int`, `as_double`, `as_int_list` and
+  `as_double_list` give the default for every spelling of missing (#1849, #1899), where 5.0.0
+  threw `NumberFormatException`. A tab in INFO is still refused, and `as_boolean` still gives
+  5.0.0's `false` for `.`.
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.
