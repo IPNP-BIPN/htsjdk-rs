@@ -190,7 +190,11 @@ pub fn parse_header_text(text: &str) -> SamHeader {
             "@RG" => {
                 let mut rg = ReadGroup::new(take("ID").unwrap_or(""));
                 for (k, v) in &pairs {
-                    if *k != "ID" {
+                    if *k == "DT" {
+                        // `parseRGLine` stores `decodeDate(DT).toString()`, a UTC ISO 8601 date.
+                        let date = crate::iso8601_date::normalize(v);
+                        rg.attributes.set(k, date.as_deref().unwrap_or(v));
+                    } else if *k != "ID" {
                         rg.attributes.set(k, v);
                     }
                 }
@@ -364,6 +368,17 @@ mod tests {
         let keys: Vec<&str> = h.read_groups[0].attributes.iter().map(|(k, _)| k).collect();
         assert_eq!(keys, vec!["SM", "LB", "PL"]);
         assert_eq!(h.attributes.get("SO"), Some("coordinate"));
+    }
+
+    /// `parseRGLine` rewrites `DT` in UTC, and keeps a date it cannot parse as written.
+    #[test]
+    fn a_read_group_date_is_rewritten_in_utc() {
+        let h = parse_header_text("@RG\tID:a\tDT:2014-12-12T00:00:00-0500\n@RG\tID:b\tDT:soon\n");
+        assert_eq!(
+            h.read_groups[0].attributes.get("DT"),
+            Some("2014-12-12T05:00:00+0000")
+        );
+        assert_eq!(h.read_groups[1].attributes.get("DT"), Some("soon"));
     }
 
     /// A `@CO` line is free text, not tag:value pairs, and a colon in it must not be parsed.
