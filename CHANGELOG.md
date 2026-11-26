@@ -54,6 +54,10 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 - **Reading past the end of an external block is `IllegalStateException`** naming the bytes
   asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
   naming it, where 4.2.0 returned what it had.
+- **Two CRAM fixes from htsjdk 6.0.0 that move no byte 5.0.0 writes** (`docs/htsjdk-upstream.md`):
+  a slice whose QS series is HUFFMAN is read (#1854), where 5.0.0 refused the slice; and a slice
+  whose placed reads are all unmapped spans their starts (#1855), where 5.0.0 threw on the
+  reference lookup and the port wrote a negative span.
 
 ## [0.4.0] - 2026-10-22
 
