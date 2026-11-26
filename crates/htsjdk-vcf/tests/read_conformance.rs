@@ -567,9 +567,19 @@ fn every_file_reads_as_the_reference_reads_it() {
         produced.len(),
         golden.len()
     );
+    // htsjdk 6.0.0 (#1825, issue #1667), taken by this port: a space in INFO is read where 5.0.0
+    // refused the line. Those golden rows are 5.0.0's refusal; see docs/htsjdk-upstream.md.
+    let refusal = "does not allow for whitespace in the INFO field";
+    let mut lifted = 0;
     for (index, (mine, theirs)) in produced.iter().zip(golden.iter()).enumerate() {
+        if theirs.contains(refusal) {
+            assert!(!mine.contains("Exception"), "row {index}: {mine}");
+            lifted += 1;
+            continue;
+        }
         assert_eq!(mine, theirs, "row {index}");
     }
+    assert_eq!(lifted, 1, "5.0.0 refuses a space in INFO");
 }
 
 fn render_header(label: &str, text: &str) -> String {

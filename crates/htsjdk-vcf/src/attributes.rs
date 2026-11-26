@@ -33,6 +33,12 @@
 //! spellings reach `parseVcfDouble` and throw. The two accessors disagree about what missing means
 //! for the same field.
 //!
+//! **htsjdk 6.0.0 (#1849, #1899) compares by value, and this port takes it for the numeric
+//! accessors**: every spelling of missing gives the default, where 5.0.0 threw
+//! `NumberFormatException` and so wrote nothing. `getAttributeAsBoolean` keeps 5.0.0's answer,
+//! `false`, because 6.0.0's default would change a value 5.0.0 returns
+//! (`docs/htsjdk-upstream.md`).
+//!
 //! # `parseVcfDouble` is not `Double.parseDouble`
 //!
 //! On failure it retries against `^(?<sign>[-+]?)((?<inf>(INF|INFINITY))|(?<nan>NAN))$`, case
@@ -117,6 +123,15 @@ fn value_of(value: &Value) -> String {
     }
 }
 
+/// htsjdk 6.0.0's `MISSING_VALUE_v4.equals(x)`: the constant and a `.` substring alike.
+fn is_missing(value: &Value) -> bool {
+    match value {
+        Value::Missing => true,
+        Value::Str(text) => text == MISSING_VALUE,
+        _ => false,
+    }
+}
+
 /// `getAttributeAsString(key, default)`.
 pub fn as_string(value: Option<&Value>, default: &str) -> String {
     match value {
@@ -127,11 +142,11 @@ pub fn as_string(value: Option<&Value>, default: &str) -> String {
 
 /// `getAttributeAsInt(key, default)`.
 ///
-/// The missing test is the reference comparison described in the module doc, so only
-/// [`Value::Missing`] takes the default and a `Value::Str(".")` reaches the parser.
+/// Every spelling of missing takes the default, as in htsjdk 6.0.0: see the module doc.
 pub fn as_int(value: Option<&Value>, default: i32) -> Result<i32, AttributeError> {
     match value {
-        None | Some(Value::Missing) => Ok(default),
+        None => Ok(default),
+        Some(item) if is_missing(item) => Ok(default),
         Some(Value::Int(n)) => Ok(*n as i32),
         // Anything that is not a String reaches `(String) x` and fails the cast rather than the
         // parse, so a flag and a list produce two different exceptions with two different classes.
@@ -147,11 +162,11 @@ pub fn as_int(value: Option<&Value>, default: i32) -> Result<i32, AttributeError
 
 /// `getAttributeAsDouble(key, default)`.
 ///
-/// **No missing test.** A `Value::Missing` is not null, so it reaches the parser and throws, which
-/// is the disagreement with [`as_int`] the module doc names.
+/// 5.0.0 had no missing test here; htsjdk 6.0.0's is taken, as for [`as_int`].
 pub fn as_double(value: Option<&Value>, default: f64) -> Result<f64, AttributeError> {
     match value {
         None => Ok(default),
+        Some(item) if is_missing(item) => Ok(default),
         Some(Value::Double(d)) => Ok(*d),
         Some(Value::Int(n)) => Ok(*n as f64),
         Some(other @ (Value::List(_) | Value::Bool(_))) => Err(class_cast(java_class(other))),
@@ -192,13 +207,12 @@ pub fn as_string_list(value: Option<&Value>, default: &str) -> Vec<String> {
 
 /// `getAttributeAsIntList(key, default)`.
 ///
-/// Each element gets the same reference-comparison missing test as [`as_int`], so a list written
-/// `IA=1,.,3` throws on its second element: the tokens of a list are always substrings.
+/// Each element gets the same missing test as [`as_int`], so `IA=1,.,3` gives the default second.
 pub fn as_int_list(value: Option<&Value>, default: i32) -> Result<Vec<i32>, AttributeError> {
     as_list(value)
         .iter()
         .map(|item| match item {
-            Value::Missing => Ok(default),
+            item if is_missing(item) => Ok(default),
             // `x instanceof Number` is the only pre-cast test, so a boolean element reaches
             // `(String) x` and fails the cast rather than the parse.
             Value::Int(n) => Ok(*n as i32),
@@ -215,14 +229,12 @@ pub fn as_int_list(value: Option<&Value>, default: i32) -> Result<Vec<i32>, Attr
 
 /// `getAttributeAsDoubleList(key, default)`.
 ///
-/// Unlike [`as_double`], this one **does** have the missing test, because the transformer written
-/// for the list case carries it and the scalar accessor was written separately. Two accessors over
-/// the same conversion, one with the test and one without.
+/// The same missing test as [`as_double`].
 pub fn as_double_list(value: Option<&Value>, default: f64) -> Result<Vec<f64>, AttributeError> {
     as_list(value)
         .iter()
         .map(|item| match item {
-            Value::Missing => Ok(default),
+            item if is_missing(item) => Ok(default),
             Value::Double(d) => Ok(*d),
             Value::Int(n) => Ok(*n as f64),
             other @ (Value::Bool(_) | Value::List(_)) => Err(class_cast(java_class(other))),
@@ -335,31 +347,35 @@ fn parse_hex_float(text: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
-    /// The three spellings of missing, and the two outcomes.
+    /// htsjdk 6.0.0 #1849/#1899: every spelling of missing is the default for the numeric
+    /// accessors, where 5.0.0 threw `NumberFormatException` for `.` and for any missing double.
     #[test]
-    fn only_the_constant_takes_the_default() {
-        assert_eq!(as_int(Some(&Value::Missing), -1), Ok(-1));
-        assert_eq!(
-            as_int(Some(&Value::Str(".".into())), -1),
-            Err(number_format("."))
-        );
-        assert_eq!(as_string(Some(&Value::Missing), "D"), ".");
-        assert_eq!(as_string(Some(&Value::Str(".".into())), "D"), ".");
-    }
-
-    /// And the accessor that has no test at all.
-    #[test]
-    fn as_double_refuses_every_spelling_of_missing() {
-        assert!(as_double(Some(&Value::Missing), -1.0).is_err());
-        assert!(as_double(Some(&Value::Str(".".into())), -1.0).is_err());
+    fn every_spelling_of_missing_takes_the_default() {
+        let dot = Value::Str(".".into());
+        for missing in [&Value::Missing, &dot] {
+            assert_eq!(as_int(Some(missing), -1), Ok(-1));
+            assert_eq!(as_double(Some(missing), -1.0), Ok(-1.0));
+            assert_eq!(as_string(Some(missing), "D"), ".");
+        }
+        let list = Value::List(vec![
+            Value::Str("1".into()),
+            dot.clone(),
+            Value::Str("3".into()),
+        ]);
+        assert_eq!(as_int_list(Some(&list), -1), Ok(vec![1, -1, 3]));
+        assert_eq!(as_double_list(Some(&list), -1.0), Ok(vec![1.0, -1.0, 3.0]));
         assert_eq!(as_double(None, -1.0), Ok(-1.0));
+        assert_eq!(
+            as_int(Some(&Value::Str("x".into())), -1),
+            Err(number_format("x"))
+        );
     }
 
-    /// The list accessor has the test the scalar one lacks.
+    /// `getAttributeAsBoolean` keeps 5.0.0's `Boolean.valueOf(".")`, which is false whatever the
+    /// default: 6.0.0's default would change a value 5.0.0 returns.
     #[test]
-    fn the_list_accessors_disagree_with_the_scalar_ones() {
-        assert_eq!(as_double_list(Some(&Value::Missing), -1.0), Ok(vec![-1.0]));
-        assert!(as_double(Some(&Value::Missing), -1.0).is_err());
+    fn as_boolean_keeps_false_for_missing() {
+        assert_eq!(as_boolean(Some(&Value::Str(".".into())), true), Ok(false));
     }
 
     #[test]

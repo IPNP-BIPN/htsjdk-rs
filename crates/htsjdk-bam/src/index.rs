@@ -282,15 +282,19 @@ impl BamIndexer {
     /// `BAMIndexer.processAlignment`.
     ///
     /// `chunk` is the pair of virtual file pointers taken around the record's own bytes.
+    ///
+    /// The bin is `rec.computeIndexingBin()`, as `BAMIndexer` asks for it: from the positions,
+    /// even on a reference too long for the record's own bin field, where the codec wrote 0. A
+    /// read past `BIN_GENOMIC_SPAN` is refused with the `IllegalStateException` it throws, which
+    /// its callers wrap; a BAI cannot address it, so going on would overrun the linear index.
     pub fn process(
         &mut self,
         reference_index: i32,
         alignment_start: i32,
         alignment_end: i32,
-        index_bin: i32,
         read_unmapped: bool,
         chunk: Chunk,
-    ) {
+    ) -> Result<(), crate::bin::BinError> {
         if reference_index != crate::bin::NO_ALIGNMENT_REFERENCE_INDEX
             && reference_index != self.current_reference
         {
@@ -300,11 +304,13 @@ impl BamIndexer {
         // Metadata is recorded first, and counts records the index itself then skips.
         if alignment_start == crate::bin::NO_ALIGNMENT_START {
             self.no_coordinate_records += 1;
-            return;
+            return Ok(());
         }
         self.meta.record(chunk, read_unmapped);
+        let index_bin = crate::bin::compute_indexing_bin(alignment_start, alignment_end)?;
         self.builder
             .process_feature(alignment_start, alignment_end, index_bin, chunk);
+        Ok(())
     }
 
     fn advance_to_reference(&mut self, next_reference: i32) {
@@ -559,14 +565,9 @@ mod tests {
     fn the_whole_index_reads_back_what_the_indexer_wrote() {
         // Two references, the second with no content at all.
         let mut indexer = BamIndexer::new(vec![100_000, 100_000]);
-        indexer.process(
-            0,
-            100,
-            200,
-            crate::bin::compute_indexing_bin(100, 200).expect("a bin"),
-            false,
-            Chunk { start: 1, end: 2 },
-        );
+        indexer
+            .process(0, 100, 200, false, Chunk { start: 1, end: 2 })
+            .unwrap();
         let bai = indexer.finish();
 
         let index = read_bai(&bai).expect("a bai");
@@ -714,7 +715,8 @@ mod tests {
     #[test]
     fn the_pseudo_bin_is_counted_and_written_separately() {
         let mut ix = BamIndexer::new(vec![250_000_000]);
-        ix.process(0, 100, 103, 4681, false, chunk(vfp(0, 0), vfp(0, 50)));
+        ix.process(0, 100, 103, false, chunk(vfp(0, 0), vfp(0, 50)))
+            .unwrap();
         let idx = ix.finish();
 
         let n_bin = i32::from_le_bytes(idx[8..12].try_into().unwrap());
@@ -745,9 +747,11 @@ mod tests {
     #[test]
     fn records_without_coordinates_are_counted_not_indexed() {
         let mut ix = BamIndexer::new(vec![250_000_000]);
-        ix.process(0, 100, 103, 4681, false, chunk(vfp(0, 0), vfp(0, 50)));
+        ix.process(0, 100, 103, false, chunk(vfp(0, 0), vfp(0, 50)))
+            .unwrap();
         for _ in 0..7 {
-            ix.process(-1, 0, 0, 0, true, chunk(vfp(0, 50), vfp(0, 60)));
+            ix.process(-1, 0, 0, true, chunk(vfp(0, 50), vfp(0, 60)))
+                .unwrap();
         }
         let idx = ix.finish();
         assert_eq!(
