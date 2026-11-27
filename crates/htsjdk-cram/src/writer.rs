@@ -40,6 +40,7 @@ use htsjdk_bam::header::SamHeader;
 use htsjdk_bam::record::BamRecord;
 use htsjdk_bam::tag::TagValue;
 use md5::{Digest, Md5};
+use std::borrow::Borrow;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -745,8 +746,32 @@ pub struct CramWriter<'a> {
     trials: HashMap<i32, TrialCompressor>,
     global_record_counter: i64,
     out: Vec<u8>,
+    /// The bytes [`Self::take_output`] has handed over, before `out`.
+    taken: i64,
+    /// What [`Self::write`] has been given and no container has taken yet.
+    staged: Stage<BamRecord>,
     /// `CRAMBAIIndexer`, when the output is to be indexed.
     index: Option<crate::bai::CramBaiIndexer>,
+}
+
+/// `CRAMContainerStreamWriter`'s records not yet in a container: the slice being filled and the
+/// slices staged for the next container.
+struct Stage<R> {
+    current: i32,
+    pending: Vec<R>,
+    bases: i64,
+    slices: Vec<Vec<R>>,
+}
+
+impl<R> Stage<R> {
+    fn new() -> Self {
+        Self {
+            current: UNINITIALIZED_REFERENCE_ID,
+            pending: Vec::new(),
+            bases: 0,
+            slices: Vec::new(),
+        }
+    }
 }
 
 impl<'a> CramWriter<'a> {
@@ -810,6 +835,8 @@ impl<'a> CramWriter<'a> {
             trials: HashMap::new(),
             global_record_counter: 0,
             out,
+            taken: 0,
+            staged: Stage::new(),
             index: None,
         }
     }
@@ -831,40 +858,84 @@ impl<'a> CramWriter<'a> {
         mut self,
         records: &[BamRecord],
     ) -> Result<(Vec<u8>, Option<Vec<u8>>), CramError> {
-        let mut current = UNINITIALIZED_REFERENCE_ID;
-        let mut pending: Vec<&BamRecord> = Vec::new();
-        let mut bases: i64 = 0;
-        let mut slices: Vec<Vec<&BamRecord>> = Vec::new();
+        let mut stage = Stage::new();
         for record in records {
-            let next = record.reference_index;
-            let updated =
-                self.updated_reference_context(current, next, pending.len(), bases, slices.len())?;
-            if updated == UNINITIALIZED_REFERENCE_ID {
-                slices.push(std::mem::take(&mut pending));
-                bases = 0;
-                if slices.len() >= SLICES_PER_CONTAINER
-                    || current == MULTIPLE_REFERENCE_ID
-                    || current != next
-                {
-                    let staged = std::mem::take(&mut slices);
-                    self.write_container(&staged)?;
-                }
-                current = next;
-            } else {
-                current = updated;
-            }
-            pending.push(record);
-            bases += record.read_bases.len() as i64;
+            self.stage(&mut stage, record)?;
         }
-        if !pending.is_empty() {
-            slices.push(pending);
-        }
-        if !slices.is_empty() {
-            self.write_container(&slices)?;
-        }
+        self.flush(&mut stage)?;
+        self.finish()
+    }
+
+    /// `writeAlignment`: the record joins the slice being filled, and a container is written
+    /// once the slices staged before it are complete. The container's bytes wait in the output
+    /// until [`Self::take_output`].
+    pub fn write(&mut self, record: BamRecord) -> Result<(), CramError> {
+        let mut stage = std::mem::replace(&mut self.staged, Stage::new());
+        let staged = self.stage(&mut stage, record);
+        self.staged = stage;
+        staged
+    }
+
+    /// The bytes written since the last call: the file definition and header, then each
+    /// container as it is completed, for a caller that writes the file as it goes.
+    pub fn take_output(&mut self) -> Vec<u8> {
+        self.taken += self.out.len() as i64;
+        std::mem::take(&mut self.out)
+    }
+
+    /// `finish(true)`: what [`Self::write`] staged, then the EOF container. Returns the bytes
+    /// [`Self::take_output`] has not handed over, and the BAI index when one was asked for.
+    pub fn finish(mut self) -> Result<(Vec<u8>, Option<Vec<u8>>), CramError> {
+        let mut stage = std::mem::replace(&mut self.staged, Stage::new());
+        self.flush(&mut stage)?;
         self.out.extend_from_slice(&EOF_V3);
         let index = self.index.map(crate::bai::CramBaiIndexer::finish);
         Ok((self.out, index))
+    }
+
+    /// The loop body of `writeAlignment`, over records owned or borrowed.
+    fn stage<R: Borrow<BamRecord>>(
+        &mut self,
+        stage: &mut Stage<R>,
+        record: R,
+    ) -> Result<(), CramError> {
+        let next = record.borrow().reference_index;
+        let updated = self.updated_reference_context(
+            stage.current,
+            next,
+            stage.pending.len(),
+            stage.bases,
+            stage.slices.len(),
+        )?;
+        if updated == UNINITIALIZED_REFERENCE_ID {
+            stage.slices.push(std::mem::take(&mut stage.pending));
+            stage.bases = 0;
+            if stage.slices.len() >= SLICES_PER_CONTAINER
+                || stage.current == MULTIPLE_REFERENCE_ID
+                || stage.current != next
+            {
+                let staged = std::mem::take(&mut stage.slices);
+                self.write_container(&staged)?;
+            }
+            stage.current = next;
+        } else {
+            stage.current = updated;
+        }
+        stage.bases += record.borrow().read_bases.len() as i64;
+        stage.pending.push(record);
+        Ok(())
+    }
+
+    /// The records still staged, as `finish` writes them: the last slice, then its container.
+    fn flush<R: Borrow<BamRecord>>(&mut self, stage: &mut Stage<R>) -> Result<(), CramError> {
+        if !stage.pending.is_empty() {
+            stage.slices.push(std::mem::take(&mut stage.pending));
+        }
+        if !stage.slices.is_empty() {
+            let staged = std::mem::take(&mut stage.slices);
+            self.write_container(&staged)?;
+        }
+        Ok(())
     }
 
     /// `SliceFactory.getUpdatedReferenceContext`.
@@ -937,12 +1008,16 @@ impl<'a> CramWriter<'a> {
     }
 
     /// `ContainerFactory.makeContainer` and `Container.write`.
-    fn write_container(&mut self, staged: &[Vec<&BamRecord>]) -> Result<(), CramError> {
+    fn write_container<R: Borrow<BamRecord>>(
+        &mut self,
+        staged: &[Vec<R>],
+    ) -> Result<(), CramError> {
         // `SliceFactory.convertToCRAMRecords`, every slice counting from zero.
         let mut slices: Vec<Vec<WriteRecord>> = Vec::with_capacity(staged.len());
         for slice in staged {
             let mut converted = Vec::with_capacity(slice.len());
             for record in slice {
+                let record: &BamRecord = record.borrow();
                 let reference = if record.reference_index != -1 {
                     Some(
                         self.reference
@@ -1039,7 +1114,7 @@ impl<'a> CramWriter<'a> {
             tag_encodings,
         };
 
-        let container_offset = self.out.len() as i64;
+        let container_offset = self.taken + self.out.len() as i64;
         let mut entries = Vec::new();
         let mut body = compression.write_block(MAJOR);
         let mut landmarks = Vec::new();
