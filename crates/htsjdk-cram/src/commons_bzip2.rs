@@ -307,9 +307,7 @@ impl Stream {
             let mut j = 0usize;
             while ll_i != tmp {
                 j += 1;
-                let tmp2 = tmp;
-                tmp = yy[j];
-                yy[j] = tmp2;
+                std::mem::swap(&mut tmp, &mut yy[j]);
             }
             yy[0] = tmp;
             if j == 0 {
@@ -469,9 +467,7 @@ impl Stream {
             let mut j = 0usize;
             while ll_i != tmp {
                 j += 1;
-                let tmp2 = tmp;
-                tmp = pos[j];
-                pos[j] = tmp2;
+                std::mem::swap(&mut tmp, &mut pos[j]);
             }
             pos[0] = tmp;
             self.selector_mtf[i] = j as u8;
@@ -669,6 +665,8 @@ impl Stream {
             }
         }
 
+        // Indexed as commons-compress indexes it, so the loop reads against the Java.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..=255usize {
             let ss = running_order[i];
             // Step 1: sort the small buckets [ss, j] no earlier scan has finished.
@@ -1136,6 +1134,8 @@ fn hb_make_code_lengths(len: &mut [u8], freq: &[i32], alpha_size: usize, max_len
         heap[0] = 0;
         weight[0] = 0;
         parent[0] = -2;
+        // Indexed as commons-compress indexes it, so the loop reads against the Java.
+        #[allow(clippy::needless_range_loop)]
         for i in 1..=alpha_size {
             parent[i] = -1;
             n_heap += 1;
