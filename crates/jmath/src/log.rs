@@ -142,6 +142,7 @@ fn table() -> &'static [(f64, DoubleDouble); 1 << TABLE_BITS] {
 /// `z.hi` for `z` in the tail moves it by `2^-53` relative; the double-double sums and constants
 /// contribute about 2^-100 of the larger magnitudes. The bound claims 2^-60 |z| and 2^-90 of the
 /// rest.
+#[inline(always)]
 fn ln_fast(x: f64) -> (DoubleDouble, f64) {
     let bits = x.to_bits();
     let (e, minus_ln_r, z) = if (x - 1.0).abs() < 1.0 / f64::from(1u32 << TABLE_BITS) {
@@ -203,12 +204,55 @@ fn round_if_certain(value: DoubleDouble, bound: f64) -> Option<f64> {
 /// function's output is unchanged by construction.
 fn ln_rounded(x: f64) -> f64 {
     if x.to_bits() >> 52 & 0x7ff != 0 {
-        let (value, bound) = ln_fast(x);
-        if let Some(answer) = round_if_certain(value, bound) {
+        if let Some(answer) = fast(x, Phase::Ln) {
             return answer;
         }
     }
     ln_dd(x).to_f64()
+}
+
+/// Which answer the fast phase is asked for.
+#[derive(Clone, Copy)]
+enum Phase {
+    Ln,
+    Log10,
+}
+
+/// The fast phase's answer, if certain: [`ln_fast`], scaled for `log10`, then
+/// [`round_if_certain`].
+#[inline(always)]
+fn fast_phase(x: f64, phase: Phase) -> Option<f64> {
+    let (value, bound) = ln_fast(x);
+    match phase {
+        Phase::Ln => round_if_certain(value, bound),
+        Phase::Log10 => {
+            // `LOG10_E` is below one and carries about 2^-106 of its own, so the bound scales
+            // down and gains a term for the product.
+            let scaled = dd::mul(value, LOG10_E);
+            round_if_certain(
+                scaled,
+                bound + scaled.hi.abs() * f64::from_bits(0x3a50_0000_0000_0000),
+            )
+        }
+    }
+}
+
+/// [`fast_phase`], on x86-64 with FMA when the host has it. Without it every `mul_add` of the
+/// double-double products is a call into the C library's `fma`; with it, one instruction. A
+/// `mul_add` is one rounding of the exact `a * b + c` either way, so the bits are the same.
+fn fast(x: f64, phase: Phase) -> Option<f64> {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("fma") {
+        // SAFETY: the host was just found to have FMA.
+        return unsafe { fast_phase_fma(x, phase) };
+    }
+    fast_phase(x, phase)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "fma")]
+unsafe fn fast_phase_fma(x: f64, phase: Phase) -> Option<f64> {
+    fast_phase(x, phase)
 }
 
 /// `java.lang.Math.log`, correctly rounded.
@@ -267,14 +311,7 @@ pub fn log10(x: f64) -> f64 {
     }
 
     if x.to_bits() >> 52 & 0x7ff != 0 {
-        let (value, bound) = ln_fast(x);
-        // `LOG10_E` is below one and carries about 2^-106 of its own, so the bound scales down
-        // and gains a term for the product.
-        let scaled = dd::mul(value, LOG10_E);
-        if let Some(answer) = round_if_certain(
-            scaled,
-            bound + scaled.hi.abs() * f64::from_bits(0x3a50_0000_0000_0000),
-        ) {
+        if let Some(answer) = fast(x, Phase::Log10) {
             return answer;
         }
     }
@@ -330,6 +367,26 @@ mod tests {
             }
         }
         out
+    }
+
+    /// The FMA copy of the fast phase, which x86-64 hosts with FMA run, gives the portable copy's
+    /// answers bit for bit, and refuses the same inputs. A host without FMA has nothing to hold.
+    #[test]
+    fn the_fma_fast_phase_is_the_portable_one() {
+        #[cfg(target_arch = "x86_64")]
+        {
+            if !std::arch::is_x86_feature_detected!("fma") {
+                return;
+            }
+            for &x in &inputs(2_000_000) {
+                for phase in [Phase::Ln, Phase::Log10] {
+                    // SAFETY: the host was just found to have FMA.
+                    let fused = unsafe { fast_phase_fma(x, phase) };
+                    let portable = fast_phase(x, phase);
+                    assert_eq!(fused.map(f64::to_bits), portable.map(f64::to_bits), "{x:e}");
+                }
+            }
+        }
     }
 
     #[test]
