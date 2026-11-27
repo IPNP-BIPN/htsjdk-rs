@@ -5,7 +5,7 @@
 //! position in the read and a running count of changes; the read lengths that delimit records
 //! are coded inline, because the codec needs them and nothing else in the block carries them.
 
-use crate::range::{ByteModel, RangeCoder};
+use crate::range::{ByteModel, ModelTable, RangeCoder};
 use crate::rans_nx16::{Input, NxError};
 
 const SUPPORTED_VERSION: u8 = 5;
@@ -196,8 +196,7 @@ fn read_array(input: &mut Input<'_>, table: &mut [u32], size: usize) -> Result<(
 
 /// The adaptive models, the 65536 quality ones built when first used.
 pub(crate) struct Models {
-    quality: Vec<Option<ByteModel>>,
-    quality_symbols: usize,
+    pub(crate) quality: ModelTable,
     pub(crate) length: Vec<ByteModel>,
     pub(crate) reverse: ByteModel,
     pub(crate) duplicate: ByteModel,
@@ -207,18 +206,12 @@ pub(crate) struct Models {
 impl Models {
     pub(crate) fn new(max_symbol: u32, max_selector: u32) -> Self {
         Self {
-            quality: (0..1 << 16).map(|_| None).collect(),
-            quality_symbols: max_symbol as usize + 1,
+            quality: ModelTable::new(1 << 16, max_symbol as usize + 1),
             length: vec![ByteModel::new(256); 4],
             reverse: ByteModel::new(2),
             duplicate: ByteModel::new(2),
             selector: (max_selector > 0).then(|| ByteModel::new(max_selector as usize + 1)),
         }
-    }
-
-    pub(crate) fn quality(&mut self, context: usize) -> &mut ByteModel {
-        let symbols = self.quality_symbols;
-        self.quality[context].get_or_insert_with(|| ByteModel::new(symbols))
     }
 }
 
@@ -269,6 +262,10 @@ pub(crate) fn update_context(param: &Param, state: &mut State, quality: u32) -> 
 
 /// `FQZCompDecode.uncompress`.
 pub fn uncompress(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return uncompress_reference(bytes);
+    }
     let mut input = Input::new(bytes);
     let length = input.uint7()? as usize;
     let version = input.byte()?;
@@ -318,7 +315,93 @@ pub fn uncompress(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
             last = 0;
         }
         let param = params.params.get(current).ok_or(NxError::Truncated)?;
-        let quality = models.quality(last).decode(&mut input, &mut coder)?;
+        qualities(
+            &mut models.quality,
+            &mut coder,
+            &mut input,
+            param,
+            &mut state,
+            &mut out,
+            &mut i,
+            &mut last,
+        )?;
+    }
+
+    if do_reverse {
+        let mut index = 0usize;
+        for record in 0..state.read_ordinal {
+            if index >= length {
+                break;
+            }
+            let n = state.quality_lengths[record].max(0) as usize;
+            if state.reverse.get(record).copied().unwrap_or(false) {
+                let end = (index + n).min(length);
+                out[index..end].reverse();
+            }
+            index += n;
+        }
+    }
+    Ok(out)
+}
+
+/// [`uncompress`] as first ported, each quality model behind its own pointer and one loop for
+/// records and qualities: what the tests hold the decoder to.
+#[cfg(test)]
+fn uncompress_reference(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
+    let mut input = Input::new(bytes);
+    let length = input.uint7()? as usize;
+    let version = input.byte()?;
+    if version != SUPPORTED_VERSION {
+        return Err(NxError::Cram(format!(
+            "Invalid FQZComp format version number: {version}"
+        )));
+    }
+    let mut params = Params::read(&mut input)?;
+    let mut models = Models::new(params.max_symbol, params.max_selector);
+    let symbols = params.max_symbol as usize + 1;
+    let mut quality_models: Vec<Option<ByteModel>> = (0..1 << 16).map(|_| None).collect();
+    let mut state = State::default();
+    let mut coder = RangeCoder::new();
+    coder.decode_start(&mut input)?;
+    let mut out = vec![0u8; length];
+    let do_reverse = params.flags & DO_REVERSE_FLAG_MASK != 0;
+
+    let mut current = 0usize;
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < length {
+        if state.bases == 0 {
+            new_record(
+                &mut input,
+                &mut coder,
+                &mut models,
+                &mut params,
+                &mut state,
+                do_reverse,
+            )?;
+            if state.is_duplicate {
+                let n = state.record_length.max(0) as usize;
+                if n > i || i + n > length {
+                    return Err(NxError::Truncated);
+                }
+                out.copy_within(i - n..i, i);
+                i += n;
+                last = 0;
+                state.bases = 0;
+                state.is_duplicate = false;
+                state.quality_lengths.push(state.record_length);
+                continue;
+            }
+            state.quality_lengths.push(state.record_length);
+            current = state.selector_table as usize;
+            // `last = fqzState.getContext()`, which was just reset to zero: the first quality of
+            // a record is coded in context 0, not in the parameter block's.
+            last = 0;
+        }
+        let param = params.params.get(current).ok_or(NxError::Truncated)?;
+        let quality = quality_models[last]
+            .get_or_insert_with(|| ByteModel::new(symbols))
+            .decode(&mut input, &mut coder)?;
         out[i] = if param.do_qmap {
             param.quality_map[quality as usize] as u8
         } else {
@@ -343,6 +426,54 @@ pub fn uncompress(bytes: &[u8]) -> Result<Vec<u8>, NxError> {
         }
     }
     Ok(out)
+}
+
+/// The rest of a record's qualities, the loop `FQZCompDecode.uncompress` runs between records.
+///
+/// Apart from the record loop so that the coder and the input cursor live in registers: in
+/// one function with the record decoding they were kept on the stack, and every symbol paid
+/// a store and a reload of each on its critical path.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn qualities(
+    models: &mut ModelTable,
+    coder: &mut RangeCoder,
+    input: &mut Input<'_>,
+    param: &Param,
+    state: &mut State,
+    out: &mut [u8],
+    i: &mut usize,
+    last: &mut usize,
+) -> Result<(), NxError> {
+    let mut local = std::mem::replace(coder, RangeCoder::new());
+    let mut cursor = Input {
+        bytes: input.bytes,
+        pos: input.pos,
+    };
+    let (mut at, mut context) = (*i, *last);
+    // The first quality is decoded whatever the record's length: the reference decodes one after
+    // every record header, and a record of length 0 then runs `bases` negative, on to the end of
+    // the block, rather than ending.
+    let result = loop {
+        let quality = match models.decode(context, &mut cursor, &mut local) {
+            Ok(quality) => quality,
+            Err(e) => break Err(e),
+        };
+        out[at] = if param.do_qmap {
+            param.quality_map[quality as usize] as u8
+        } else {
+            quality as u8
+        };
+        at += 1;
+        context = update_context(param, state, quality);
+        if at >= out.len() || state.bases == 0 {
+            break Ok(());
+        }
+    };
+    *coder = local;
+    input.pos = cursor.pos;
+    (*i, *last) = (at, context);
+    result
 }
 
 /// `decodeFQZNewRecord`.
@@ -453,8 +584,7 @@ pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<
     if params.do_reverse {
         reverse_in_place(&mut quality, lengths, bam_flags);
     }
-    let mut models: Vec<Option<ByteModel>> = (0..CTX_SIZE).map(|_| None).collect();
-    let symbols = params.max_symbol + 1;
+    let mut models = ModelTable::new(CTX_SIZE, params.max_symbol + 1);
     let mut length_models = vec![ByteModel::new(256); 4];
     let mut reverse_model = ByteModel::new(2);
     let mut dup_model = ByteModel::new(2);
@@ -507,9 +637,7 @@ pub fn compress(data: &[u8], lengths: &[i32], bam_flags: Option<&[i32]>) -> Vec<
             record += 1;
         }
         let q = params.qmap[quality[i] as usize];
-        models[last]
-            .get_or_insert_with(|| ByteModel::new(symbols))
-            .encode(&mut coder, q);
+        models.encode(last, &mut coder, q);
         qctx = (qctx << params.qshift).wrapping_add(params.qtab[q as usize]);
         let mut context = (qctx & params.qmask) << params.qloc;
         if let Some(t) = &ptab {
@@ -726,6 +854,131 @@ fn reverse_in_place(data: &mut [u8], lengths: &[i32], bam_flags: Option<&[i32]>)
             data[offset..offset + n].reverse();
         }
         offset += n;
+    }
+}
+
+/// Switches [`uncompress`] to the decoder as first ported, for the tests that compare the two.
+#[cfg(test)]
+mod reference {
+    thread_local! {
+        pub(super) static ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// Each side's answer, `None` where it panicked.
+    type Answer = Option<Result<Vec<u8>, NxError>>;
+
+    fn both(stream: &[u8]) -> (Answer, Answer) {
+        let run = || std::panic::catch_unwind(|| uncompress(stream)).ok();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let fast = run();
+        reference::ON.with(|on| on.set(true));
+        let first = run();
+        reference::ON.with(|on| on.set(false));
+        std::panic::set_hook(hook);
+        (fast, first)
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) as usize
+        }
+    }
+
+    /// Records of drifting qualities: varying or fixed lengths, some of length 0, duplicates,
+    /// reversed reads, and binned or full alphabets.
+    fn records(
+        random: &mut Lcg,
+        count: usize,
+        fixed: bool,
+        binned: bool,
+    ) -> (Vec<u8>, Vec<i32>, Vec<i32>) {
+        let (mut data, mut lengths, mut flags) = (Vec::new(), Vec::new(), Vec::new());
+        for r in 0..count {
+            let n = if fixed {
+                36
+            } else if r % 17 == 5 {
+                0
+            } else {
+                20 + random.next() % 40
+            };
+            if !fixed && r % 23 == 7 && !lengths.is_empty() {
+                let last = *lengths.last().unwrap() as usize;
+                let copy = data[data.len() - last..].to_vec();
+                data.extend_from_slice(&copy);
+                lengths.push(last as i32);
+                flags.push(0);
+                continue;
+            }
+            let mut q = 30 + random.next() % 10;
+            for _ in 0..n {
+                q = (q + random.next() % 5).saturating_sub(2).clamp(2, 41);
+                data.push(if binned {
+                    [2, 12, 23, 37][q % 4]
+                } else {
+                    q as u8
+                });
+            }
+            lengths.push(n as i32);
+            flags.push(if random.next().is_multiple_of(3) {
+                0x10
+            } else {
+                0
+            });
+        }
+        (data, lengths, flags)
+    }
+
+    /// The decoder against the first port's, on whole blocks, cuts and blocks with one bit
+    /// changed: the same qualities, the same refusal or the same panic each time.
+    #[test]
+    fn the_decoder_answers_as_the_first_port_does() {
+        let mut random = Lcg(11);
+        let mut compared = 0;
+        for (count, fixed, binned, with_flags) in [
+            (5, false, false, true),
+            (300, false, false, true),
+            (300, true, true, true),
+            (400, false, true, false),
+            (200, true, false, false),
+        ] {
+            let (data, lengths, flags) = records(&mut random, count, fixed, binned);
+            let stream = compress(&data, &lengths, with_flags.then_some(&flags[..]));
+            let (fast, first) = both(&stream);
+            assert_eq!(fast, first, "{count} records");
+            // A record of length 0 still has a quality decoded after its header, so a block with
+            // one does not decode to what was written, here as in htsjdk; the others do.
+            if !lengths.contains(&0) {
+                assert_eq!(fast, Some(Ok(data.clone())), "{count} records round trip");
+            }
+            for _ in 0..300 {
+                let cut = random.next() % stream.len();
+                let (fast, first) = both(&stream[..cut]);
+                assert_eq!(fast, first, "{count} records, cut at {cut}");
+                compared += 1;
+            }
+            for _ in 0..1500 {
+                let mut damaged = stream.clone();
+                // Past the length, which would only change what is allocated.
+                let at = 3 + random.next() % (damaged.len() - 3);
+                damaged[at] ^= 1 << (random.next() % 8);
+                let (fast, first) = both(&damaged);
+                assert_eq!(fast, first, "{count} records, bit changed at {at}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 5000);
     }
 }
 

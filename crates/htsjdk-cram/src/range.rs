@@ -139,21 +139,22 @@ impl RangeCoder {
     }
 }
 
-/// One symbol of a model. Frequencies stay below `MAX_FREQ + STEP`, which is `u16::MAX`, and a
-/// model has at most 256 symbols, so `u8` holds any of them.
-#[derive(Clone, Copy)]
-struct Entry {
-    freq: u16,
-    symbol: u8,
-}
+/// One symbol of a model: its frequency at [`FREQ`], the symbol at [`SYMBOL`]. Frequencies stay
+/// below `MAX_FREQ + STEP`, which is `u16::MAX`, and a model has at most 256 symbols. An array of
+/// integers rather than a struct so that a zeroed table of them is allocated zeroed, not written.
+type Entry = [u16; 2];
+const FREQ: usize = 0;
+const SYMBOL: usize = 1;
 
 /// `ByteModel`: frequencies and symbols, kept roughly sorted by one swap per update.
 ///
 /// One allocation, four bytes a symbol. Three designs that look faster were measured and are not:
 /// cumulative frequencies with a branchless search or a vector count took 30% more cycles, a walk
 /// over separate arrays eight symbols at a time 3% more, and all the models of a stream side by
-/// side in one allocation 4% more instructions for 3% less peak memory. Models are sorted and
-/// qualities drift, so the walk is short and its exit predictable.
+/// side in one allocation 4% more instructions for 3% less peak memory on the bench's blocks. On
+/// real fqzcomp blocks, where a stream uses some 15000 of its 65536 quality models, that last one
+/// is 13% fewer cycles: see [`ModelTable`]. Models are sorted and qualities drift, so the walk is
+/// short and its exit predictable.
 #[derive(Clone)]
 pub(crate) struct ByteModel {
     total: u32,
@@ -164,33 +165,7 @@ impl ByteModel {
     pub(crate) fn new(symbols: usize) -> Self {
         Self {
             total: symbols as u32,
-            entries: (0..symbols)
-                .map(|symbol| Entry {
-                    freq: 1,
-                    symbol: symbol as u8,
-                })
-                .collect(),
-        }
-    }
-
-    #[cold]
-    fn renormalize(&mut self) {
-        self.total = 0;
-        for entry in self.entries.iter_mut() {
-            entry.freq -= entry.freq >> 1;
-            self.total += u32::from(entry.freq);
-        }
-    }
-
-    #[inline(always)]
-    fn update(&mut self, x: usize) {
-        self.entries[x].freq += STEP as u16;
-        self.total += STEP;
-        if self.total > MAX_FREQ {
-            self.renormalize();
-        }
-        if x > 0 && self.entries[x].freq > self.entries[x - 1].freq {
-            self.entries.swap(x, x - 1);
+            entries: (0..symbols).map(|symbol| [1, symbol as u16]).collect(),
         }
     }
 
@@ -200,38 +175,131 @@ impl ByteModel {
         input: &mut Input<'_>,
         coder: &mut RangeCoder,
     ) -> Result<u32, NxError> {
-        let target = coder.get_frequency(self.total);
-        let mut cumulative = 0;
-        let mut x = 0;
-        for entry in self.entries.iter() {
-            let next = cumulative + u32::from(entry.freq);
-            if next > target {
-                break;
-            }
-            cumulative = next;
-            x += 1;
-        }
-        let Some(entry) = self.entries.get(x).copied() else {
-            return Err(NxError::Truncated);
-        };
-        coder.decode(input, cumulative, u32::from(entry.freq))?;
-        self.update(x);
-        Ok(u32::from(entry.symbol))
+        decode(&mut self.total, &mut self.entries, input, coder)
     }
 
     #[inline]
     pub(crate) fn encode(&mut self, coder: &mut RangeCoder, symbol: u32) {
-        let mut cumulative = 0;
-        let mut i = 0;
-        for entry in self.entries.iter() {
-            if u32::from(entry.symbol) == symbol {
-                break;
-            }
-            cumulative += u32::from(entry.freq);
-            i += 1;
+        encode(&mut self.total, &mut self.entries, coder, symbol);
+    }
+}
+
+#[cold]
+fn renormalize(total: &mut u32, entries: &mut [Entry]) {
+    *total = 0;
+    for entry in entries.iter_mut() {
+        entry[FREQ] -= entry[FREQ] >> 1;
+        *total += u32::from(entry[FREQ]);
+    }
+}
+
+/// `ByteModel.updateSymbol`: one model's frequencies, wherever they are kept.
+#[inline(always)]
+fn update(total: &mut u32, entries: &mut [Entry], x: usize) {
+    entries[x][FREQ] += STEP as u16;
+    *total += STEP;
+    if *total > MAX_FREQ {
+        renormalize(total, entries);
+    }
+    if x > 0 && entries[x][FREQ] > entries[x - 1][FREQ] {
+        entries.swap(x, x - 1);
+    }
+}
+
+/// `ByteModel.modelDecode`: one model's frequencies, wherever they are kept.
+#[inline(always)]
+fn decode(
+    total: &mut u32,
+    entries: &mut [Entry],
+    input: &mut Input<'_>,
+    coder: &mut RangeCoder,
+) -> Result<u32, NxError> {
+    let target = coder.get_frequency(*total);
+    let mut cumulative = 0;
+    let mut x = 0;
+    for entry in entries.iter() {
+        let next = cumulative + u32::from(entry[FREQ]);
+        if next > target {
+            break;
         }
-        coder.encode(cumulative, u32::from(self.entries[i].freq), self.total);
-        self.update(i);
+        cumulative = next;
+        x += 1;
+    }
+    let Some(entry) = entries.get(x).copied() else {
+        return Err(NxError::Truncated);
+    };
+    coder.decode(input, cumulative, u32::from(entry[FREQ]))?;
+    update(total, entries, x);
+    Ok(u32::from(entry[SYMBOL]))
+}
+
+/// `ByteModel.modelEncode`: one model's frequencies, wherever they are kept.
+#[inline(always)]
+fn encode(total: &mut u32, entries: &mut [Entry], coder: &mut RangeCoder, symbol: u32) {
+    let mut cumulative = 0;
+    let mut i = 0;
+    for entry in entries.iter() {
+        if u32::from(entry[SYMBOL]) == symbol {
+            break;
+        }
+        cumulative += u32::from(entry[FREQ]);
+        i += 1;
+    }
+    coder.encode(cumulative, u32::from(entries[i][FREQ]), *total);
+    update(total, entries, i);
+}
+
+/// Many [`ByteModel`]s of one size side by side, each built when first used: fqzcomp's 65536
+/// quality models, where a model behind its own pointer costs a dependent load and an allocation.
+pub(crate) struct ModelTable {
+    symbols: usize,
+    /// A model's total, 0 for one not built yet (a built model's total is at least 1).
+    totals: Vec<u32>,
+    entries: Vec<Entry>,
+}
+
+impl ModelTable {
+    pub(crate) fn new(models: usize, symbols: usize) -> Self {
+        Self {
+            symbols,
+            totals: vec![0; models],
+            // Allocated zeroed, not written: the pages of models never used are never touched.
+            entries: vec![[0; 2]; models * symbols],
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn decode(
+        &mut self,
+        model: usize,
+        input: &mut Input<'_>,
+        coder: &mut RangeCoder,
+    ) -> Result<u32, NxError> {
+        let entries = &mut self.entries[model * self.symbols..(model + 1) * self.symbols];
+        let total = &mut self.totals[model];
+        if *total == 0 {
+            build(total, entries);
+        }
+        decode(total, entries, input, coder)
+    }
+
+    #[inline(always)]
+    pub(crate) fn encode(&mut self, model: usize, coder: &mut RangeCoder, symbol: u32) {
+        let entries = &mut self.entries[model * self.symbols..(model + 1) * self.symbols];
+        let total = &mut self.totals[model];
+        if *total == 0 {
+            build(total, entries);
+        }
+        encode(total, entries, coder, symbol);
+    }
+}
+
+/// [`ByteModel::new`] in place.
+#[cold]
+fn build(total: &mut u32, entries: &mut [Entry]) {
+    *total = entries.len() as u32;
+    for (symbol, entry) in entries.iter_mut().enumerate() {
+        *entry = [1, symbol as u16];
     }
 }
 
@@ -524,6 +592,65 @@ mod tests {
         for flags in [0u8, 1, 0x40, 0x41, 0x80, 0x81, 0xC0, 0x20, 0x08] {
             let packed = compress(text, flags).unwrap();
             assert_eq!(uncompress(&packed).unwrap(), text, "flags {flags:#x}");
+        }
+    }
+    /// A [`ModelTable`] model answers as a [`ByteModel`] of its own does: the same symbols, or
+    /// the same refusal, from the same bytes and contexts. The stream is coded with separate
+    /// models from skewed symbols in skewed contexts, so some models renormalise many times;
+    /// it is then decoded whole, cut, and with one bit changed.
+    #[test]
+    fn a_model_table_decodes_as_separate_models_do() {
+        let mut seed = 9u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as usize
+        };
+        for symbols in [2usize, 5, 42, 256] {
+            let count = 300_000;
+            let contexts: Vec<usize> = (0..count).map(|_| (next() % 64).max(next() % 64)).collect();
+            let values: Vec<u32> = (0..count)
+                .map(|_| ((next() % symbols) * (next() % symbols) / symbols) as u32)
+                .collect();
+            let mut models = vec![ByteModel::new(symbols); 64];
+            let mut coder = RangeCoder::new();
+            for (&context, &value) in contexts.iter().zip(&values) {
+                models[context].encode(&mut coder, value);
+            }
+            coder.encode_end();
+            let stream = coder.out;
+            let decode_both = |bytes: &[u8]| {
+                let mut table = ModelTable::new(64, symbols);
+                let mut models = vec![ByteModel::new(symbols); 64];
+                let (mut a, mut b) = (Input::new(bytes), Input::new(bytes));
+                let (mut ca, mut cb) = (RangeCoder::new(), RangeCoder::new());
+                let (sa, sb) = (ca.decode_start(&mut a), cb.decode_start(&mut b));
+                assert_eq!(sa, sb);
+                if sa.is_err() {
+                    return Vec::new();
+                }
+                let mut decoded = Vec::new();
+                for &context in &contexts {
+                    let x = table.decode(context, &mut a, &mut ca);
+                    assert_eq!(
+                        x,
+                        models[context].decode(&mut b, &mut cb),
+                        "{symbols} symbols"
+                    );
+                    match x {
+                        Ok(symbol) => decoded.push(symbol),
+                        Err(_) => break,
+                    }
+                }
+                decoded
+            };
+            assert_eq!(decode_both(&stream), values, "{symbols} symbols");
+            for _ in 0..20 {
+                decode_both(&stream[..next() % stream.len()]);
+                let mut damaged = stream.clone();
+                let at = next() % damaged.len();
+                damaged[at] ^= 1 << (next() % 8);
+                decode_both(&damaged);
+            }
         }
     }
 }

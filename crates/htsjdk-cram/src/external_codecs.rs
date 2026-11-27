@@ -237,6 +237,7 @@ impl ExternalIntegerCodec {
         streams.external(self.content_id).extend_from_slice(&bytes);
     }
 
+    #[inline]
     pub fn read(&self, streams: &mut SliceReadStreams<'_>) -> Result<i32, ExternalError> {
         let cursor = streams.external(self.content_id);
         // Past the end the reference's stream returns -1 for every byte and the arithmetic makes a
@@ -264,6 +265,7 @@ impl ExternalLongCodec {
         streams.external(self.content_id).extend_from_slice(&bytes);
     }
 
+    #[inline]
     pub fn read(&self, streams: &mut SliceReadStreams<'_>) -> Result<i64, ExternalError> {
         let cursor = streams.external(self.content_id);
         let (value, used) =
@@ -290,6 +292,7 @@ impl ExternalByteCodec {
 
     /// `(byte) inputStream.read()`. At the end that is `(byte) -1`, which a byte of `0xFF` that is
     /// really there produces too. The signature has no error in it because the reference has none.
+    #[inline]
     pub fn read(&self, streams: &mut SliceReadStreams<'_>) -> i8 {
         streams.external(self.content_id).read() as i8
     }
@@ -311,6 +314,7 @@ impl ExternalByteArrayCodec {
     }
 
     /// `read(length)`, which refuses rather than returning a short array.
+    #[inline]
     pub fn read_with_length(
         &self,
         streams: &mut SliceReadStreams<'_>,
