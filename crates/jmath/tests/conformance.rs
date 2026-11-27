@@ -1,6 +1,7 @@
 //! Conformance against the reference JVM, from the corpus in `tests/data/jmath.csv.gz`.
 //!
-//! `sqrt`, `log` and `log10` are ported and asserted bit-identical over every point. The rest
+//! `sqrt`, `log`, `log10`, `log1p` and `expm1` are ported and asserted bit-identical over every
+//! point. The rest
 //! delegate to Rust's libm and are measured rather than asserted; that test *fails* if one of
 //! them silently reaches 100%, which would mean a function was ported without decisions 0005
 //! and 0006 being updated to match.
@@ -64,8 +65,9 @@ fn agreement_against(column: usize) -> BTreeMap<String, (u64, u64)> {
             // left behind when the GPL2 transcription was withdrawn; `strict_exp` is FDLIBM, which
             // is permissively licensed and is what `StrictMath.exp` is specified to be.
             "exp" => x.exp(),
-            "log1p" => x.ln_1p(),
-            "expm1" => x.exp_m1(),
+            // `Math.log1p` and `Math.expm1` are `StrictMath`'s, so the FDLIBM ports are the port.
+            "log1p" => jmath::math::log1p(x),
+            "expm1" => jmath::math::expm1(x),
             "cbrt" => x.cbrt(),
             "sin" => x.sin(),
             "cos" => x.cos(),
@@ -98,6 +100,8 @@ fn corpus_is_present_and_substantial() {
 /// - `sqrt` is free: IEEE-754 mandates its rounding, so every implementation already agrees.
 /// - `log` and `log10` are correctly rounded in the reference, so rounding the true result
 ///   suffices and no algorithm port was needed.
+/// - `log1p` and `expm1` have no intrinsic: `Math` delegates to `StrictMath`, which is FDLIBM, and
+///   FDLIBM's notice permits the port (decision 0051).
 ///
 /// There was a third route and it is gone. `exp` is *not* correctly rounded, so being exact
 /// required reproducing HotSpot's intrinsic operation by operation, which is a transcription of
@@ -108,7 +112,7 @@ fn corpus_is_present_and_substantial() {
 #[test]
 fn ported_functions_are_bit_identical_to_the_jvm() {
     let a = agreement();
-    for f in ["sqrt", "log", "log10"] {
+    for f in ["sqrt", "log", "log10", "log1p", "expm1"] {
         let (ok, n) = a[f];
         assert_eq!(
             ok,
@@ -139,7 +143,7 @@ fn ported_functions_are_bit_identical_to_the_jvm() {
 fn unported_functions_are_not_yet_exact() {
     let a = agreement();
     let mut report = Vec::new();
-    for f in ["exp", "pow", "log1p", "expm1", "cbrt", "sin", "cos"] {
+    for f in ["exp", "pow", "cbrt", "sin", "cos"] {
         let (ok, n) = a[f];
         report.push(format!("{f}={:.4}%", 100.0 * ok as f64 / n as f64));
         assert!(
@@ -396,4 +400,21 @@ fn the_exp_gap_is_measured_for_both_stand_ins() {
         "FDLIBM now matches java.lang.Math on all {total} points. If that is real, decisions 0005 \
          and 0014 need updating: the gap they describe would have closed."
     );
+}
+
+/// `log1p` and `expm1` are FDLIBM against the `StrictMath` column as well, on every point.
+///
+/// The `Math` column is asserted in [`ported_functions_are_bit_identical_to_the_jvm`]; this one is
+/// the specification's claim, and the two passing together is the corpus showing that `Math`
+/// delegates to `StrictMath` for these two rather than the source saying so.
+#[test]
+fn strict_log1p_and_expm1_are_strictmath() {
+    let a = agreement_against(3);
+    for f in ["log1p", "expm1"] {
+        let (ok, n) = a[f];
+        assert_eq!(
+            ok, n,
+            "`{f}` must match java.lang.StrictMath on all {n} points, got {ok}"
+        );
+    }
 }

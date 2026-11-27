@@ -432,3 +432,36 @@ fn a_cram_read_on_many_threads_reads_as_on_one() {
     // The whole file has three data containers, so eight threads read them together.
     assert!(written.len() > 2 * 10_000);
 }
+
+/// htsjdk 6.0.0 #1855: a slice whose placed reads are all unmapped (an alignment end of 0). 5.0.0
+/// spanned it `0 - start + 1` and threw on the reference lookup; the port now spans the reads'
+/// starts, as 6.0.0 does. Starting at 1 the span was 0 in 5.0.0 and stays 0.
+#[test]
+fn a_slice_of_placed_unmapped_reads_spans_their_starts() {
+    use md5::{Digest, Md5};
+    let (header, mut source) = reference();
+    let unmapped = |name: &str, start: i32, i: u64| {
+        let mut r = record(name, 0, start, "*", contig(40, i), 0x4);
+        r.cigar = Cigar::default();
+        r.mapping_quality = 0;
+        r
+    };
+    for (starts, span) in [([100, 120], 21), ([1, 1], 0)] {
+        let written = [unmapped("a", starts[0], 1), unmapped("b", starts[1], 2)];
+        let cram = write_cram(&header, &written, "file:///u.cram", &mut source).unwrap();
+        let walk = htsjdk_cram::file::read_file(&cram).unwrap();
+        let slice = &walk.containers[0].slices[0].header;
+        assert_eq!(
+            (slice.alignment_start, slice.alignment_span),
+            (starts[0], span)
+        );
+        if span > 0 {
+            let chr1 = source.sequence_bases("chr1").unwrap();
+            let from = starts[0] as usize - 1;
+            let expected: [u8; 16] = Md5::digest(&chr1[from..from + span as usize]).into();
+            assert_eq!(slice.reference_md5, expected);
+        }
+        let (_, read_back) = read(&cram, &mut source);
+        assert_eq!(read_back.len(), 2);
+    }
+}

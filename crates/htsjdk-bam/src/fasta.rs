@@ -56,7 +56,9 @@ pub fn read_fasta<R: Read>(source: R) -> Result<Vec<ReferenceSequence>, FastaErr
     for line in BufReader::new(source).lines() {
         let line = line?;
         // Blank lines between records are skipped by `skipNewlines`, not treated as data.
-        if line.trim().is_empty() {
+        // htsjdk 6.0.0 #1922: `;` comment lines before the first header are skipped, where 5.0.0
+        // refused the file. After a header, a `;` line is still bases, as in 6.0.0.
+        if line.trim().is_empty() || (out.is_empty() && line.starts_with(';')) {
             continue;
         }
         if let Some(header) = line.strip_prefix('>') {
@@ -103,6 +105,19 @@ mod tests {
         assert_eq!(seqs[0].index, 0);
         assert_eq!(seqs[0].bases, b"ACGTACGT");
         assert_eq!(seqs[1].index, 1);
+    }
+
+    /// htsjdk 6.0.0 #1922: leading `;` comments are skipped; one after a header is bases.
+    #[test]
+    fn leading_semicolon_comments_are_skipped() {
+        let seqs = parse(";c\n;~k: v\n\n;\n>chr1 x\nACGT\n;C\n>chr2\nGGCC\n");
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(seqs[0].bases, b"ACGT;C");
+        assert_eq!(seqs[1].bases, b"GGCC");
+        assert!(matches!(
+            read_fasta("ACGT\n".as_bytes()),
+            Err(FastaError::ExpectedHeader(b'A'))
+        ));
     }
 
     /// Soft-masked regions survive as lowercase, because nothing in the read path folds case.
