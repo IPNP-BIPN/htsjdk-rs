@@ -9,7 +9,7 @@
 use std::os::raw::c_int;
 use std::sync::OnceLock;
 
-pub use isal_sys::igzip_lib as isal;
+use isal_sys::igzip_lib as isal;
 
 use crate::igzip_canary;
 
@@ -19,15 +19,10 @@ use crate::igzip_canary;
 /// from a failing byte comparison three layers downstream.
 pub fn usable() -> bool {
     static USABLE: OnceLock<bool> = OnceLock::new();
-    *USABLE.get_or_init(|| {
-        let mut stream = Box::new(unsafe { std::mem::zeroed() });
-        deflate_unchecked(&igzip_canary::INPUT, 1, &mut stream) == igzip_canary::EXPECTED
-    })
+    *USABLE.get_or_init(|| deflate_unchecked(&igzip_canary::INPUT, 1) == igzip_canary::EXPECTED)
 }
 
-/// Compress `data` exactly as `IntelDeflater` does at Java level `level`, which is 1 or 2, with
-/// the `isal_zstream` in `stream`. Where it lives is part of the answer: the body kernel hashes
-/// its address into one bucket (see `igzip`'s module doc).
+/// Compress `data` exactly as `IntelDeflater` does at Java level `level`, which is 1 or 2.
 ///
 /// # Panics
 ///
@@ -35,7 +30,7 @@ pub fn usable() -> bool {
 /// output buffer is too small to hold even a stored block; the buffer here is sized from ISA-L's
 /// own worst case, so a refusal means an assumption broke rather than that the caller was unlucky,
 /// and it should be loud.
-pub fn deflate(data: &[u8], level: usize, stream: &mut isal::isal_zstream) -> Vec<u8> {
+pub fn deflate(data: &[u8], level: usize) -> Vec<u8> {
     assert!(
         usable(),
         "this build of ISA-L does not reproduce GKL's igzip. It falls back to its readable C when \
@@ -43,10 +38,10 @@ pub fn deflate(data: &[u8], level: usize, stream: &mut isal::isal_zstream) -> Ve
          that C finds different matches (decision 0034). Levels 1 and 2 refuse rather than return \
          valid deflate that is not GKL's."
     );
-    deflate_unchecked(data, level, stream)
+    deflate_unchecked(data, level)
 }
 
-fn deflate_unchecked(data: &[u8], level: usize, stream: &mut isal::isal_zstream) -> Vec<u8> {
+fn deflate_unchecked(data: &[u8], level: usize) -> Vec<u8> {
     // ISA-L's own stored-block worst case: a 5-byte header per 65535-byte block, plus the data.
     // Sized from the rule rather than from a guess, so a large incompressible input cannot quietly
     // land in the overflow path.
@@ -69,8 +64,8 @@ fn deflate_unchecked(data: &[u8], level: usize, stream: &mut isal::isal_zstream)
     let mut input = data.to_vec();
 
     let written = unsafe {
-        *stream = std::mem::zeroed();
-        isal::isal_deflate_stateless_init(stream);
+        let mut stream: isal::isal_zstream = std::mem::zeroed();
+        isal::isal_deflate_stateless_init(&mut stream);
         stream.level = level as u32;
         stream.level_buf = level_buf.as_mut_ptr();
         stream.level_buf_size = level_buf.len() as u32;
@@ -81,7 +76,7 @@ fn deflate_unchecked(data: &[u8], level: usize, stream: &mut isal::isal_zstream)
         stream.end_of_stream = 1;
         stream.flush = isal::NO_FLUSH as u16;
 
-        let rc = isal::isal_deflate_stateless(stream);
+        let rc = isal::isal_deflate_stateless(&mut stream);
         assert_eq!(
             rc,
             isal::COMP_OK as c_int,
