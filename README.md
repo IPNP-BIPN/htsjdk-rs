@@ -349,7 +349,9 @@ made with the cost understood.
 
 ## License
 
-MIT, matching the htsjdk sources this ports. See `LICENSE`.
+MIT, matching the htsjdk sources this ports. See `LICENSE` and `NOTICE`. The code ported from other
+projects (ISA-L igzip, zlib with Intel's deflate_medium, FDLIBM, Apache Commons Math) is credited,
+with each notice verbatim, in `THIRD-PARTY-NOTICES`.
 
 One caveat, taken from htsjdk's own README: htsjdk is **not uniformly MIT**. Licensing is
 per-file, and notably the CRAM code is Apache License 2.0. Since CRAM is in scope for this
