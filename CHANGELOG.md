@@ -13,6 +13,12 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM bases restored from the reference in one pass per run, same records.** Between read
+  features, a run of reference bases that cannot leave the reference or the read is copied in one
+  pass, its MD match checked as it goes; a run with a mismatch, or near an end, is left to the
+  base-by-base walk. MD's numbers are written in place rather than through a string each. A whole
+  read takes 4% fewer cycles on HiFi and 2% on Illumina (12% and 4% fewer instructions).
+
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:

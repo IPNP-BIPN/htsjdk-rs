@@ -1376,6 +1376,51 @@ fn bases_equal(lhs: u8, rhs: u8) -> bool {
     lhs < 127 && rhs < 127 && iupac_mask(lhs) == iupac_mask(rhs)
 }
 
+/// `md.append(run)`: the run's decimal digits written in place, where `to_string` allocated a
+/// string for each.
+#[inline]
+fn push_run(md: &mut String, run: i32) {
+    use std::fmt::Write;
+    let _ = write!(md, "{run}");
+}
+
+/// Reference bases `at..at + count` written as read bases at `into..`, when both ranges lie
+/// inside their slices: `Some` of whether every base matched the reference (as the MD walk
+/// counts a match), `None`, with nothing written, where the base-by-base walk could fail or
+/// leave the reference.
+///
+/// The walk this stands for checks both bounds and the match for every base; over a run that
+/// cannot fail, one pass does the same writes.
+#[inline]
+fn copy_reference_run(
+    reference: &[u8],
+    at: i32,
+    bases: &mut [u8],
+    into: i32,
+    count: i32,
+) -> Option<bool> {
+    #[cfg(test)]
+    if run_tests::WALK_ONLY.with(|on| on.get()) {
+        return None;
+    }
+    let (at, into, count) = (i64::from(at), i64::from(into), i64::from(count));
+    if count <= 0 || at < 0 || into < 0 {
+        return None;
+    }
+    if at + count > reference.len() as i64 || into + count > bases.len() as i64 {
+        return None;
+    }
+    let source = &reference[at as usize..(at + count) as usize];
+    let target = &mut bases[into as usize..(into + count) as usize];
+    let mut matched = true;
+    for (slot, &raw) in target.iter_mut().zip(source) {
+        let base = bam_read_base(raw);
+        *slot = base;
+        matched &= bases_equal(base, raw) || base == 0;
+    }
+    Some(matched)
+}
+
 /// What [`restore_bases_and_tags`] produces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecodeResult {
@@ -1477,7 +1522,7 @@ pub fn restore_bases_and_tags(
                 if bases_equal(*slot, raw) || *slot == 0 {
                     run += 1;
                 } else {
-                    md.push_str(&run.to_string());
+                    push_run(&mut md, run);
                     md.push(raw as char);
                     run = 0;
                     nm += 1;
@@ -1485,7 +1530,7 @@ pub fn restore_bases_and_tags(
             }
         }
         if md_active {
-            md.push_str(&run.to_string());
+            push_run(&mut md, run);
         }
         return Ok(DecodeResult {
             read_bases: bases,
@@ -1505,6 +1550,22 @@ pub fn restore_bases_and_tags(
     for feature in features {
         let position = feature.position();
         if do_bases {
+            let count = position - in_read;
+            if count > 0 {
+                let at = start + in_seq - offset;
+                if let Some(matched) =
+                    copy_reference_run(reference, at, &mut bases, in_read - 1, count)
+                {
+                    // A mismatch is left to the walk, which writes the same bases again.
+                    if matched || !md_active {
+                        if md_active {
+                            run += count;
+                        }
+                        in_read += count;
+                        in_seq += count;
+                    }
+                }
+            }
             while in_read < position {
                 let at = start + in_seq - offset;
                 if at >= reference.len() as i32 {
@@ -1517,7 +1578,7 @@ pub fn restore_bases_and_tags(
                     if bases_equal(base, raw) || base == 0 {
                         run += 1;
                     } else {
-                        md.push_str(&run.to_string());
+                        push_run(&mut md, run);
                         md.push(raw as char);
                         run = 0;
                         nm += 1;
@@ -1532,7 +1593,7 @@ pub fn restore_bases_and_tags(
         }
 
         if md_active && start + in_seq - offset >= reference.len() as i32 {
-            md.push_str(&run.to_string());
+            push_run(&mut md, run);
             run = 0;
             md_active = false;
         }
@@ -1565,7 +1626,7 @@ pub fn restore_bases_and_tags(
                         .map_err(ReadFeatureError::Matrix)?;
                     put(&mut bases, in_read - 1, bam_read_base(base))?;
                     if md_active {
-                        md.push_str(&run.to_string());
+                        push_run(&mut md, run);
                         md.push(raw as char);
                         run = 0;
                         nm += 1;
@@ -1584,7 +1645,7 @@ pub fn restore_bases_and_tags(
                         if bases_equal(read_base, raw) {
                             run += 1;
                         } else {
-                            md.push_str(&run.to_string());
+                            push_run(&mut md, run);
                             md.push(raw as char);
                             run = 0;
                             nm += 1;
@@ -1606,7 +1667,7 @@ pub fn restore_bases_and_tags(
                             if bases_equal(read_base, raw) {
                                 run += 1;
                             } else {
-                                md.push_str(&run.to_string());
+                                push_run(&mut md, run);
                                 md.push(raw as char);
                                 run = 0;
                                 nm += 1;
@@ -1651,7 +1712,7 @@ pub fn restore_bases_and_tags(
             }
             ReadFeature::Deletion { length, .. } => {
                 if md_active {
-                    md.push_str(&run.to_string());
+                    push_run(&mut md, run);
                     run = 0;
                     md.push('^');
                     for i in 0..*length {
@@ -1687,11 +1748,25 @@ pub fn restore_bases_and_tags(
     }
 
     if do_bases {
+        let count = read_length - in_read + 1;
+        if count > 0 {
+            let at = start + in_seq - offset;
+            if let Some(matched) = copy_reference_run(reference, at, &mut bases, in_read - 1, count)
+            {
+                if matched || !md_active {
+                    if md_active {
+                        run += count;
+                    }
+                    in_read += count;
+                    in_seq += count;
+                }
+            }
+        }
         while in_read <= read_length {
             let at = start + in_seq - offset;
             if at >= reference.len() as i32 {
                 if md_active {
-                    md.push_str(&run.to_string());
+                    push_run(&mut md, run);
                     run = 0;
                     md_active = false;
                 }
@@ -1708,7 +1783,7 @@ pub fn restore_bases_and_tags(
                 if bases_equal(base, raw) || base == 0 {
                     run += 1;
                 } else {
-                    md.push_str(&run.to_string());
+                    push_run(&mut md, run);
                     md.push(raw as char);
                     run = 0;
                     nm += 1;
@@ -1735,7 +1810,7 @@ pub fn restore_bases_and_tags(
         Cigar::new(elements)
     };
     if md_active {
-        md.push_str(&run.to_string());
+        push_run(&mut md, run);
     }
     Ok(DecodeResult {
         read_bases: if unknown_bases { Vec::new() } else { bases },
@@ -1795,5 +1870,89 @@ mod base_tables {
             );
             assert_eq!(super::iupac_mask(byte), iupac_mask_match(byte), "{byte}");
         }
+    }
+}
+
+/// [`copy_reference_run`] against the base-by-base walk it stands for.
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+
+    thread_local! {
+        /// Turns the run copy off, leaving every base to the walk.
+        pub(super) static WALK_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Reads placed anywhere on a reference with lower case, `N` and bytes outside the IUPAC set,
+    /// across its ends and the region's start, with read bases, deletions and insertions among
+    /// the reference runs, MD and NM on and off: the same bases, cigar, MD and NM, or the same
+    /// refusal, with the run copy and without it.
+    #[test]
+    fn a_reference_run_is_copied_as_the_walk_copies_it() {
+        let mut seed = 5u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            (seed >> 33) as i32
+        };
+        let matrix = SubstitutionMatrix::from_encoded([0x1b; 5]);
+        let mut compared = 0;
+        for _ in 0..20_000 {
+            let reference: Vec<u8> = (0..60 + next() % 200)
+                .map(|_| match next() % 20 {
+                    0 => b'a' + (next() % 26) as u8,
+                    1 => b'N',
+                    2 => (next() % 256) as u8,
+                    _ => b"ACGT"[(next() % 4) as usize],
+                })
+                .collect();
+            let read_length = next() % 120;
+            let region_start = next() % 30 - 10;
+            let alignment_start = next() % (reference.len() as i32 + 60) - 20;
+            let mut features = Vec::new();
+            let mut position = 1 + next() % 20;
+            while position <= read_length && features.len() < 6 {
+                features.push(match next() % 3 {
+                    0 => ReadFeature::ReadBase {
+                        position,
+                        base: b"ACGTN"[(next() % 5) as usize],
+                        quality: 30,
+                    },
+                    1 => ReadFeature::Deletion {
+                        position,
+                        length: 1 + next() % 4,
+                    },
+                    _ => ReadFeature::InsertBase {
+                        position,
+                        base: b'G',
+                    },
+                });
+                position += 1 + next() % 40;
+            }
+            let compute = next() % 2 == 0;
+            let run = || {
+                restore_bases_and_tags(
+                    &features,
+                    false,
+                    alignment_start,
+                    read_length,
+                    Some(&reference),
+                    region_start,
+                    &matrix,
+                    compute,
+                )
+            };
+            let fast = run();
+            WALK_ONLY.with(|on| on.set(true));
+            let walk = run();
+            WALK_ONLY.with(|on| on.set(false));
+            assert_eq!(
+                fast,
+                walk,
+                "{features:?} at {alignment_start} of {}",
+                reference.len()
+            );
+            compared += 1;
+        }
+        assert_eq!(compared, 20_000);
     }
 }
