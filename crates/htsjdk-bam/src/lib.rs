@@ -33,6 +33,7 @@ pub mod gather;
 pub mod header;
 pub mod index;
 pub mod interval;
+pub mod iso8601_date;
 pub mod iterator_filter;
 pub mod liftover;
 pub mod md_nm;
