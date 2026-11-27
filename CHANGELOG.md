@@ -13,6 +13,13 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM 3.1 read names decode 4 times faster, same names, same refusals**. The
+  name tokeniser writes each name straight into its output and keeps only where its tokens end,
+  where htsjdk keeps every decoded name as a list of strings; a later name's MATCH, DELTA or DUP
+  reads that slice. 3.9 rather than 15.6 Gcycles on the name blocks of a real Illumina CRAM
+  (4.1 times htsjdk 5.0.0), 7% fewer cycles for the whole read. The first port is kept for the
+  tests, which hold the two to the same names or the same error on cut and damaged blocks.
+
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
