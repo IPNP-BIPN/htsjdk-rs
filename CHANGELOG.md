@@ -13,6 +13,11 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM 3.1 rANS Nx16 decodes 2 to 2.7 times faster, same bytes, same refusals** (decision 0052).
+  Each context's lookup is one packed word per slot, a round of states that cannot run out of
+  input renormalises without a branch, run-length decoding writes runs whole, and on x86-64 the
+  32-state order-1 loop runs on AVX2 when the CPU has it. Damaged tables and the end of a stream
+  go through the first port's loops, and a differential test holds the two together.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:

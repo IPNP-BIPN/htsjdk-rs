@@ -282,6 +282,12 @@ fn codecs(b: &Bench, records: &[BamRecord]) {
     let unnx = |_, x: &[u8]| rans_nx16::uncompress(x).expect("decompresses");
     codec(b, "ransnx16_o0", &quality_blocks, &nx0, &unnx);
     codec(b, "ransnx16_o1", &quality_blocks, &nx1, &unnx);
+    // The 32-state order-1 stream, alone and under run-length coding: what samtools writes for
+    // qualities in CRAM 3.1, and the path the vector decoder takes.
+    let nx5 = |_, x: &[u8]| rans_nx16::compress(x, 0x05);
+    let nx45 = |_, x: &[u8]| rans_nx16::compress(x, 0x45);
+    codec(b, "ransnx16_o1x32", &quality_blocks, &nx5, &unnx);
+    codec(b, "ransnx16_o1x32_rle", &quality_blocks, &nx45, &unnx);
 
     let range0 = |_, x: &[u8]| range::compress(x, 0).expect("compresses");
     let range1 = |_, x: &[u8]| range::compress(x, 1).expect("compresses");

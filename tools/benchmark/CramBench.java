@@ -182,6 +182,12 @@ public class CramBench {
     codec("ransnx16_o1",
         (i, x) -> new RANSNx16Encode().compress(x, new RANSNx16Params(1)),
         (i, x) -> new RANSNx16Decode().uncompress(x));
+    codec("ransnx16_o1x32",
+        (i, x) -> new RANSNx16Encode().compress(x, new RANSNx16Params(0x05)),
+        (i, x) -> new RANSNx16Decode().uncompress(x));
+    codec("ransnx16_o1x32_rle",
+        (i, x) -> new RANSNx16Encode().compress(x, new RANSNx16Params(0x45)),
+        (i, x) -> new RANSNx16Decode().uncompress(x));
     codec("range_o0",
         (i, x) -> bytes(new RangeEncode().compress(CompressionUtils.wrap(x), new RangeParams(0))),
         (i, x) -> bytes(new RangeDecode().uncompress(CompressionUtils.wrap(x))));
