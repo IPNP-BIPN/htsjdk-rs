@@ -43,8 +43,8 @@
 //! quarters belongs to the last lane alone.
 
 use crate::rans::{
-    EncodingSymbol, Order, RansError, LOWER_BOUND, NUMBER_OF_SYMBOLS, PREFIX_LENGTH, TOTAL_FREQ,
-    TOTAL_FREQ_SHIFT,
+    refill, EncodingSymbol, Order, RansError, LOWER_BOUND, NUMBER_OF_SYMBOLS, PREFIX_LENGTH,
+    TOTAL_FREQ, TOTAL_FREQ_SHIFT,
 };
 
 /// One frequency table: 256 contexts of 256 symbols. Heap-allocated because the array is 256 KiB.
@@ -277,21 +277,69 @@ pub fn compress_order1(input: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The frequency table as the decoder holds it: a start and a frequency per (context, symbol), and
-/// a reverse lookup per context.
+/// One context's part of the frequency table: a start and a frequency per symbol, and the reverse
+/// lookup from a cumulative frequency to a symbol.
+#[derive(Clone)]
+struct Context {
+    starts: [i32; NUMBER_OF_SYMBOLS],
+    frequencies: [i32; NUMBER_OF_SYMBOLS],
+    reverse_lookup: [u8; TOTAL_FREQ as usize],
+}
+
+/// The frequency table as the decoder holds it.
+///
+/// htsjdk allocates all 256 contexts (`ArithmeticDecoder[]`), so an unwritten context reads as
+/// symbol 0 with frequency 0. Here only the contexts the stream writes get a [`Context`], and every
+/// other one points at a shared one left at those defaults: the same answers, at the memory of
+/// the few contexts a block uses rather than 1.5 MiB per block.
 pub struct Stats {
-    starts: Vec<[i32; NUMBER_OF_SYMBOLS]>,
-    frequencies: Vec<[i32; NUMBER_OF_SYMBOLS]>,
-    /// 256 tables of 4096 bytes. Allocated whole, as `ArithmeticDecoder[]` is, so an unwritten
-    /// context reads as symbol 0 rather than as a bounds failure.
-    reverse_lookup: Vec<Vec<u8>>,
+    /// Each context's index into `contexts`; 0, the shared default, for one the stream leaves out.
+    index: [u16; NUMBER_OF_SYMBOLS],
+    contexts: Vec<Context>,
+}
+
+impl Context {
+    /// `RANSDecodingSymbol.advanceSymbolStep`. It wraps rather than panics on a damaged table, as
+    /// order 0's does.
+    #[inline(always)]
+    fn advance_step(&self, symbol: u8, r: u64) -> u64 {
+        let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
+        let frequency = self.frequencies[symbol as usize] as u64;
+        let start = self.starts[symbol as usize] as u64;
+        (frequency * (r >> TOTAL_FREQ_SHIFT) + (r & mask)).wrapping_sub(start)
+    }
 }
 
 impl Stats {
+    fn new() -> Self {
+        Self {
+            index: [0; NUMBER_OF_SYMBOLS],
+            contexts: vec![Context {
+                starts: [0; NUMBER_OF_SYMBOLS],
+                frequencies: [0; NUMBER_OF_SYMBOLS],
+                reverse_lookup: [0; TOTAL_FREQ as usize],
+            }],
+        }
+    }
+
+    fn context(&self, context: usize) -> &Context {
+        &self.contexts[usize::from(self.index[context])]
+    }
+
+    /// The context to write, given one of its own the first time it is written.
+    fn context_mut(&mut self, context: usize) -> &mut Context {
+        if self.index[context] == 0 {
+            self.index[context] = self.contexts.len() as u16;
+            let fresh = self.contexts[0].clone();
+            self.contexts.push(fresh);
+        }
+        &mut self.contexts[usize::from(self.index[context])]
+    }
+
     /// One symbol's frequency in one context, as the reader made it. The zero that means 4096 is
     /// only visible here.
     pub fn frequency(&self, context: usize, symbol: usize) -> i32 {
-        self.frequencies[context][symbol]
+        self.context(context).frequencies[symbol]
     }
 }
 
@@ -305,11 +353,7 @@ pub fn read_stats_order1(bytes: &[u8], at: &mut usize) -> Result<Stats, RansErro
         Ok(byte)
     };
 
-    let mut stats = Stats {
-        starts: vec![[0i32; NUMBER_OF_SYMBOLS]; NUMBER_OF_SYMBOLS],
-        frequencies: vec![[0i32; NUMBER_OF_SYMBOLS]; NUMBER_OF_SYMBOLS],
-        reverse_lookup: vec![vec![0u8; TOTAL_FREQ as usize]; NUMBER_OF_SYMBOLS],
-    };
+    let mut stats = Stats::new();
 
     let mut run_contexts = 0i32;
     let mut context = next(at)? as usize;
@@ -329,14 +373,15 @@ pub fn read_stats_order1(bytes: &[u8], at: &mut usize) -> Result<Stats, RansErro
                 frequency = TOTAL_FREQ;
             }
 
-            stats.starts[context][symbol] = cumulative;
-            stats.frequencies[context][symbol] = frequency;
+            let row = stats.context_mut(context);
+            row.starts[symbol] = cumulative;
+            row.frequencies[symbol] = frequency;
             let from = cumulative.max(0) as usize;
             let to = (cumulative + frequency).max(0) as usize;
             if to > TOTAL_FREQ as usize {
                 return Err(RansError::Truncated);
             }
-            stats.reverse_lookup[context][from..to].fill(symbol as u8);
+            row.reverse_lookup[from..to].fill(symbol as u8);
             cumulative += frequency;
 
             let peek = usize::from(*bytes.get(*at).ok_or(RansError::Truncated)?);
@@ -372,11 +417,9 @@ pub fn read_stats_order1(bytes: &[u8], at: &mut usize) -> Result<Stats, RansErro
 }
 
 /// `RANSDecodingSymbol.advanceSymbolStep`, per context.
+#[cfg(test)]
 fn advance_step(stats: &Stats, context: usize, symbol: usize, r: u64) -> u64 {
-    let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
-    let frequency = stats.frequencies[context][symbol] as u64;
-    let start = stats.starts[context][symbol] as u64;
-    (frequency * (r >> TOTAL_FREQ_SHIFT) + (r & mask)).wrapping_sub(start)
+    stats.context(context).advance_step(symbol as u8, r)
 }
 
 fn renormalise(r: u64, blob: &[u8], at: &mut usize) -> Result<u64, RansError> {
@@ -408,6 +451,54 @@ pub(crate) fn uncompress_order1(
         at += 4;
     }
 
+    #[cfg(test)]
+    if crate::rans::reference::ON.with(|on| on.get()) {
+        return uncompress_order1_reference(input, at, &stats, rans, out_size);
+    }
+
+    let mut out = vec![0u8; out_size];
+    let quarter = out_size >> 2;
+    let mask = TOTAL_FREQ as u64 - 1;
+    // Each lane's context, as its index into `stats.contexts`; every lane starts in context 0.
+    let mut row = [usize::from(stats.index[0]); 4];
+    // The reference's round: four lookups, four advances, four refills. A round with room for
+    // four two-byte refills refills without a branch ([`refill`]), which is where the time goes;
+    // the lookups stay together, so the four loads are in flight at once.
+    for i in 0..quarter {
+        let mut symbol = [0u8; 4];
+        for lane in 0..4 {
+            symbol[lane] = stats.contexts[row[lane]].reverse_lookup[(rans[lane] & mask) as usize];
+            out[lane * quarter + i] = symbol[lane];
+        }
+        for lane in 0..4 {
+            rans[lane] = stats.contexts[row[lane]].advance_step(symbol[lane], rans[lane]);
+        }
+        let room = at + 8 <= input.len();
+        for lane in 0..4 {
+            rans[lane] = refill(rans[lane], input, &mut at, room)?;
+            row[lane] = usize::from(stats.index[usize::from(symbol[lane])]);
+        }
+    }
+    // The remainder past four quarters belongs to the last lane alone.
+    for cell in out[4 * quarter..].iter_mut() {
+        let context = &stats.contexts[row[3]];
+        let symbol = context.reverse_lookup[(rans[3] & mask) as usize];
+        *cell = symbol;
+        rans[3] = renormalise(context.advance_step(symbol, rans[3]), input, &mut at)?;
+        row[3] = usize::from(stats.index[usize::from(symbol)]);
+    }
+    Ok(out)
+}
+
+/// The order-1 loop as first ported, which the tests hold [`uncompress_order1`]'s to.
+#[cfg(test)]
+fn uncompress_order1_reference(
+    input: &[u8],
+    mut at: usize,
+    stats: &Stats,
+    mut rans: [u64; 4],
+    out_size: usize,
+) -> Result<Vec<u8>, RansError> {
     let mut out = vec![0u8; out_size];
     let quarter = out_size >> 2;
     // Four contiguous quarters, not four interleaved positions.
@@ -418,14 +509,14 @@ pub(crate) fn uncompress_order1(
         let mut current = [0u8; 4];
         for (lane, state) in rans.iter().enumerate() {
             let cumulative = (state & (TOTAL_FREQ as u64 - 1)) as usize;
-            current[lane] = stats.reverse_lookup[last[lane] as usize][cumulative];
+            current[lane] = stats.context(last[lane] as usize).reverse_lookup[cumulative];
         }
         for lane in 0..4 {
             out[cursors[lane]] = current[lane];
         }
         for lane in 0..4 {
             rans[lane] = advance_step(
-                &stats,
+                stats,
                 last[lane] as usize,
                 current[lane] as usize,
                 rans[lane],
@@ -443,9 +534,9 @@ pub(crate) fn uncompress_order1(
     // The remainder past four quarters belongs to the last lane alone.
     while cursors[3] < out_size {
         let cumulative = (rans[3] & (TOTAL_FREQ as u64 - 1)) as usize;
-        let symbol = stats.reverse_lookup[last[3] as usize][cumulative];
+        let symbol = stats.context(last[3] as usize).reverse_lookup[cumulative];
         out[cursors[3]] = symbol;
-        let advanced = advance_step(&stats, last[3] as usize, symbol as usize, rans[3]);
+        let advanced = advance_step(stats, last[3] as usize, symbol as usize, rans[3]);
         rans[3] = renormalise(advanced, input, &mut at)?;
         last[3] = symbol;
         cursors[3] += 1;
@@ -483,7 +574,7 @@ mod tests {
     fn a_zero_frequency_byte_reads_as_the_whole_table() {
         let mut at = 0usize;
         let stats = read_stats_order1(&[0x00, 0x41, 0x00, 0x00, 0x00], &mut at).expect("parses");
-        assert_eq!(stats.frequencies[0][0x41], TOTAL_FREQ);
+        assert_eq!(stats.frequency(0, 0x41), TOTAL_FREQ);
     }
 
     #[test]

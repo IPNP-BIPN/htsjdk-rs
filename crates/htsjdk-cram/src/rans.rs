@@ -374,6 +374,7 @@ impl DecodingSymbol {
     /// frequency it was looked up by lies in `[start, start + freq)`. It wraps rather than panics
     /// so a malformed stream produces a wrong answer where htsjdk produces a wrong answer, instead
     /// of an abort where htsjdk has none.
+    #[inline(always)]
     fn advance_step(&self, r: u64) -> u64 {
         let mask = (1u64 << TOTAL_FREQ_SHIFT) - 1;
         ((self.freq as u64) * (r >> TOTAL_FREQ_SHIFT) + (r & mask)).wrapping_sub(self.start as u64)
@@ -389,6 +390,42 @@ fn renormalise(r: u64, blob: &[u8], at: &mut usize) -> Result<u64, RansError> {
         r = (r << 8) | u64::from(byte);
     }
     Ok(r)
+}
+
+/// [`renormalise`] without a branch on the data, for a state two bytes can refill.
+///
+/// The loop shifts a byte in while the state is below `LOWER_BOUND` = 2^23, so a state of at
+/// least 2^7 needs at most two (`2^7 << 16 = 2^23`). Both are read, and the state keeps zero, one
+/// or two of them as the loop would. A well-formed stream never gets near that: a step from at
+/// least 2^23 through a frequency of at least 1 leaves at least 2^11. A smaller state, which only
+/// a damaged stream reaches, answers `None` and the caller runs the loop. The caller has checked
+/// that two bytes remain.
+#[inline(always)]
+pub(crate) fn renormalise_two(r: u64, blob: &[u8], at: &mut usize) -> Option<u64> {
+    if r < 1 << 7 {
+        return None;
+    }
+    let one = (r << 8) | u64::from(blob[*at]);
+    let two = (one << 8) | u64::from(blob[*at + 1]);
+    let taken = usize::from(r < LOWER_BOUND) + usize::from(one < LOWER_BOUND);
+    *at += taken;
+    Some(match taken {
+        0 => r,
+        1 => one,
+        _ => two,
+    })
+}
+
+/// [`renormalise_two`] where four refills of two bytes fit in what is left, and [`renormalise`]
+/// otherwise: the same state and the same bytes either way.
+#[inline(always)]
+pub(crate) fn refill(r: u64, blob: &[u8], at: &mut usize, room: bool) -> Result<u64, RansError> {
+    if room {
+        if let Some(r) = renormalise_two(r, blob, at) {
+            return Ok(r);
+        }
+    }
+    renormalise(r, blob, at)
 }
 
 /// The frequency table, and the reverse lookup that maps a cumulative frequency back to a symbol.
@@ -491,6 +528,47 @@ pub fn uncompress(input: &[u8]) -> Result<Vec<u8>, RansError> {
         at += 4;
     }
 
+    #[cfg(test)]
+    if reference::ON.with(|on| on.get()) {
+        return uncompress_order0_reference(input, at, &stats, rans, out_size);
+    }
+
+    let mut out = vec![0u8; out_size];
+    let end = out_size & !3;
+    let mask = TOTAL_FREQ as u64 - 1;
+    // The reference's round: four lookups, four advances, four refills. A round with room for
+    // four two-byte refills refills without a branch ([`refill`]), which is where the time goes.
+    for chunk in out[..end].chunks_exact_mut(4) {
+        for lane in 0..4 {
+            chunk[lane] = stats.reverse_lookup[(rans[lane] & mask) as usize];
+        }
+        for lane in 0..4 {
+            rans[lane] = stats.symbols[chunk[lane] as usize].advance_step(rans[lane]);
+        }
+        let room = at + 8 <= input.len();
+        for state in rans.iter_mut() {
+            *state = refill(*state, input, &mut at, room)?;
+        }
+    }
+    // The tail, decoded from states 0, 1 and 2 in that order, which is where the encoder put it.
+    for lane in 0..(out_size & 3) {
+        let symbol = stats.reverse_lookup[(rans[lane] & mask) as usize];
+        out[end + lane] = symbol;
+        let advanced = stats.symbols[symbol as usize].advance_step(rans[lane]);
+        rans[lane] = renormalise(advanced, input, &mut at)?;
+    }
+    Ok(out)
+}
+
+/// The order-0 loop as first ported, which the tests hold [`uncompress`]'s to.
+#[cfg(test)]
+fn uncompress_order0_reference(
+    input: &[u8],
+    mut at: usize,
+    stats: &Stats,
+    mut rans: [u64; 4],
+    out_size: usize,
+) -> Result<Vec<u8>, RansError> {
     let mut out = vec![0u8; out_size];
     let end = out_size & !3;
     let mut i = 0usize;
@@ -516,6 +594,149 @@ pub fn uncompress(input: &[u8]) -> Result<Vec<u8>, RansError> {
     }
 
     Ok(out)
+}
+
+/// Switches both orders to the loops as first ported, for the tests that compare the two.
+#[cfg(test)]
+pub(crate) mod reference {
+    thread_local! {
+        pub(crate) static ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+
+    /// Each side's answer, `None` where it panicked.
+    type Answer = Option<Result<Vec<u8>, RansError>>;
+
+    fn both(stream: &[u8]) -> (Answer, Answer) {
+        let run = || std::panic::catch_unwind(|| uncompress(stream)).ok();
+        let hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let fast = run();
+        reference::ON.with(|on| on.set(true));
+        let first = run();
+        reference::ON.with(|on| on.set(false));
+        std::panic::set_hook(hook);
+        (fast, first)
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+    }
+
+    /// Both orders' decoders against the loops as first ported: on quality-like and uniform text,
+    /// on every prefix of short streams and cuts of long ones, and on streams with one bit changed,
+    /// the same bytes or the same refusal each time.
+    #[test]
+    fn fast_decoders_answer_as_the_first_port_does() {
+        let mut random = Lcg(11);
+        let mut texts: Vec<Vec<u8>> = Vec::new();
+        for length in [100_000, 1001] {
+            let mut text = Vec::with_capacity(length);
+            let mut symbol = b'F';
+            while text.len() < length {
+                if random.next().is_multiple_of(3) {
+                    symbol = b"#,:FFA"[(random.next() % 6) as usize];
+                }
+                text.push(symbol);
+            }
+            texts.push(text);
+        }
+        texts.push((0..20_000).map(|_| random.next() as u8).collect());
+        texts.push(b"ACGT".repeat(250));
+        let mut compared = 0;
+        for text in &texts {
+            for order in [Order::Zero, Order::One] {
+                let stream = compress(text, order).expect("compresses");
+                let (fast, first) = both(&stream);
+                assert_eq!(fast, Some(Ok(text.clone())), "{order:?}");
+                assert_eq!(fast, first, "{order:?}");
+                let cuts: Vec<usize> = if stream.len() < 600 {
+                    (0..stream.len()).collect()
+                } else {
+                    (0..300)
+                        .map(|_| (random.next() as usize) % stream.len())
+                        .collect()
+                };
+                for cut in cuts {
+                    // The prefix's lengths still say the whole stream, which is refused at once,
+                    // so the compressed length is rewritten to what is left.
+                    let mut cut_stream = stream[..cut].to_vec();
+                    if cut >= PREFIX_LENGTH {
+                        let left = (cut - PREFIX_LENGTH) as i32;
+                        cut_stream[1..5].copy_from_slice(&left.to_le_bytes());
+                    }
+                    let (fast, first) = both(&cut_stream);
+                    assert_eq!(fast, first, "{order:?}, cut at {cut}");
+                    compared += 1;
+                }
+                for _ in 0..400 {
+                    let mut damaged = stream.clone();
+                    // Past the prefix, whose lengths would only be refused or change what is
+                    // allocated.
+                    let at =
+                        PREFIX_LENGTH + (random.next() as usize) % (damaged.len() - PREFIX_LENGTH);
+                    damaged[at] ^= 1 << (random.next() % 8);
+                    let (fast, first) = both(&damaged);
+                    assert_eq!(fast, first, "{order:?}, bit changed at {at}");
+                    compared += 1;
+                }
+            }
+        }
+        assert!(compared > 5_000);
+    }
+
+    /// The four initial states set to values no encoder writes: zero, small, and either side of
+    /// the bounds the branch-free refill relies on (2^7, 2^15, 2^23). Below 2^7 a refill takes more
+    /// than two bytes and goes through the loop.
+    #[test]
+    fn planted_initial_states_answer_as_the_first_port_does() {
+        let mut text = b"ACGTTTGACCA".repeat(400);
+        text.extend((0..2000u32).map(|i| (i * 7 % 23) as u8));
+        let planted = [
+            0u32,
+            1,
+            255,
+            (1 << 6) + 5,
+            (1 << 7) - 1,
+            1 << 7,
+            (1 << 11) - 1,
+            1 << 11,
+            (1 << 15) - 1,
+            1 << 15,
+            (1 << 23) - 1,
+            1 << 23,
+        ];
+        for order in [Order::Zero, Order::One] {
+            let stream = compress(&text, order).expect("compresses");
+            let mut at = PREFIX_LENGTH;
+            match order {
+                Order::Zero => drop(read_stats_order0(&stream, &mut at).expect("a table")),
+                Order::One => {
+                    drop(crate::rans_order1::read_stats_order1(&stream, &mut at).expect("a table"))
+                }
+            }
+            for lane in 0..4 {
+                for &state in &planted {
+                    let mut damaged = stream.clone();
+                    damaged[at + 4 * lane..at + 4 * lane + 4].copy_from_slice(&state.to_le_bytes());
+                    let (fast, first) = both(&damaged);
+                    assert_eq!(fast, first, "{order:?}, lane {lane} starts at {state}");
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

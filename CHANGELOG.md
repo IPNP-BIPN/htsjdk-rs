@@ -13,6 +13,10 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- **CRAM 3.0 rANS 4x8 decodes about 1.4 times faster, same bytes, same refusals.** A round of
+  four states with room for four two-byte refills refills without a branch, and order 1 keeps a
+  table only for the contexts a block writes (htsjdk allocates all 256, 1.5 MiB per block). A
+  differential test holds the new loops to the first port's, planted initial states included.
 - `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
   cells hold, and a kept block carries its prefix hash in its own allocation.
 - A deferred genotype block frees its parser once parsed, and records on one contig share its name:
