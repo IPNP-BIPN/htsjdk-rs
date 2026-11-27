@@ -16,9 +16,9 @@
 //!
 //! For an even count that is the mean of the two central values, which matches the usual
 //! definition. For an odd count it is the central value. But the interpolation is what runs in
-//! both cases, and the arithmetic is `lower + dif * (upper - lower)`, **not** `(lower + upper) / 2`:
-//! the two differ in the last bit for values far apart, and the port has to use the reference's
-//! form to carry that bit.
+//! both cases, and the arithmetic is `lower + dif * (upper - lower)`, **not**
+//! `(lower + upper) / 2`: the two differ in the last bit for values far apart, and the port has to
+//! use the reference's form to carry that bit.
 //!
 //! # `NaN` is removed, not ranked
 //!
@@ -39,11 +39,31 @@
 //! `(long) floor(x + 0.5)`. That is the definition `java.lang.Math.round` **stopped** using in
 //! Java 7, so the two disagree on `0.49999999999999994` (see [`crate::math::round`]). A port that
 //! reused the `Math.round` already in this crate would be wrong here by one, on one input.
+//!
+//! In GATK 4.7.0.0, `MathUtils.median(int[], EstimationType)` is one line: it widens with
+//! `mapToDouble(n -> n)`, evaluates `new Median().withEstimationType(type)`, rounds with
+//! `FastMath.round` and narrows with `(int)`. It is reached with `R_1` from
+//! `CanonicalSVCollapser` as `MathUtils.median(startPositions, Percentile.EstimationType.R_1)`.
+//! The one-argument `MathUtils.median(int[])` is the same line without `withEstimationType`, so
+//! `LEGACY`.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `enum EstimationType` with a `match` over it is Java's enum with a per-constant method body;
+//!   the compiler refuses a `match` that forgets a variant.
+//! - `a.total_cmp(&b)` is `Double.compare(a, b)` for every value this file compares: it orders
+//!   `-0.0` before `0.0`. It differs where an operand is a NaN with its sign bit set, and no
+//!   NaN reaches a comparison here.
+//! - `&[f64]` is a borrowed, read-only view of a `double[]`; `&mut [f64]` one the callee may
+//!   reorder in place.
+//! - `fpos as i64` casts an already-floored double to an integer, exactly; `as usize` turns a
+//!   non-negative integer into the unsigned type Rust indexes arrays with. `as i32` from an `i64`
+//!   keeps the low 32 bits, as Java's `(int)` of a `long` does.
 
 /// `Percentile.EstimationType`, restricted to the two GATK reaches.
 ///
 /// The other seven (`R_2` through `R_9`) exist in the reference and are not ported: nothing in
-/// GATK 4.6.2.0 names them, and an unused estimator is a claim nothing measures.
+/// GATK 4.7.0.0 names them, and an unused estimator is a claim nothing measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EstimationType {
     /// `LEGACY`, the default, and what `new Median()` uses.
@@ -80,6 +100,11 @@ impl EstimationType {
     }
 
     /// `EstimationType.estimate`. `R_1` differs only by the position it hands to the same body.
+    ///
+    /// `pos` is 1-based. Below 1 the answer is the smallest value and from `length` up the
+    /// largest, without interpolating; between, the two neighbours of `pos` are interpolated by
+    /// its fractional part. `R_1`'s `ceil(pos - 0.5)` makes that part zero, so it answers the
+    /// lower neighbour, unless the gap to the upper one is infinite and `0 * inf` makes a NaN.
     fn estimate(self, sorted: &[f64], pos: f64) -> f64 {
         let pos = match self {
             EstimationType::Legacy => pos,
@@ -105,6 +130,7 @@ impl EstimationType {
 
 /// `Percentile.getWorkArray` under the default `NaNStrategy.REMOVED`: a copy with the `NaN`s gone.
 fn work_array(values: &[f64]) -> Vec<f64> {
+    // Java's stream: copy each value out of the borrowed slice, keep the non-NaN, collect a list.
     values.iter().copied().filter(|v| !v.is_nan()).collect()
 }
 
@@ -114,6 +140,10 @@ fn work_array(values: &[f64]) -> Vec<f64> {
 /// zero in the kth slot where the sort is definite. The golden is what says whether that
 /// difference ever surfaces; the port takes the sort's answer because the reference's own tail
 /// (`Arrays.sort(work, begin, end)`) is the sort.
+///
+/// `total_cmp` is IEEE 754's total order, which matches that order for every non-NaN value but
+/// puts a NaN with its sign bit set first. No NaN reaches this function: [`work_array`] has
+/// removed them.
 fn java_sort(values: &mut [f64]) {
     values.sort_by(|a, b| a.total_cmp(b));
 }
@@ -144,13 +174,15 @@ pub fn median(values: &[f64]) -> f64 {
     evaluate(values, 50.0, EstimationType::Legacy)
 }
 
-/// `MathUtils.median(int[])`: the median of the values as doubles, rounded by `FastMath.round`
-/// and then narrowed to `int`.
+/// `MathUtils.median(int[])`, or `MathUtils.median(int[], type)` for `R_1`: the median of the
+/// values as doubles, rounded by `FastMath.round` and then narrowed to `int`.
 ///
 /// The narrowing is a Java `(int)` cast of a `long`, which truncates the high bits rather than
 /// saturating. Nothing in GATK can reach a median outside `int` range from an `int[]`, so the
 /// cast is a formality here, and it is ported as the wrapping one it is rather than as a clamp.
 pub fn median_of_ints(values: &[i32], estimation: EstimationType) -> i32 {
+    // `mapToDouble(n -> n)`: each `int` widened exactly to a double. `*v` reads the value the
+    // iterator's reference points at.
     let doubles: Vec<f64> = values.iter().map(|v| *v as f64).collect();
     crate::fast_math::round(evaluate(&doubles, 50.0, estimation)) as i32
 }
@@ -176,7 +208,7 @@ mod tests {
     #[test]
     fn the_call_site_rounds_the_arithmetic_way() {
         // 0.49999999999999994 + 0.5 rounds up to 1.0, so the arithmetic round answers 1 where
-        // Math.round answers 0. The medians below are chosen to land on that value.
+        // Math.round answers 0. The `percentile` golden carries the same pair as a `round` row.
         assert_eq!(crate::fast_math::round(0.499_999_999_999_999_94), 1);
         assert_eq!(crate::math::round(0.499_999_999_999_999_94), 0);
     }

@@ -22,20 +22,97 @@
 //! # It returns the best point ever seen, not the last one
 //!
 //! `best` is folded over the previous and current pairs at every iteration, starting from the
-//! initial guess. So a search that wanders away from a maximum still reports the maximum it passed,
-//! and a flat objective reports the guess.
+//! initial guess. The search's own `x` only ever moves to a point no worse than itself
+//! (`fu <= fx`), so `best` and `x` part company in two cases only. On a tie `x` moves to the newer
+//! point and `best` keeps the older one, which is why a flat objective reports the guess. And any
+//! comparison against NaN is false, so whenever either value is NaN `best` takes the newer pair:
+//! an objective that is NaN everywhere reports the last point evaluated (the fourteenth, `1.02`, in
+//! the test below), not the guess.
 //!
 //! # It does not reach the bounds
 //!
-//! The stopping criterion is `|x - m| <= 2 * tol - 0.5 * (b - a)`, and the step is bounded below by
-//! `tol1`. A strictly increasing objective over `[0.01, 100]` with both tolerances at `0.01` stops
-//! at `98.88158923714171`: the bound is an interval end, never a candidate.
+//! The stopping criterion is `|x - m| <= 2 * tol1 - 0.5 * (b - a)`, and the step is bounded below
+//! by `tol1`. A strictly increasing objective over `[0.01, 100]` with both tolerances at `0.01`
+//! stops at `98.88158923714171`: the bound is an interval end, never a candidate.
 //!
 //! # The tolerances and the budget are refusals
 //!
 //! A relative tolerance below `2 * ulp(1)` and an absolute tolerance of zero or less are refused at
 //! construction rather than clamped, and the evaluation budget is refused when it is exceeded, not
 //! when it is reached: the call that would be the `(max + 1)`-th throws.
+//!
+//! # The search, step by step
+//!
+//! The state is a bracket `[a, b]`, the best point so far `x`, the second best `w`, the previous
+//! value of `w` in `v`, the last step `d` and the step before it `e`. Each iteration:
+//!
+//! 1. stops when `|x - m| <= 2 * tol1 - (b - a) / 2`, `m` the midpoint of the bracket. Since
+//!    `x` lies in the bracket, that is "both ends are within `2 * tol1` of `x`", where
+//!    `tol1 = rel * |x| + abs` is recomputed from the current `x`;
+//! 2. otherwise, if the step before last was larger than `tol1`, fits a parabola through
+//!    `(x, fx)`, `(w, fw)` and `(v, fv)` and proposes a step to its vertex;
+//! 3. keeps the parabolic step only if it lands strictly inside the bracket and is shorter than
+//!    half of the step before last; otherwise takes a golden-section step, `0.381966...` of the
+//!    way into the larger of the two parts of the bracket either side of `x`;
+//! 4. replaces a parabolic step that would land within `2 * tol1` of a bracket end by a step of
+//!    `tol1` towards the midpoint, and never steps by less than `tol1` in any case;
+//! 5. evaluates the new point `u` (one unit of the budget) and narrows the bracket around
+//!    whichever of `x` and `u` is better, then shifts `x`, `w` and `v`.
+//!
+//! # Where it departs from the textbook
+//!
+//! Against Brent's own procedure, every difference below changes which doubles are evaluated,
+//! so each is kept:
+//!
+//! - it starts at the caller's guess, not at the golden-section point of the bracket. The Mutect
+//!   strand-artifact filter's guess is `INITIAL_ALPHA_STRAND`, which is `1.0`;
+//! - the relative tolerance is the caller's (at least `2 * ulp(1)`), where Brent derives his from
+//!   the machine precision;
+//! - there is a budget on evaluations of the objective, and exhausting it is a refusal rather
+//!   than a stop with the best point so far;
+//! - the "is `w` (or `v`) the same point as `x`" tests are `Precision.equals`, one ulp, not `==`;
+//! - the answer is the separately tracked `best`, not `x`; see above for when the two differ.
+//!
+//! # Which point is kept on a tie
+//!
+//! Three comparisons decide it, and they do not agree with each other:
+//!
+//! - the bracket update moves `x` to `u` when `fu <= fx`: on a tie the newer point becomes `x`;
+//! - `w` is replaced when `fu <= fw`, and `v` when `fu <= fv`, again the newer point on a tie;
+//! - [`pick`], which builds `best`, keeps its first argument on a tie, which is always the older
+//!   pair.
+//!
+//! # How GATK calls it
+//!
+//! `OptimizationUtils.max` with explicit tolerances and budget builds both reference objects
+//! afresh on each call,
+//!
+//! ```java
+//! final BrentOptimizer optimizer = new BrentOptimizer(relativeTolerance, absoluteTolerance);
+//! final SearchInterval interval = new SearchInterval(min, max, guess);
+//! ```
+//!
+//! and then optimises with `GoalType.MAXIMIZE, interval, new MaxEval(maxEvaluations)`, which is
+//! [`maximize`]. The strand-artifact filter's call is
+//! `OptimizationUtils.max(objective, 0.01, 100, INITIAL_ALPHA_STRAND, 0.01, 0.01, 100)`, the
+//! bracket, tolerances and budget most of the tests below use.
+//!
+//! No `ConvergenceChecker` is passed, so the optimiser's own stopping test is the only one.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `impl Fn(f64) -> f64` is a parameter that accepts any function from `double` to `double`:
+//!   Java's `DoubleUnaryOperator`, called as `objective(x)` rather than `applyAsDouble(x)`.
+//! - `Result<T, BrentError>` is "a `T` or an error", and is how the reference's exceptions are
+//!   modelled. A trailing `?` on a call (`evaluate(u, &mut evaluations)?`) means "if this is an
+//!   error, return it from the enclosing function now": a `throw` that propagates.
+//! - `Option<T>` is "a `T` or nothing", Java's nullable reference checked by the compiler:
+//!   `None` is `null`, `Some(p)` is a present `p`.
+//! - `match` lists every case of a value and the compiler refuses a list that misses one.
+//! - `&mut x` passes a variable by writable reference, so the callee's increment is seen by the
+//!   caller; Java has no such thing for a local `int`.
+//! - `as` is a cast. From `u64` to `i64` it keeps the bits; from `f64` to an integer it
+//!   truncates toward zero and saturates at the type's bounds, as Java's `(long)` does.
 
 /// `FastMath.abs(double)`, which is `Math.abs`: the sign bit cleared, so `abs(NaN)` is NaN.
 fn java_abs(x: f64) -> f64 {
@@ -58,7 +135,8 @@ pub enum GoalType {
     Maximize,
 }
 
-/// `UnivariatePointValuePair`.
+/// `UnivariatePointValuePair`: a point and the objective's own value there (not the negated one
+/// the search compares).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PointValuePair {
     pub point: f64,
@@ -216,6 +294,9 @@ fn group(whole: f64) -> String {
 ///
 /// The objective is evaluated at most `max_evaluations` times; the call that would be one past that
 /// is [`BrentError::TooManyEvaluations`].
+///
+/// The Mutect strand-artifact filter's M step is the caller that matters; its arguments are in
+/// the module header.
 pub fn maximize(
     objective: impl Fn(f64) -> f64,
     min: f64,
@@ -237,7 +318,11 @@ pub fn maximize(
     )
 }
 
-/// `BrentOptimizer(rel, abs).optimize(objective, goal, new SearchInterval(min, max, guess), maxEval)`.
+/// `BrentOptimizer(rel, abs)`, then
+/// `optimize(objective, goal, new SearchInterval(min, max, guess), maxEval)`.
+///
+/// The constructor's checks, the interval's checks and `doOptimize` in one function, in the order
+/// the reference runs them. See the module header for the search itself.
 #[allow(clippy::too_many_arguments)]
 pub fn optimize(
     objective: impl Fn(f64) -> f64,
@@ -278,6 +363,9 @@ pub fn optimize(
     let is_minimum = goal == GoalType::Minimize;
     let mut evaluations = 0;
     // `computeObjectiveValue` increments first and refuses when the count passes the maximum.
+    // `|x, evaluations| { ... }` is a lambda. The counter is passed in as `&mut i32`, a writable
+    // reference to the local above, so the increment outlives each call as the reference's
+    // `evaluations` field does.
     let evaluate = |x: f64, evaluations: &mut i32| -> Result<f64, BrentError> {
         *evaluations += 1;
         if *evaluations > max_evaluations {
@@ -289,8 +377,11 @@ pub fn optimize(
     };
 
     // `lo < hi` is guaranteed above, so `a` is the lower bound; the reference sorts anyway.
+    // `let (mut a, mut b) = ...` unpacks a pair into two variables at once.
     let (mut a, mut b) = if min < max { (min, max) } else { (max, min) };
 
+    // `x` best so far, `w` second best, `v` the previous `w`; all start at the guess. `d` is the
+    // last step and `e` the step before it.
     let mut x = guess;
     let mut v = x;
     let mut w = x;
@@ -303,6 +394,7 @@ pub fn optimize(
     let mut fv = fx;
     let mut fw = fx;
 
+    // `previous` is `null` in the reference until the first step; `Option` makes that explicit.
     let mut previous: Option<PointValuePair> = None;
     let mut current = PointValuePair {
         point: x,
@@ -315,6 +407,7 @@ pub fn optimize(
         let tol1 = relative_threshold * java_abs(x) + absolute_threshold;
         let tol2 = 2.0 * tol1;
 
+        // Both bracket ends within `tol2` of `x`; see step 1 of the module header.
         let stop = java_abs(x - m) <= tol2 - 0.5 * (b - a);
         if stop {
             return Ok(pick(
@@ -324,12 +417,16 @@ pub fn optimize(
             ));
         }
 
+        // Declared without a value: the compiler checks that every path assigns one before it is
+        // read, so these need no Java-style dummy initialiser.
         let mut p;
         let mut q;
         let r;
 
         if java_abs(e) > tol1 {
-            // Fit a parabola.
+            // Fit a parabola through `x`, `w` and `v`. Its vertex is `x + p / q`; the sign flip
+            // below makes `q` non-negative, so the bracket test can compare `p` with `q * (a - x)`
+            // and `q * (b - x)` without dividing.
             let r_first = (x - w) * (fx - fv);
             q = (x - v) * (fx - fw);
             p = (x - v) * q - (x - w) * r_first;
@@ -341,9 +438,11 @@ pub fn optimize(
                 q = -q;
             }
 
+            // `r` keeps the step before last for the length test; `e` takes the last step.
             r = e;
             e = d;
 
+            // Strictly inside `(a, b)`, and shorter than half the step before last.
             if p > q * (a - x) && p < q * (b - x) && java_abs(p) < java_abs(0.5 * q * r) {
                 d = p / q;
                 let candidate = x + d;
@@ -353,7 +452,7 @@ pub fn optimize(
                     d = if x <= m { tol1 } else { -tol1 };
                 }
             } else {
-                // Golden section step.
+                // Golden section step, into the larger part of the bracket.
                 e = if x < m { b - x } else { a - x };
                 d = GOLDEN_SECTION * e;
             }
@@ -375,6 +474,7 @@ pub fn optimize(
             x + d
         };
 
+        // `?`: a budget refusal leaves here, with no answer, as the reference's exception does.
         let mut fu = evaluate(u, &mut evaluations)?;
         if !is_minimum {
             fu = -fu;
@@ -393,6 +493,7 @@ pub fn optimize(
 
         // No convergence checker is supplied by `OptimizationUtils`, so there is no early return.
 
+        // `<=`: on a tie `u` replaces `x`, and the old `x` becomes the bracket end on its side.
         if fu <= fx {
             if u < x {
                 b = x;
@@ -411,6 +512,9 @@ pub fn optimize(
             } else {
                 b = u;
             }
+            // `u` is worse than `x` and becomes a bracket end. It may still be the new second or
+            // third best; a `w` that coincides with `x`, or a `v` with `x` or `w` (one ulp), is
+            // replaced regardless.
             if fu <= fw || equals_within_one_ulp(w, x) {
                 v = w;
                 fv = fw;
@@ -425,6 +529,9 @@ pub fn optimize(
 }
 
 /// `best(a, b, isMinim)` with both present.
+///
+/// On a tie `a` wins, and every caller passes the older pair as `a`. A comparison against NaN is
+/// false, so a NaN on either side makes `b` win.
 fn pick(a: PointValuePair, b: PointValuePair, is_minimum: bool) -> PointValuePair {
     if is_minimum {
         if a.value <= b.value {
@@ -440,6 +547,8 @@ fn pick(a: PointValuePair, b: PointValuePair, is_minimum: bool) -> PointValuePai
 }
 
 /// The same, where either may be absent, as `previous` is on the first iteration.
+///
+/// `unreachable!` is Java's `throw new AssertionError()`: every call passes `Some(current)`.
 fn pick_option(
     a: Option<PointValuePair>,
     b: Option<PointValuePair>,
@@ -458,12 +567,18 @@ fn equals_within_one_ulp(x: f64, y: f64) -> bool {
     const SIGN_MASK: i64 = i64::MIN;
     const POSITIVE_ZERO_BITS: i64 = 0;
     const NEGATIVE_ZERO_BITS: i64 = i64::MIN;
+    // `to_bits` is the raw IEEE-754 pattern as an unsigned 64-bit integer, and `as i64` reads the
+    // same bits as a signed `long`. NaN is excluded on the last line, so how its bits look does not
+    // matter.
     let x_bits = x.to_bits() as i64;
     let y_bits = y.to_bits() as i64;
     let is_equal = if ((x_bits ^ y_bits) & SIGN_MASK) == 0 {
         // Same sign, so the subtraction cannot overflow.
         (x_bits - y_bits).abs() <= 1
     } else {
+        // Opposite signs: the distance in ulps is each value's distance from the zero of its own
+        // sign, added. `wrapping_sub` is Java's `long` subtraction, which wraps on overflow where
+        // Rust's `-` would panic; here the operand is negative, so it cannot overflow either way.
         let (delta_plus, delta_minus) = if x_bits < y_bits {
             (
                 y_bits - POSITIVE_ZERO_BITS,
@@ -536,7 +651,8 @@ mod tests {
         let pair = maximize(quadratic, 0.01, 100.0, 1.0, 1e-10, 1e-10, 1000).expect("optimised");
         assert_eq!(pair.point, 3.0000000000000013);
 
-        // A NaN objective stops at the second point and reports NaN.
+        // A NaN objective reports the last point evaluated, the fourteenth, and NaN: every
+        // `pick` against NaN takes its newer argument.
         let pair = maximize(|_| f64::NAN, 0.01, 100.0, 1.0, 0.01, 0.01, 100).expect("optimised");
         assert_eq!(pair.point, 1.02);
         assert!(pair.value.is_nan());

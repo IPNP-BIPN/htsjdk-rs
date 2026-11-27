@@ -10,7 +10,7 @@
 //! and therefore cannot ship in an MIT crate. That is still true, and nothing here changes it.
 //!
 //! This is a different source with a different licence. FDLIBM is Sun's freely-distributable math
-//! library, and its notice — preserved below, as it requires — grants exactly what a port needs:
+//! library, and its notice (preserved below, as it requires) grants exactly what a port needs:
 //!
 //! ```text
 //! Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
@@ -60,6 +60,31 @@
 //! The reduction is written as two subtractions against a split `ln2` (`ln2HI` and `ln2LO`)
 //! because a single `f64` cannot hold `ln2` to the precision the error bound needs. That split is
 //! the whole reason step 1 is exact enough to be worth doing.
+//!
+//! ## Why not the host's `exp`
+//!
+//! Rust's `f64::exp` calls the platform libm, which is not FDLIBM and is whatever the host ships.
+//! Decision 0025 measured it agreeing with `Math.exp` on 99.9711% of the corpus and FDLIBM on
+//! 98.6443%; since FDLIBM is exactly `StrictMath.exp`, the libm must miss `StrictMath.exp` on at
+//! least 1.3% of the corpus (where the two Java functions differ). `strict_exp_is_strictmath` in
+//! `tests/conformance.rs` asserts this port on all 44,996 points.
+//! The JDK's own copy of FDLIBM sits in a GPL2 distribution (decision 0005); the source here is
+//! Sun's original, whose notice is the one above.
+//!
+//! ## Reading this file without reading Rust
+//!
+//! - `x.to_bits()` is `Double.doubleToRawLongBits(x)` as an unsigned 64-bit integer (`u64`), and
+//!   `f64::from_bits` is `Double.longBitsToDouble`. The C reads the same words through
+//!   `__HI(x)`/`__LO(x)`; `bits >> 32` is the high word, `bits & 0xffff_ffff` the low one;
+//! - `as` converts between numeric types. From a wider integer to a narrower one it keeps the low
+//!   bits; from `f64` to `i32` it truncates toward zero like Java's `(int)`, saturating at the
+//!   ends (no overflow is reachable here: `|x| <= 745.2` by then, so `|k| <= 1075`);
+//! - `u32` is an unsigned 32-bit int; `wrapping_add` adds modulo 2^32, which is what the C's
+//!   `unsigned` arithmetic does and what Java's `int` `+` does silently (Rust's plain `+` would
+//!   panic on overflow in a debug build);
+//! - `f64::from(k)` widens an `i32` to `double` exactly, Java's implicit `int` to `double`;
+//! - `let (hi, lo, k);` declares three variables to be assigned exactly once on every branch
+//!   below, which the compiler checks.
 
 /// `one`.
 const ONE: f64 = 1.0;
@@ -98,6 +123,11 @@ const P5: f64 = 4.138_136_797_057_238_6e-8;
 /// The structure is the C function's, including the order of the floating-point operations, which
 /// is what makes the result reproducible: rearranging `y = one - ((lo - (x*c)/(2.0 - c)) - hi)`
 /// into anything algebraically equivalent changes the rounding and therefore the answer.
+///
+/// Every branch tests `hx`, the high word, against hexadecimal thresholds rather than comparing
+/// `x` itself, because that is how the C decides which range `x` is in. The test ignores the low
+/// 32 bits, so it is not equivalent to any single `double` comparison, and the integer form and
+/// the C's literals are kept.
 pub fn exp(x: f64) -> f64 {
     let bits = x.to_bits();
     // `hx`: the high word with the sign cleared; `xsb`: the sign bit, used as an index into the
@@ -135,8 +165,10 @@ pub fn exp(x: f64) -> f64 {
             // |x| < 1.5*ln2: k is +-1 and the multiply is avoided.
             hi = x - LN2_HI[xsb];
             lo = LN2_LO[xsb];
+            // `xsb` is 0 or 1, so this is +1 for positive x and -1 for negative.
             k = 1 - (xsb as i32) - (xsb as i32);
         } else {
+            // k = round(x / ln2): add +-0.5 by the sign of x, then truncate toward zero.
             k = (INVLN2 * x + HALF[xsb]) as i32;
             let t = f64::from(k);
             // The two subtractions are what the split constant is for.
@@ -175,6 +207,8 @@ fn finish(x: f64, hi: f64, lo: f64, k: i32) -> f64 {
     if k >= -1021 {
         // `SET_HIGH_WORD(y, HIGH_WORD(y) + (k<<20))`: scaling by adding to the exponent field,
         // which is exact and, unlike a multiply by `2**k`, cannot round twice.
+        // `k as u32` reinterprets a negative k in two's complement, so the wrapping add
+        // subtracts from the exponent exactly as the C's `int` addition does.
         let bits = y.to_bits();
         let high = ((bits >> 32) as u32).wrapping_add((k as u32) << 20);
         f64::from_bits((u64::from(high) << 32) | (bits & 0xffff_ffff))

@@ -37,6 +37,34 @@
 //!    above give: `double` significands 1, 10, 12, 14, 16 and 18, and `float` significands 2, 3,
 //!    6, 7, 21 and 29. For `double`, every subnormal significand up to 2,000,000 and every
 //!    subnormal with up to 13 significant bits was checked; for `float`, every value.
+//!
+//! # Why not Rust's own formatting
+//!
+//! Rust's `{}`, `{:e}` and `{:?}` print the shortest digits that read back to the same double.
+//! For `1e23` that is one digit: `{:e}` prints `1e23`, where Java 17 prints
+//! `9.999999999999999E22` (the first assertion of the test below). The digits are therefore
+//! generated here, and `layout` places the point.
+//!
+//! # Who calls it
+//!
+//! [`double_digits`] is for the callers that round the digit string themselves
+//! (`htsjdk-metrics::format`, `htsjdk-vcf::jformat`). [`double_to_string`] is `String.valueOf`
+//! in the Tribble index writer; [`float_to_string`] serves the SAM text writer's `float` tags.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `u128` is an unsigned 128-bit integer, which Java lacks. It holds the generator's state for
+//!   nearly every value; `Big` is the fallback for the rest.
+//! - `x as u32`, `x as i32`: a numeric cast. Between integer types it keeps the low bits (Java's
+//!   `(int)` of a `long`). Every cast here is of a value known to fit, except where a limb or
+//!   half of a `u128` is taken on purpose (`as u32`, `as u64` in `Big` and `to_big`).
+//! - `Option<T>` is "a value or nothing", and `?` after an `Option` returns nothing from the whole
+//!   function at once. `scaled_u128` uses it to say "does not fit in `u128`" at every step.
+//! - `cond.then(|| value)` is `cond ? Optional.of(value) : Optional.empty()`, with the value only
+//!   computed when `cond` holds. `then_some(value)` is the same with a value already computed.
+//! - `trait Scaled` is a Java interface, and `fn generate<T: Scaled>` a generic method over it.
+//!   Rust compiles the generic once per type, so the `u128` and `Big` runs share one source.
+//! - `loop { ... break value; }` is a loop whose `break` hands a value out, here a tuple.
 
 use std::cmp::Ordering;
 
@@ -44,9 +72,17 @@ use std::cmp::Ordering;
 /// `0.<digits> * 10^exp10`. `digits` has no leading or trailing zero.
 ///
 /// `value` must be finite and non-zero.
+///
+/// How: the IEEE 754 fields are taken apart by hand, which is `Double.doubleToRawLongBits`
+/// followed by the masks every reader of the format would write. A normal value gets its
+/// implicit leading bit; a subnormal does not, and keeps the minimum exponent. Point 6's table is
+/// consulted first, because those six inputs are answers the rules do not produce.
 pub fn double_digits(value: f64) -> (Vec<u8>, i32) {
     debug_assert!(value.is_finite() && value != 0.0);
+    // The sign bit cleared: the digits are the magnitude's, and the caller writes the sign.
     let bits = value.to_bits() & !(1u64 << 63);
+    // `.iter().find(..)` is a linear search returning `Option`; `if let Some(x) = ..` runs the
+    // block only when something was found, with `x` bound to it. `e.0` is a tuple's first field.
     if let Some(exception) = SUBNORMAL_EXCEPTIONS.iter().find(|e| e.0 == bits) {
         return (exception.1.to_vec(), exception.2);
     }
@@ -68,6 +104,10 @@ pub fn double_digits(value: f64) -> (Vec<u8>, i32) {
 }
 
 /// The decimal digits Java 17 prints for `|value|`, as [`double_digits`] does for a double.
+///
+/// Not the double routine on a widened float: `Float.toString` prints the digits that identify
+/// the `float`, which are fewer, so the gaps are the float's (23 fraction bits) and points 5 and
+/// 6 have their own `float` thresholds and table.
 pub fn float_digits(value: f32) -> (Vec<u8>, i32) {
     debug_assert!(value.is_finite() && value != 0.0);
     let bits = value.to_bits() & !(1u32 << 31);
@@ -92,10 +132,14 @@ pub fn float_digits(value: f32) -> (Vec<u8>, i32) {
 }
 
 /// `Double.toString(value)`.
+///
+/// The special values are spelled as Java spells them: `Infinity` and `-0.0`, where Rust's `{}`
+/// writes `inf` and `-0`.
 pub fn double_to_string(value: f64) -> String {
     if value.is_nan() {
         return "NaN".to_string();
     }
+    // The sign bit, not `value < 0.0`: negative zero is not less than zero and still prints `-`.
     let sign = if value.is_sign_negative() { "-" } else { "" };
     if value.is_infinite() {
         return format!("{sign}Infinity");
@@ -107,7 +151,7 @@ pub fn double_to_string(value: f64) -> String {
     format!("{sign}{}", layout(&digits, exp10))
 }
 
-/// `Float.toString(value)`.
+/// `Float.toString(value)`, laid out exactly as [`double_to_string`] lays out a double.
 pub fn float_to_string(value: f32) -> String {
     if value.is_nan() {
         return "NaN".to_string();
@@ -126,9 +170,15 @@ pub fn float_to_string(value: f32) -> String {
 /// The `Double.toString` layout, which the javadoc specifies: plain notation for magnitudes in
 /// `[10^-3, 10^7)`, computerized scientific notation otherwise, and always at least one digit after
 /// the point.
+///
+/// `exp10` is in the `0.d` convention, so `[10^-3, 10^7)` is `exp10` from -2 to 7, and the
+/// scientific exponent printed after `E` is `exp10 - 1`.
 fn layout(digits: &[u8], exp10: i32) -> String {
+    // `&[u8]` is a borrowed, read-only view of a byte array. Each digit 0 to 9 becomes its ASCII
+    // character, and `collect()` gathers them into a `String`.
     let text: String = digits.iter().map(|d| char::from(b'0' + d)).collect();
     let length = text.len() as i32;
+    // Plain notation with an integer part: pad with zeros up to the point, or split at it.
     if exp10 > 0 && exp10 <= 7 {
         if length <= exp10 {
             format!("{text}{}.0", "0".repeat((exp10 - length) as usize))
@@ -137,8 +187,10 @@ fn layout(digits: &[u8], exp10: i32) -> String {
             format!("{whole}.{fraction}")
         }
     } else if exp10 > -3 && exp10 <= 0 {
+        // Plain notation below one: `0.`, then the zeros before the first digit.
         format!("0.{}{text}", "0".repeat((-exp10) as usize))
     } else {
+        // Scientific: one digit, the point, at least one more digit (`1.0E7`, never `1.E7`).
         let (lead, rest) = text.split_at(1);
         let rest = if rest.is_empty() { "0" } else { rest };
         format!("{lead}.{rest}E{}", exp10 - 1)
@@ -165,11 +217,15 @@ const FLOAT_SUBNORMAL_EXCEPTIONS: [(u32, &[u8], i32); 6] = [
     (29, &[4, 1], -43),
 ];
 
+/// A finite, non-zero magnitude taken apart: `significand * 2^exponent`, plus what the measured
+/// rules need to know about where it came from. One shape for both widths, so the generator does
+/// not care whether it is printing a `double` or a `float`.
 struct Binary {
     /// The integer significand, with the implicit bit for a normal value.
     significand: u64,
     /// The power of two the significand is multiplied by.
     exponent: i32,
+    /// Point 2 treats a subnormal power of two as narrow, which the significand alone cannot say.
     subnormal: bool,
     /// Explicit fraction bits: 52 for `double`, 23 for `float`.
     precision: i32,
@@ -179,8 +235,16 @@ struct Binary {
     overflow_limit: i32,
 }
 
+/// Chooses between point 4 and the free-format generator.
+///
+/// An unbiased exponent from `precision` to 62 is a value in `[2^precision, 2^63)` with no
+/// fractional bits, which is point 4's range. Everything else, below it or above it, is
+/// free-format.
 fn digits_of(value: Binary) -> (Vec<u8>, i32) {
+    // `a..=b` is the inclusive range, so 62 is in it and 63 is not.
     if (value.precision..=62).contains(&value.unbiased) {
+        // The second argument is a block whose last expression is its value: point 4's
+        // `digits(2^(s - 2)) - 1` dropped digits, none for a shift `s` below two.
         return exact_integer_digits(value.significand << (value.unbiased - value.precision), {
             let shift = value.unbiased - value.precision;
             if shift >= 2 {
@@ -196,16 +260,23 @@ fn digits_of(value: Binary) -> (Vec<u8>, i32) {
 /// Point 4: an integer below 2^63, printed from its exact value with `drop` low digits rounded
 /// off half-up. A tie cannot arise, since the integer is a multiple of a power of two larger than
 /// the dropped part.
+///
+/// Done on the decimal text rather than by dividing, because the rule is stated in digits.
 fn exact_integer_digits(integer: u64, drop: u32) -> (Vec<u8>, i32) {
+    // `u64::to_string` is exact decimal for an integer: no floating point is involved here.
     let text = integer.to_string();
     let length = text.len() as i32;
     let keep = text.len() - drop as usize;
+    // `text[..keep]` is the first `keep` characters. `.expect(..)` unwraps a parse that cannot
+    // fail on ASCII digits, and would stop the program with that message if it did.
     let mut head: u64 = text[..keep].parse().expect("decimal digits");
     let tail = &text[keep..];
+    // Half-up, which needs only the first dropped digit.
     if !tail.is_empty() && tail.as_bytes()[0] >= b'5' {
         head += 1;
     }
     let rounded = head.to_string();
+    // A carry out of the top digit (`999` up to `1000`) moves the point one place.
     let exp10 = length + i32::from(rounded.len() > keep);
     (
         strip_trailing_zeros(rounded.bytes().map(|b| b - b'0').collect()),
@@ -221,11 +292,15 @@ fn decimal_length(value: u64) -> u32 {
 fn free_format(value: &Binary) -> (Vec<u8>, i32) {
     let f = value.significand;
     let e = value.exponent;
+    // Point 2. A normal power of two has a zero fraction, so its significand is exactly the
+    // implicit bit; a subnormal one is any single set bit.
     let narrow = f.is_power_of_two() && (f == 1u64 << value.precision || value.subnormal);
     let k = estimate_exp10(f, e);
+    // Point 5 is applied only up to the overflow limit, and only for a non-negative estimate.
     let overflow_applies = value.unbiased <= value.overflow_limit && k >= 0;
 
     // Every quantity stays below `11 * s` in the loop, so a scale under 2^122 runs in `u128`.
+    // `if let Some(..) = .. else ..`: the `u128` route when it fits, the big integer otherwise.
     let (mut digits, mut exp10) = if let Some((r, s, m)) = scaled_u128(f, e, narrow, k) {
         let overflow = overflow_applies.then(|| (s.to_big().shl(63 + k as u32), k as u32));
         generate(r, s, m, overflow.as_ref(), k)
@@ -247,6 +322,7 @@ fn free_format(value: &Binary) -> (Vec<u8>, i32) {
         digits[index - 1] += 1;
         index -= 1;
     }
+    // Leading zeros come off the front, each one moving the exponent down.
     let leading = digits.iter().take_while(|&&d| d == 0).count();
     digits.drain(..leading);
     exp10 -= leading as i32;
@@ -286,6 +362,8 @@ fn scaled_big(f: u64, e: i32, narrow: bool, k: i32) -> (Big, Big, Big) {
 /// [`scaled_big`] in `u128`, when all three stay below 2^122.
 fn scaled_u128(f: u64, e: i32, narrow: bool, k: i32) -> Option<(u128, u128, u128)> {
     const LIMIT: u32 = 122;
+    // A closure (Java's lambda): shift left only if the result stays under 2^LIMIT, else `None`,
+    // which the `?` after each call turns into this function returning `None`.
     let shift = |value: u128, by: i32| -> Option<u128> {
         (by >= 0 && 128 - value.leading_zeros() + by as u32 <= LIMIT).then(|| value << by)
     };
@@ -298,6 +376,7 @@ fn scaled_u128(f: u64, e: i32, narrow: bool, k: i32) -> Option<(u128, u128, u128
         r = shift(r, 1)?;
         s = shift(s, 1)?;
     }
+    // `checked_*` returns `None` on overflow where plain arithmetic would wrap or panic.
     let power = 10u128.checked_pow(k.unsigned_abs())?;
     let fits = |value: u128| (128 - value.leading_zeros() <= LIMIT).then_some(value);
     if k >= 0 {
@@ -325,9 +404,12 @@ fn generate<T: Scaled>(
     let mut digits: Vec<u8> = Vec::with_capacity(20);
     let mut first = true;
     let (digit, low, high) = loop {
+        // One decimal digit: scale by ten, the quotient by `s` is the digit, `r` keeps the rest.
         r = r.times_ten();
         m = m.times_ten();
         let digit = r.take_digit(s);
+        // Point 1: both tests are strict. `low` says stopping here (rounding down) stays inside
+        // the interval, `high` says rounding up does; a candidate exactly on a bound is neither.
         let low = r < m;
         let mut high = r.plus(m) > s;
         if high {
@@ -351,6 +433,8 @@ fn generate<T: Scaled>(
         digits.push(digit as u8);
     };
 
+    // A `match` on the pair must cover every combination, which the compiler checks; `_` is
+    // "anything else", here both bounds reachable, decided by which side of half `r / s` is.
     let last = match (low, high) {
         (true, false) => digit,
         (false, true) => digit + 1,
@@ -365,7 +449,8 @@ fn generate<T: Scaled>(
     (digits, exp10)
 }
 
-/// The arithmetic [`generate`] needs.
+/// The arithmetic [`generate`] needs. `Copy + Ord` require that a value be copied on assignment,
+/// as a Java primitive is, and support `<`, `>` and `cmp`.
 trait Scaled: Copy + Ord {
     fn times_ten(self) -> Self;
     fn plus(self, other: Self) -> Self;
@@ -394,6 +479,7 @@ impl Scaled for u128 {
     }
 
     fn to_big(self) -> Big {
+        // `as u64` keeps the low 64 bits; the high half is shifted back into place and added.
         Big::from(self as u64).add(&Big::from((self >> 64) as u64).shl(64))
     }
 }
@@ -419,12 +505,19 @@ impl Scaled for Big {
 /// Gay's estimate of the decimal exponent, in the `0.d * 10^k` convention: `floor(log10 v) + 1`
 /// or one more. Evaluated in `f64` in the published order, because where it rounds is observable
 /// through point 5.
+///
+/// How: `v = x * 2^b` with `x` in `[1, 2)`, and `log10 v` is approximated by the tangent of
+/// `log10 x` at `x = 1.5` plus `b * log10 2`. The three constants are `1 / (1.5 * ln 10)`,
+/// `log10 1.5` and `log10 2`, each to the digits Gay prints.
 // `0.301029995663981` is Gay's published constant, not `LOG10_2`, which is a different double;
 // where the estimate rounds is observable.
 #[allow(clippy::approx_constant)]
 fn estimate_exp10(significand: u64, exponent: i32) -> i32 {
     let bits = 64 - significand.leading_zeros() as i32;
     let binary_exponent = bits - 1 + exponent;
+    // `x` is built from bits: the significand's top bit moved to the implicit position, the rest
+    // as the fraction, exponent field 1023. That is the significand scaled into `[1, 2)`, also for
+    // a subnormal or a `float`, exactly.
     let normalized = (significand << (53 - bits)) & ((1u64 << 52) - 1);
     let x = f64::from_bits((1023u64 << 52) | normalized);
     let estimate = (x - 1.5) * 0.289529654602168
@@ -433,6 +526,7 @@ fn estimate_exp10(significand: u64, exponent: i32) -> i32 {
     estimate.floor() as i32 + 1
 }
 
+/// Trailing zeros carry no information in the `0.d` form; a lone `0` is kept.
 fn strip_trailing_zeros(mut digits: Vec<u8>) -> Vec<u8> {
     while digits.len() > 1 && digits.last() == Some(&0) {
         digits.pop();
@@ -463,12 +557,14 @@ impl Big {
         big
     }
 
+    /// Drops high zero limbs, so that `len` is the true length; [`Ord`] relies on it.
     fn trim(&mut self) {
         while self.len > 1 && self.limbs[self.len - 1] == 0 {
             self.len -= 1;
         }
     }
 
+    /// `self << bits`: whole limbs first, then the remaining bits with a carry between limbs.
     fn shl(&self, bits: u32) -> Self {
         let words = (bits / 32) as usize;
         let bits = bits % 32;
@@ -476,6 +572,8 @@ impl Big {
         let mut carry = 0u32;
         for index in 0..self.len {
             let limb = self.limbs[index];
+            // A separate arm for zero: `limb >> (32 - 0)` would shift a 32-bit value by 32, which
+            // Rust treats as overflow (a panic in a debug build), and the carry would be wrong.
             if bits == 0 {
                 limbs[index + words] = limb;
             } else {
@@ -492,7 +590,9 @@ impl Big {
         big
     }
 
+    /// `self * factor`, limb by limb in 64-bit products, the high half carried to the next limb.
     fn mul_small(&self, factor: u32) -> Self {
+        // `*self` copies the value (the type is `Copy`); the original is not changed.
         let mut big = *self;
         let mut carry = 0u64;
         for limb in &mut big.limbs[..self.len] {
@@ -506,6 +606,8 @@ impl Big {
         big
     }
 
+    /// `self * 10^power`, nine decimal places at a time because `10^9` is the largest power of
+    /// ten that fits a 32-bit limb factor.
     fn mul_pow10(&self, mut power: u32) -> Self {
         let mut big = *self;
         while power >= 9 {
@@ -515,6 +617,7 @@ impl Big {
         big.mul_small(10u32.pow(power))
     }
 
+    /// `self + other`, with carry.
     fn add(&self, other: &Big) -> Self {
         let length = self.len.max(other.len);
         let mut big = Big {
@@ -561,6 +664,9 @@ impl Big {
     }
 }
 
+// The four `impl`s below are what Java would get from `Comparable<Big>` plus `equals`: they give
+// `Big` the `==`, `<` and `>=` that `generate` uses. Equality is defined through the ordering so
+// that unused limbs past `len` never take part.
 impl PartialEq for Big {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
@@ -576,6 +682,7 @@ impl PartialOrd for Big {
 }
 
 impl Ord for Big {
+    /// Trimmed, a longer number is the larger; at equal length the limbs compare from the top.
     fn cmp(&self, other: &Self) -> Ordering {
         self.len.cmp(&other.len).then_with(|| {
             self.limbs[..self.len]

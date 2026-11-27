@@ -13,7 +13,6 @@ use std::io::Read;
 
 use htsjdk_bgzf::{BgzfError, BgzfReader};
 
-use crate::bin::{compute_indexing_bin, BIN_GENOMIC_SPAN, NO_ALIGNMENT_START};
 use crate::index::{BamIndexer, Chunk};
 use crate::record::{BamRecord, DecodeError};
 use crate::writer::BAM_MAGIC;
@@ -25,6 +24,11 @@ pub enum BuildIndexError {
     Bgzf(BgzfError),
     Truncated,
     Decode(DecodeError),
+    /// `BAMIndexer.processAlignment` refused the record, which only a read past
+    /// `BIN_GENOMIC_SPAN` makes it do: `htsjdk.samtools.SAMException` with this message, caused by
+    /// `IllegalStateException: Read position too high for BAI bin indexing.` `BuildBamIndex` has
+    /// already created the `.bai` and leaves it empty.
+    Index(String),
 }
 
 impl From<BgzfError> for BuildIndexError {
@@ -63,9 +67,12 @@ fn read_i32<R: Read>(r: &mut R) -> Result<i32, BuildIndexError> {
     Ok(i32::from_le_bytes(b))
 }
 
-/// Consume the BAM header binary content, returning the per-reference lengths (`l_ref`). Leaves the
-/// reader positioned at the first record, so `virtual_pos()` is the first record's virtual offset.
-fn consume_header<R: Read>(reader: &mut BgzfReader<R>) -> Result<Vec<i32>, BuildIndexError> {
+/// Consume the BAM header binary content, returning the per-reference names and lengths (`l_ref`).
+/// Leaves the reader positioned at the first record, so `virtual_pos()` is the first record's
+/// virtual offset.
+fn consume_header<R: Read>(
+    reader: &mut BgzfReader<R>,
+) -> Result<(Vec<String>, Vec<i32>), BuildIndexError> {
     let mut magic = [0u8; 4];
     reader
         .read_exact(&mut magic)
@@ -80,24 +87,29 @@ fn consume_header<R: Read>(reader: &mut BgzfReader<R>) -> Result<Vec<i32>, Build
     )
     .map_err(|_| BuildIndexError::Truncated)?;
     let n_ref = read_i32(reader)?;
+    let mut names = Vec::with_capacity(n_ref.max(0) as usize);
     let mut lengths = Vec::with_capacity(n_ref.max(0) as usize);
     for _ in 0..n_ref {
         let l_name = read_i32(reader)?;
-        std::io::copy(
-            &mut reader.by_ref().take(l_name as u64),
-            &mut std::io::sink(),
-        )
-        .map_err(|_| BuildIndexError::Truncated)?;
+        let mut name = Vec::new();
+        reader
+            .by_ref()
+            .take(l_name as u64)
+            .read_to_end(&mut name)
+            .map_err(|_| BuildIndexError::Truncated)?;
+        // `l_name` counts the NUL terminator.
+        name.pop();
+        names.push(String::from_utf8_lossy(&name).into_owned());
         lengths.push(read_i32(reader)?);
     }
-    Ok(lengths)
+    Ok((names, lengths))
 }
 
 /// `BuildBamIndex`: read a BAM (BGZF-framed) and return its `.bai` bytes.
 pub fn build_bam_index(bam: &[u8]) -> Result<Vec<u8>, BuildIndexError> {
     let mut reader = BgzfReader::new(bam);
-    let reference_lengths = consume_header(&mut reader)?;
-    let mut indexer = BamIndexer::new(reference_lengths.clone());
+    let (reference_names, reference_lengths) = consume_header(&mut reader)?;
+    let mut indexer = BamIndexer::new(reference_lengths);
 
     loop {
         // htsjdk takes the pointer before the record's bytes (the block_size int included) and again
@@ -120,35 +132,26 @@ pub fn build_bam_index(bam: &[u8]) -> Result<Vec<u8>, BuildIndexError> {
         full.extend_from_slice(&payload);
         let (record, _) = BamRecord::decode(&full)?.ok_or(BuildIndexError::Truncated)?;
 
-        let index_bin = index_bin_for(&record, &reference_lengths);
-        indexer.process(
-            record.reference_index,
-            record.alignment_start,
-            record.alignment_end(),
-            index_bin,
-            record.read_unmapped(),
-            Chunk {
-                start: start_offset,
-                end: stop_offset,
-            },
-        );
+        indexer
+            .process(
+                record.reference_index,
+                record.alignment_start,
+                record.alignment_end(),
+                record.read_unmapped(),
+                Chunk {
+                    start: start_offset,
+                    end: stop_offset,
+                },
+            )
+            .map_err(|_| {
+                BuildIndexError::Index(format!(
+                    "Exception creating BAM index for record {}",
+                    crate::text::sam_string(&record, &reference_names)
+                ))
+            })?;
     }
 
     Ok(indexer.finish())
-}
-
-/// The indexing bin `BAMFileWriter` would record: 0 for a reference too large for the 6-level scheme
-/// or for an unplaced read, else `computeIndexingBin`.
-fn index_bin_for(record: &BamRecord, reference_lengths: &[i32]) -> i32 {
-    let too_large = record.reference_index >= 0
-        && reference_lengths
-            .get(record.reference_index as usize)
-            .is_some_and(|&len| len > BIN_GENOMIC_SPAN);
-    if too_large || record.alignment_start == NO_ALIGNMENT_START {
-        0
-    } else {
-        compute_indexing_bin(record.alignment_start, record.alignment_end()).unwrap_or(0)
-    }
 }
 
 #[cfg(test)]
@@ -203,5 +206,42 @@ mod tests {
             build_bam_index(&framed),
             Err(BuildIndexError::NotABam)
         ));
+    }
+
+    fn on_a_long_reference(starts: &[i32]) -> Vec<u8> {
+        let mut h = SamHeader::new();
+        h.set_sort_order("coordinate");
+        h.sequences.push(SequenceRecord::new("big", 600_000_000));
+        let mut w = BamWriter::new(Vec::new(), &h).unwrap();
+        for (i, &start) in starts.iter().enumerate() {
+            let mut r = mapped(&format!("r{i}"), start);
+            r.read_bases = b"ACGTACGTAC".to_vec();
+            r.base_qualities = vec![40; 10];
+            w.write(&r).unwrap();
+        }
+        w.finish().unwrap()
+    }
+
+    /// `BuildBamIndex` on a read past 2^29 used to panic in the linear index. htsjdk 5.0.0 throws
+    /// this `SAMException`, measured with the GATK 4.7.0.0 jar.
+    #[test]
+    fn a_read_past_the_bin_span_is_refused_not_a_panic() {
+        let bam = on_a_long_reference(&[100, 550_000_000]);
+        match build_bam_index(&bam) {
+            Err(BuildIndexError::Index(message)) => assert_eq!(
+                message,
+                "Exception creating BAM index for record \
+                 r1\t0\tbig\t550000000\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII"
+            ),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// The bin field of a read on an over-long reference is 0; the index bins it by position.
+    #[test]
+    fn a_read_on_an_over_long_reference_is_binned_by_its_position() {
+        let bai = build_bam_index(&on_a_long_reference(&[100])).unwrap();
+        let index = crate::index::read_bai(&bai).unwrap();
+        assert_eq!(index.references[0].bins[0].bin_number, 4681);
     }
 }

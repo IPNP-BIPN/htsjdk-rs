@@ -17,16 +17,16 @@
 //! if (a >= 10.0) { ... } else if (a > 2.0) { ... } else if (a >= 1.0) { ... } else { ... }
 //! ```
 //!
-//! Only the last branch, and only when `b < 10`, uses gammas directly — and even there it is
+//! Only the last branch, and only when `b < 10`, uses gammas directly, and even there it is
 //! `log(gamma(a) * gamma(b) / gamma(a + b))` rather than a sum of three `logGamma`s, with a comment
 //! in the reference saying the original NSWC form was less accurate.
 //!
 //! # `logBeta(1, 1)` is negative zero
 //!
-//! The `a >= 1, b <= 2` branch is `logGamma(a) + logGamma(b) - logGammaSum(a, b)`, which at `(1, 1)`
-//! is `0 + 0 - 0` — and comes out `-0.0`, because `logGamma(1.0)` is itself `-0.0` through
-//! `logGamma1p(0.0)`. A caller comparing with `==` cannot see the difference; one formatting the
-//! value can.
+//! The `a >= 1, b <= 2` branch is `logGamma(a) + logGamma(b) - logGammaSum(a, b)`, which at
+//! `(1, 1)` is `0 + 0 - 0`, and comes out `-0.0`. `logGamma(1.0)` is itself `-0.0` through
+//! `logGamma1p(0.0)`, while `logGammaSum(1, 1)` is `+0.0`, so the sum is `(-0.0 + -0.0) - 0.0`.
+//! A caller comparing with `==` cannot see the difference; one formatting the value can.
 //!
 //! # The delta table is Didonato and Morris, not Stirling
 //!
@@ -34,6 +34,52 @@
 //! evaluated from fifteen transcribed constants over a Horner scheme in `(10/a)^2`. The constants
 //! are written here exactly as the reference writes them, at a precision Rust's parser accepts and
 //! `clippy::excessive_precision` objects to.
+//!
+//! # Where GATK reaches `logBeta`
+//!
+//! `BetaBinomialDistribution.logProbability` (GATK's own class, in `basicshortmutpileup`) is the
+//! binomial coefficient plus `Beta.logBeta(k+alpha, n - k + beta) - Beta.logBeta(alpha, beta)`,
+//! so every beta-binomial likelihood is the difference of two calls into the branches below, and
+//! the two calls may take different branches.
+//!
+//! # `regularizedBeta` is a prefactor over a continued fraction, or its reflection
+//!
+//! ```text
+//! I(x; a, b) = x^a * (1 - x)^b / (a * B(a, b)) / F
+//! F = 1 + d_1 / (1 + d_2 / (1 + ...))
+//! d_(2m)     =  m * (b - m) * x         / ((a + 2m - 1) * (a + 2m))
+//! d_(2m + 1) = -(a + m) * (a + b + m) * x / ((a + 2m) * (a + 2m + 1))
+//! ```
+//!
+//! `F` is evaluated by `continued_fraction::evaluate` with every `a_n` equal to one and
+//! `b_n = d_n`.
+//! The fraction converges quickly only for `x` below about `(a + 1) / (a + b + 2)`; above it, the
+//! identity `I(x; a, b) = 1 - I(1 - x; b, a)` moves the work to the other tail.
+//!
+//! Against the textbook form (Numerical Recipes' `betai` and `betacf`), each difference below can
+//! change the last bits:
+//!
+//! - the prefactor is one `FastMath.exp` of `a * log(x) + b * log1p(-x) - log(a) - logBeta(a, b)`:
+//!   `log1p(-x)` rather than `log(1 - x)`, and this file's `logBeta` rather than a sum of three
+//!   log-gammas;
+//! - the fraction goes through the general modified-Lentz routine, with `1e-14` as its tolerance
+//!   and `Integer.MAX_VALUE` as its iteration cap, rather than a dedicated loop with a small cap;
+//! - the reflection test carries a second, redundant conjunct (see [`regularized_beta_with`]);
+//! - a bad argument answers NaN, it is not refused.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `Result<f64, BetaError>` is "a `double` or an error", the way the reference's exceptions are
+//!   modelled. A trailing `?` on a call returns its error from the enclosing function at once, a
+//!   `throw` that propagates; the `impl From<GammaError> for BetaError` blocks are what let a
+//!   gamma or continued-fraction error pass through `?` as a `BetaError`.
+//! - `(1.0..=2.0).contains(&a)` is `1.0 <= a && a <= 2.0`, both ends included; it is false for NaN.
+//! - `x as i32` truncates toward zero and saturates at the `int` range, as Java's `(int)` does;
+//!   `f64::from(n)` is the exact widening of an `int` to a `double`.
+//! - `|n, x| { ... }` is a lambda, and may read `a` and `b` from the function around it.
+//! - `[f64; 15]` is a fixed-length array of fifteen doubles; `(0..n).rev()` counts `n - 1` down to
+//!   zero.
+//! - `#![allow(...)]` silences one lint for the whole file; it changes no code.
 
 #![allow(clippy::excessive_precision)]
 
@@ -134,7 +180,8 @@ pub fn delta_minus_delta_sum(a: f64, b: f64) -> Result<f64, BetaError> {
     let p = h / (1.0 + h);
     let q = 1.0 / (1.0 + h);
     let q2 = q * q;
-    // `s[i] = 1 + q + ... - q**(2 * i)`, built forwards and consumed backwards.
+    // `s[i] = 1 + q + q^2 + ... + q^(2 * i)` (so `s[1] = 1 + q + q^2`), built forwards and
+    // consumed backwards.
     let mut s = [0.0f64; DELTA.len()];
     s[0] = 1.0;
     for i in 1..s.len() {
@@ -142,6 +189,8 @@ pub fn delta_minus_delta_sum(a: f64, b: f64) -> Result<f64, BetaError> {
     }
     let sqrt_t = 10.0 / b;
     let t = sqrt_t * sqrt_t;
+    // Horner's scheme in `t = (10 / b)^2`: `w` is the sum of `DELTA[i] * s[i] * t^i`, evaluated
+    // from the highest coefficient down, which is the reference's order.
     let mut w = DELTA[DELTA.len() - 1] * s[s.len() - 1];
     for i in (0..DELTA.len() - 1).rev() {
         w = t * w + DELTA[i] * s[i];
@@ -167,6 +216,7 @@ pub fn sum_delta_minus_delta_sum(p: f64, q: f64) -> Result<f64, BetaError> {
     let b = p.max(q);
     let sqrt_t = 10.0 / a;
     let t = sqrt_t * sqrt_t;
+    // The same Horner scheme without the `s[i]` weights: `Δ(a)` times `a`, in `t = (10 / a)^2`.
     let mut z = DELTA[DELTA.len() - 1];
     for i in (0..DELTA.len() - 1).rev() {
         z = t * z + DELTA[i];
@@ -203,10 +253,24 @@ pub fn log_gamma_minus_log_gamma_sum(a: f64, b: f64) -> Result<f64, BetaError> {
 /// `logBeta(p, q)`, all four branches.
 ///
 /// `NaN` for a non-positive or NaN argument, as the reference answers rather than refusing.
+///
+/// The branches are on `a = min(p, q)`, with `b = max(p, q)`:
+///
+/// - `a >= 10`: the asymptotic form, corrected by [`sum_delta_minus_delta_sum`];
+/// - `2 < a < 10`: `Γ(x + 1) = x * Γ(x)` steps `a` (and `b`, when `b < 10`) down into `(1, 2]`,
+///   collecting the factors in a product whose log is added back. When `b > 1000` there are a
+///   fixed `n = floor(a - 1)` steps and each factor is the true one multiplied by `b`, which is
+///   then taken out as `n * log(b)`;
+/// - `1 <= a <= 2`: the same reduction on `b` alone while `b < 10`,
+///   [`log_gamma_minus_log_gamma_sum`] once `b >= 10`, and the three-term form when `b <= 2`;
+/// - `a < 1`: `logGamma(a) + logGammaMinusLogGammaSum(a, b)` once `b >= 10`, otherwise the gamma
+///   product the module header describes.
 pub fn log_beta(p: f64, q: f64) -> Result<f64, BetaError> {
     if p.is_nan() || q.is_nan() || p <= 0.0 || q <= 0.0 {
         return Ok(f64::NAN);
     }
+    // `f64::min` ignores a NaN operand where Java's `min` returns NaN; NaN has been answered
+    // above, so the two agree here.
     let a = p.min(q);
     let b = p.max(q);
     if a >= 10.0 {
@@ -223,6 +287,7 @@ pub fn log_beta(p: f64, q: f64) -> Result<f64, BetaError> {
     }
     if a > 2.0 {
         if b > 1000.0 {
+            // `as i32`: Java's `(int)` of the floor; `a` is below ten here, so nothing saturates.
             let n = (a - 1.0).floor() as i32;
             let mut prod = 1.0;
             let mut ared = a;
@@ -275,8 +340,8 @@ pub fn log_beta(p: f64, q: f64) -> Result<f64, BetaError> {
     if b >= 10.0 {
         return Ok(log_gamma(a) + log_gamma_minus_log_gamma_sum(a, b)?);
     }
-    // The reference's own comment: the NSWC form was `logGamma(a) + (logGamma(b) - logGamma(a + b))`
-    // and this one "turns out to be more accurate".
+    // The reference's own comment: the NSWC form was
+    // `logGamma(a) + (logGamma(b) - logGamma(a + b))` and this one "turns out to be more accurate".
     Ok(fast_math::log(gamma(a)? * gamma(b)? / gamma(a + b)?))
 }
 
@@ -314,10 +379,14 @@ pub fn regularized_beta_with(
     if x.is_nan() || a.is_nan() || b.is_nan() || x < 0.0 || x > 1.0 || a <= 0.0 || b <= 0.0 {
         return Ok(f64::NAN);
     }
+    // The reflection: `x` above the fraction's fast-converging range. Both conjuncts are the
+    // reference's; see the item comment.
     if x > (a + 1.0) / (2.0 + b + a) && 1.0 - x <= (b + 1.0) / (2.0 + b + a) {
         // The recursion swaps `a` and `b` as well as reflecting `x`.
         return Ok(1.0 - regularized_beta_with(1.0 - x, b, a, epsilon, max_iterations)?);
     }
+    // `getA` is one for every `n`; `getB` is `d_n` from the module header, its even and odd forms
+    // with `m` recovered from `n`. The lambda's `x` is the same `x`, handed back by `evaluate`.
     let fraction = continued_fraction::evaluate(
         |_, _| 1.0,
         |n, x| {

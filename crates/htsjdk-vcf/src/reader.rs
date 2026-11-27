@@ -493,8 +493,8 @@ mod tests {
     /// The same line, refused by a check that runs after the increment, reports 4.
     #[test]
     fn a_field_level_refusal_on_that_line_reports_the_line_itself() {
-        let failure = read_vcf(&format!("{HEADER}chr1\t100\t.\tA\tT\t50\tPASS\tDP=1 0\n"))
-            .expect_err("space");
+        let failure =
+            read_vcf(&format!("{HEADER}chr1\t100\t.\tA\tT\t50\tPASS\tEND=x\n")).expect_err("END");
         assert!(
             failure
                 .error
@@ -503,6 +503,24 @@ mod tests {
             "{}",
             failure.error.message()
         );
+    }
+
+    /// htsjdk 6.0.0 #1825 (issue #1667): a space in INFO is read, where 5.0.0 refused the line.
+    #[test]
+    fn a_space_in_info_is_read_and_written_back() {
+        let header = HEADER.replace(
+            "#CHROM",
+            "##INFO=<ID=DESC,Number=1,Type=String,Description=\"Text\">\n#CHROM",
+        );
+        let file =
+            read_vcf(&format!("{header}chr1\t100\t.\tA\tT\t50\tPASS\tDESC=a b\n")).expect("read");
+        let record = &file.records[0];
+        assert_eq!(
+            record.attributes,
+            [("DESC".to_string(), crate::variant::Value::Str("a b".into()))]
+        );
+        let text = crate::vcf_file::write_vcf(&file.header, &file.records).expect("written");
+        assert!(text.ends_with("\tDESC=a b\n"), "{text}");
     }
 
     #[test]

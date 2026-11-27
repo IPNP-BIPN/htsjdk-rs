@@ -12,7 +12,7 @@
 
 use std::io::{self, Read};
 
-use flate2::{Crc, Decompress, FlushDecompress};
+use flate2::{Decompress, FlushDecompress};
 
 use crate::inflate::Inflater;
 use crate::{
@@ -223,12 +223,11 @@ impl<R: Read> BgzfReader<R> {
         }
 
         if self.check_crcs {
-            let mut crc = Crc::new();
-            crc.update(&data);
-            if crc.sum() != expected_crc {
+            let actual = crate::crc32(&data);
+            if actual != expected_crc {
                 return Err(BgzfError::CrcMismatch {
                     expected: expected_crc,
-                    actual: crc.sum(),
+                    actual,
                 });
             }
         }

@@ -3,6 +3,13 @@
 //!
 //! Mutect's normal-artifact filter asks this for a p-value: "how surprising is it that a normal of
 //! this depth carries this many alternate reads, if every one of them were a base-calling error?"
+//! In GATK 4.7.0.0's `NormalArtifactFilter` the distribution is built with `null`, `normalDepth`
+//! and `QualityUtils.qualToErrorProb(medianRefBaseQuality)`, and the p-value is one minus
+//! `.cumulativeProbability(normalAltDepth - 1)`.
+//!
+//! The quantile, [`inverse_cumulative_probability`], is the other direction, and the module also
+//! carries the mean and variance it narrows with. `PowerCalculationUtils` reads a noise floor off
+//! it, as `binomialDistribution.inverseCumulativeProbability(P_VALUE_FOR_NOISE)`.
 //!
 //! # It is three arms, and the middle one is the only arithmetic
 //!
@@ -20,6 +27,19 @@
 //!
 //! A distribution of zero trials answers `1.0` to every non-negative `x`, since `x >= 0` is
 //! `x >= numberOfTrials`.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `Result<T, BinomialError>` is "a `T` or an error", this codebase's model of a thrown
+//!   exception; `Ok(x)` returns the value and `Err(e)` throws.
+//! - `?` after a call passes its error up to the caller unchanged, like an uncaught exception.
+//!   `impl From<BetaError> for BinomialError` is what lets the beta's error pass through a function
+//!   declared to return this file's error: `?` wraps it on the way.
+//! - `i32` is Java's `int`; `f64::from(x)` is the exact widening `(double) x`.
+//! - `tmp.ceil() as i32`: a double-to-int cast saturates at the `int` range and sends NaN to zero,
+//!   which is the same narrowing Java's `(int)` performs.
+//! - `#[allow(clippy::..)]` silences one lint of the linter on the next item, here the one that
+//!   would rewrite a NaN-passing range check as one that refuses NaN.
 
 use crate::beta::{regularized_beta, BetaError};
 
@@ -72,8 +92,10 @@ pub fn numerical_mean(trials: i32, p: f64) -> f64 {
 
 /// `BinomialDistribution.getNumericalVariance()`.
 ///
-/// `n * p * (1 - p)`, written in that order: the reference computes `p * (1 - p)` first and then
-/// multiplies, which is a different rounding from `(n * p) * (1 - p)`.
+/// `n * p * (1 - p)`, evaluated left to right: `(n * p) * (1 - p)`, not `n * (p * (1 - p))`,
+/// which is a different rounding. The `binomial-inverse` golden decides it:
+/// all 80 of its `moments` rows match this order, and 13 do not match the other, the first being
+/// `moments 5,3fb999999999999a` (five trials at 0.1), whose variance is `3fdccccccccccccd`.
 pub fn numerical_variance(trials: i32, p: f64) -> f64 {
     f64::from(trials) * p * (1.0 - p)
 }
@@ -126,6 +148,8 @@ pub fn inverse_cumulative_probability(
         return Ok(upper);
     }
 
+    // `f64::sqrt` is IEEE 754's correctly rounded square root, so it is the same double as
+    // `FastMath.sqrt` gives (see `crate::fast_math::sqrt`).
     let mean = numerical_mean(trials, probability);
     let sigma = numerical_variance(trials, probability).sqrt();
     let chebyshev_applies = !(mean.is_infinite()
@@ -134,6 +158,9 @@ pub fn inverse_cumulative_probability(
         || sigma.is_nan()
         || sigma == 0.0);
     if chebyshev_applies {
+        // One-sided Chebyshev (Cantelli) with `k = sqrt((1 - p) / p)`: at most `p` of the mass
+        // lies at or below `mean - k * sigma`, and at most `1 - p` at or above
+        // `mean + sigma / k`. Each end moves only if that tightens it.
         let mut k = ((1.0 - p) / p).sqrt();
         let mut tmp = mean - k * sigma;
         if tmp > f64::from(lower) {
@@ -147,6 +174,12 @@ pub fn inverse_cumulative_probability(
     }
 
     // `solveInverseCumulativeProbability`: bisect, and answer the UPPER end.
+    //
+    // The midpoint is a plain `+`, where `crate::poisson` uses `wrapping_add`. Both ends are at
+    // most `trials` and the loop keeps them two apart, but above `trials = 2^30` their sum can
+    // still pass `Integer.MAX_VALUE`. Java then wraps, and the guard below recomputes the
+    // midpoint. This `+` panics where overflow checks are on (a debug build), and wraps where
+    // they are off, after which the same guard gives the same answer.
     while lower + 1 < upper {
         let mut middle = (lower + upper) / 2;
         if middle < lower || middle > upper {

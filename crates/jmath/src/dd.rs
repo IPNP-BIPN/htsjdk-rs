@@ -6,8 +6,29 @@
 //!
 //! All products rely on `f64::mul_add` being a genuine fused multiply-add. On any target where
 //! it is emulated in software the results stay correct but slow.
+//!
+//! This file ports no Java symbol. It is the crate's own tool for `log.rs`, which reaches
+//! `Math.log` and `Math.log10` by rounding a ~106-bit value once (decision 0006) rather than by
+//! reproducing HotSpot's intrinsic. The algorithms are the textbook error-free transformations
+//! (Knuth's two-sum, Dekker's fast two-sum, an FMA product). Nothing else in this crate uses it:
+//! `FastMathCalc`'s split arithmetic in [`crate::fast_math_exp`] looks similar and is not
+//! interchangeable with it (that module's header says why).
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `f64` is Java's `double`. A function returning `(f64, f64)` returns a pair by value, where
+//!   Java would fill a `double[2]`;
+//! - `#[derive(Clone, Copy, ...)]` on [`DoubleDouble`] makes it a plain value: assigning or
+//!   passing one copies both fields, as with a Java `double`, never a shared reference;
+//! - `const fn` may run at compile time, which is what lets `log.rs` declare its
+//!   double-double constants as `const`;
+//! - `#[inline]` is a hint to the compiler and changes no result;
+//! - `Self` inside an `impl` block is the type being implemented, here [`DoubleDouble`].
 
 /// An unevaluated sum where `|lo| <= ulp(hi) / 2`.
+///
+/// The value is the exact real `hi + lo`, never the rounded `f64` sum; [`DoubleDouble::to_f64`]
+/// is the only place the two are added in `f64`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DoubleDouble {
     pub hi: f64,
@@ -52,6 +73,9 @@ pub fn quick_two_sum(a: f64, b: f64) -> (f64, f64) {
 }
 
 /// Exact product, using FMA to recover the rounding error.
+///
+/// `p` is the rounded product; the fused multiply-add computes `a * b - p` with a single rounding,
+/// and since that difference is exactly representable, `p + err` is exactly `a * b`.
 #[inline]
 pub fn two_prod(a: f64, b: f64) -> (f64, f64) {
     let p = a * b;
@@ -59,6 +83,11 @@ pub fn two_prod(a: f64, b: f64) -> (f64, f64) {
     (p, err)
 }
 
+/// `a + b` to about 106 bits: both halves are summed exactly, then renormalised twice so the
+/// result again satisfies `|lo| <= ulp(hi) / 2`.
+///
+/// The low halves go through their own exact [`two_sum`] rather than a plain `a.lo + b.lo`, the
+/// cheaper variant whose relative error is unbounded when `a` and `b` nearly cancel.
 #[inline]
 pub fn add(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
     let (s, e) = two_sum(a.hi, b.hi);
@@ -68,6 +97,8 @@ pub fn add(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
     DoubleDouble::new(h2, l2)
 }
 
+/// `a + b` for a plain `f64` `b`: one exact sum of the high parts, with `a.lo` folded into the
+/// error term before renormalising.
 #[inline]
 pub fn add_f64(a: DoubleDouble, b: f64) -> DoubleDouble {
     let (s, e) = two_sum(a.hi, b);
@@ -75,11 +106,14 @@ pub fn add_f64(a: DoubleDouble, b: f64) -> DoubleDouble {
     DoubleDouble::new(h, l)
 }
 
+/// `a - b`, as `a + (-b)`. Negating both halves is exact, so this is [`add`]'s accuracy.
 #[inline]
 pub fn sub(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
     add(a, DoubleDouble::new(-b.hi, -b.lo))
 }
 
+/// `a * b`: the high product exactly by [`two_prod`], the two cross terms in plain `f64` (they
+/// are already about 2^-53 of the result), and `a.lo * b.lo` dropped as below the ~106 bits kept.
 #[inline]
 pub fn mul(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
     let (p, e) = two_prod(a.hi, b.hi);
@@ -88,6 +122,7 @@ pub fn mul(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
     DoubleDouble::new(h, l)
 }
 
+/// `a * b` for a plain `f64` `b`: [`mul`] with `b.lo` zero.
 #[inline]
 pub fn mul_f64(a: DoubleDouble, b: f64) -> DoubleDouble {
     let (p, e) = two_prod(a.hi, b);
@@ -95,9 +130,15 @@ pub fn mul_f64(a: DoubleDouble, b: f64) -> DoubleDouble {
     DoubleDouble::new(h, l)
 }
 
+/// `a / b`, by long division on `b.hi`: three `f64` quotient digits, each from the remainder the
+/// previous one left, then summed.
+///
+/// `log.rs` divides by `(2k + 1)` through this rather than multiplying by a rounded
+/// reciprocal; decision 0006 records that the reciprocal form failed four corpus points by 1 ulp.
 #[inline]
 pub fn div(a: DoubleDouble, b: DoubleDouble) -> DoubleDouble {
-    // One Newton correction on the f64 quotient recovers the extra ~53 bits.
+    // `q1` is the plain f64 quotient; `q2` and `q3` are two corrections, each the quotient of the
+    // remainder (computed in double-double) the digits so far leave.
     let q1 = a.hi / b.hi;
     let r = sub(a, mul_f64(b, q1));
     let q2 = r.hi / b.hi;

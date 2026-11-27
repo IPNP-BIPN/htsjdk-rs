@@ -190,6 +190,19 @@ pub fn read_byte_array(
         (Encoding::ExternalByteArray(content_id), None) => {
             ExternalByteArrayCodec::new(*content_id).read(streams)?
         }
+        (Encoding::HuffmanByteArray(params), Some(length)) => {
+            match constant_symbol(&params.symbols, &params.bit_lengths) {
+                Some(symbol) => vec![symbol as u8; length],
+                None => {
+                    let huffman = CanonicalHuffman::new(&params.symbols, &params.bit_lengths)?;
+                    let mut bytes = Vec::with_capacity(length);
+                    for _ in 0..length {
+                        bytes.push(huffman.read(streams.core())? as u8);
+                    }
+                    bytes
+                }
+            }
+        }
         (Encoding::ByteArrayLen(length_encoding, bytes_encoding), _) => {
             let read_length = read_int(length_encoding, streams)?;
             read_byte_array(bytes_encoding, streams, Some(read_length.max(0) as usize))?

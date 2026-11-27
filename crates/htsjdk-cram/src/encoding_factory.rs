@@ -101,6 +101,7 @@ pub enum Encoding {
     ExternalByteArray(i32),
     HuffmanByte(HuffmanParams<i8>),
     HuffmanInteger(HuffmanParams<i32>),
+    HuffmanByteArray(HuffmanParams<i8>),
     Golomb { offset: i32, m: i32 },
     GolombLong { offset: i32, m: i32 },
     GolombRice { offset: i32, m: i32 },
@@ -121,6 +122,7 @@ impl Encoding {
             Encoding::ExternalByteArray(_) => "ExternalByteArrayEncoding",
             Encoding::HuffmanByte(_) => "CanonicalHuffmanByteEncoding",
             Encoding::HuffmanInteger(_) => "CanonicalHuffmanIntegerEncoding",
+            Encoding::HuffmanByteArray(_) => "CanonicalHuffmanByteArrayEncoding",
             Encoding::Golomb { .. } => "GolombIntegerEncoding",
             Encoding::GolombLong { .. } => "GolombLongEncoding",
             Encoding::GolombRice { .. } => "GolombRiceIntegerEncoding",
@@ -139,7 +141,7 @@ impl Encoding {
             | Encoding::ExternalInteger(id)
             | Encoding::ExternalLong(id)
             | Encoding::ExternalByteArray(id) => format!("Content ID: {id}"),
-            Encoding::HuffmanByte(params) => format!(
+            Encoding::HuffmanByte(params) | Encoding::HuffmanByteArray(params) => format!(
                 "Symbols: {} BitLengths {}",
                 join(&params.symbols),
                 join(&params.bit_lengths)
@@ -256,6 +258,12 @@ pub fn create_encoding(
             Ok(Encoding::ByteArrayStop { stop, content_id })
         }
         EncodingId::External => Ok(Encoding::ExternalByteArray(content_id(params)?)),
+        // htsjdk 6.0.0's CanonicalHuffmanByteArrayEncoding (#1854): 5.0.0 had none, so no slice
+        // whose QS series is HUFFMAN could be read. Only a BYTE_ARRAY series: an INT or LONG one
+        // falling through keeps 5.0.0's refusal.
+        EncodingId::Huffman if value_type == DataSeriesType::ByteArray => {
+            Ok(Encoding::HuffmanByteArray(parse_byte_params(params)?))
+        }
         _ => Err(not_found),
     }
 }

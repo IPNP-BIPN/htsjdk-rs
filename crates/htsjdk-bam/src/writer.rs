@@ -30,8 +30,12 @@ pub struct BamWriter<W: Write> {
     bgzf: BgzfWriter<W>,
     /// Reference lengths, kept for the too-large-reference bin rule.
     reference_lengths: Vec<i32>,
+    /// Reference names, kept for the record a refused index entry names.
+    reference_names: Vec<String>,
     /// Present when an index is being built alongside the file.
     indexer: Option<BamIndexer>,
+    /// `bamIndexer = null` after the indexer refused a record: the rest goes unindexed.
+    index_dropped: bool,
     /// One buffer for every record, cleared between them.
     ///
     /// A file of ten million reads allocated ten million `Vec`s here, each one written to the
@@ -153,7 +157,9 @@ impl<W: Write> BamWriter<W> {
         Ok(BamWriter {
             bgzf,
             reference_lengths: header.sequences.iter().map(|s| s.length).collect(),
+            reference_names: header.sequences.iter().map(|s| s.name.clone()).collect(),
             indexer: None,
+            index_dropped: false,
             scratch: Vec::new(),
         })
     }
@@ -229,25 +235,26 @@ impl<W: Write> BamWriter<W> {
         let stop_offset = pointer(&mut self.bgzf)?;
 
         if let Some(indexer) = &mut self.indexer {
-            let index_bin = if forced_bin {
-                0
-            } else if record.alignment_start != crate::bin::NO_ALIGNMENT_START {
-                crate::bin::compute_indexing_bin(record.alignment_start, record.alignment_end())
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            indexer.process(
+            let indexed = indexer.process(
                 record.reference_index,
                 record.alignment_start,
                 record.alignment_end(),
-                index_bin,
                 record.read_unmapped(),
                 Chunk {
                     start: start_offset,
                     end: stop_offset,
                 },
             );
+            if indexed.is_err() {
+                // `BAMFileWriter.writeAlignment`: the record is already in the stream; the indexer
+                // is dropped and the error rethrown, so `close` later writes no index at all.
+                self.indexer = None;
+                self.index_dropped = true;
+                return Err(WriteError::Index(format!(
+                    "Exception when processing alignment for BAM index {}",
+                    crate::text::sam_string(record, &self.reference_names)
+                )));
+            }
         }
         Ok(())
     }
@@ -259,8 +266,13 @@ impl<W: Write> BamWriter<W> {
 
     /// Closes the stream and returns the file alongside its BAI index.
     ///
-    /// Panics unless [`Self::with_index`] was called.
+    /// Panics unless [`Self::with_index`] was called. After [`WriteError::Index`] the index is
+    /// empty: htsjdk's `BinaryBAMIndexWriter` had already created the `.bai` and never writes it,
+    /// leaving a 0-byte file.
     pub fn finish_with_index(self) -> io::Result<(W, Vec<u8>)> {
+        if self.index_dropped {
+            return Ok((self.bgzf.into_inner()?, Vec::new()));
+        }
         let indexer = self.indexer.expect("with_index was not enabled");
         let index = indexer.finish();
         Ok((self.bgzf.into_inner()?, index))
@@ -272,6 +284,10 @@ impl<W: Write> BamWriter<W> {
 pub enum WriteError {
     Encode(EncodeError),
     Io(io::Error),
+    /// The indexer refused the record, which only a read past `BIN_GENOMIC_SPAN` makes it do.
+    /// htsjdk throws `htsjdk.samtools.SAMException` with this message, caused by
+    /// `IllegalStateException: Read position too high for BAI bin indexing.`
+    Index(String),
 }
 
 impl std::fmt::Display for WriteError {
@@ -279,6 +295,7 @@ impl std::fmt::Display for WriteError {
         match self {
             WriteError::Encode(e) => write!(f, "cannot encode record: {e:?}"),
             WriteError::Io(e) => write!(f, "{e}"),
+            WriteError::Index(message) => write!(f, "{message}"),
         }
     }
 }
@@ -432,5 +449,66 @@ mod tests {
         );
         assert_eq!(a, b, "the records are the records whatever compressed them");
         assert!(jdk.starts_with(&[0x1f, 0x8b]) && gatk.starts_with(&[0x1f, 0x8b]));
+    }
+
+    /// A 600 Mbp reference: longer than the BAI bin scheme, but GATK still writes it.
+    fn long_reference_read(start: i32) -> (SamHeader, BamRecord) {
+        let mut h = SamHeader::new();
+        h.set_sort_order("coordinate");
+        h.sequences.push(SequenceRecord::new("big", 600_000_000));
+        let rec = BamRecord {
+            read_name: "r0".into(),
+            reference_index: 0,
+            alignment_start: start,
+            mapping_quality: 60,
+            cigar: crate::cigar::Cigar::new(vec![crate::cigar::CigarElement {
+                length: 10,
+                op: crate::cigar::Op::M,
+            }]),
+            read_bases: b"ACGTACGTAC".to_vec(),
+            base_qualities: vec![40; 10],
+            ..Default::default()
+        };
+        (h, rec)
+    }
+
+    /// A read past 2^29 used to overrun the 32770-window linear index and panic. htsjdk 5.0.0
+    /// refuses it instead: the record stays in the BAM, the indexer is dropped, and the `.bai` is
+    /// left empty. Message and 0-byte index measured with the GATK 4.7.0.0 jar.
+    #[test]
+    fn a_read_past_the_bin_span_is_refused_by_the_index_not_a_panic() {
+        let (h, rec) = long_reference_read(550_000_000);
+        let mut w = BamWriter::new(Vec::new(), &h).unwrap().with_index();
+        let error = w.write(&rec).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Exception when processing alignment for BAM index \
+             r0\t0\tbig\t550000000\t60\t10M\t*\t0\t0\tACGTACGTAC\tIIIIIIIIII"
+        );
+        // The rest is written unindexed, as with `bamIndexer = null`.
+        w.write(&rec).unwrap();
+        let (bam, bai) = w.finish_with_index().unwrap();
+        assert!(bai.is_empty(), "htsjdk leaves a 0-byte .bai");
+
+        let mut plain = BamWriter::new(Vec::new(), &h).unwrap();
+        plain.write(&rec).unwrap();
+        plain.write(&rec).unwrap();
+        assert_eq!(bam, plain.finish().unwrap(), "both records are in the BAM");
+    }
+
+    /// On a reference too long for the bin field the record carries bin 0, but `BAMIndexer`
+    /// indexes the bin computed from the positions. The bytes are htsjdk 5.0.0's `.bai` for this
+    /// exact write, measured with the GATK 4.7.0.0 jar.
+    #[test]
+    fn the_index_bins_a_read_on_an_over_long_reference_by_its_position() {
+        let (h, rec) = long_reference_read(100);
+        let mut w = BamWriter::new(Vec::new(), &h).unwrap().with_index();
+        w.write(&rec).unwrap();
+        let (_, bai) = w.finish_with_index().unwrap();
+        let java = "4241490101000000020000004912000001000000490000000000000083000000000000004a92\
+                    0000020000004900000000000000830000000000000001000000000000000000000000000000\
+                    0100000049000000000000000000000000000000";
+        let hex: String = bai.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, java);
     }
 }
