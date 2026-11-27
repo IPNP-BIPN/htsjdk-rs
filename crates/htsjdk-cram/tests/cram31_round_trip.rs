@@ -9,7 +9,7 @@ use htsjdk_bam::header::{ReadGroup, SamHeader, SequenceRecord};
 use htsjdk_bam::record::BamRecord;
 use htsjdk_bam::tag::{Tag, TagValue};
 use htsjdk_cram::reader::{CramReader, ReferenceSource};
-use htsjdk_cram::writer::{write_cram, write_cram_indexed};
+use htsjdk_cram::writer::{write_cram, write_cram_indexed, CramWriter};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -243,6 +243,41 @@ fn many_containers_and_an_index() {
         .iter()
         .zip(&written)
         .all(|(a, b)| a.read_name == b.read_name));
+}
+
+#[test]
+fn a_cram_written_a_record_at_a_time_is_the_one_written_whole() {
+    let (header, mut source) = reference();
+    let mut written = records(&header, &mut source, 25_000);
+    // Then another contig, where a container must end, and reads placed on none.
+    let chr2 = source.sequence_bases("chr2").unwrap();
+    for i in 0..3_000 {
+        let start = 1 + (i * 2) % 7_900;
+        let bases = chr2[start as usize - 1..start as usize - 1 + 60].to_vec();
+        written.push(record(&format!("two{i:05}"), 1, start, "60M", bases, 0));
+    }
+    for i in 0..500 {
+        let mut r = record(&format!("none{i:04}"), -1, 0, "*", b"ACGTN".to_vec(), 4);
+        r.mapping_quality = 0;
+        written.push(r);
+    }
+    let (whole, whole_bai) =
+        write_cram_indexed(&header, &written, "file:///big.cram", &mut source).unwrap();
+
+    let mut writer = CramWriter::new(&header, "file:///big.cram", &mut source).with_index();
+    let mut streamed = writer.take_output();
+    let mut drained = 0;
+    for record in written {
+        writer.write(record).unwrap();
+        let bytes = writer.take_output();
+        drained += !bytes.is_empty() as usize;
+        streamed.extend_from_slice(&bytes);
+    }
+    let (rest, bai) = writer.finish().unwrap();
+    streamed.extend_from_slice(&rest);
+    assert!(drained > 2, "{drained} containers taken before the end");
+    assert_eq!(streamed, whole);
+    assert_eq!(bai.unwrap(), whole_bai);
 }
 
 #[test]
