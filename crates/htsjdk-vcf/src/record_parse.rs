@@ -532,8 +532,12 @@ fn parse_alleles(
     line_number: usize,
 ) -> Result<Vec<Allele>, RecordError> {
     check_allele(reference, true, line_number)?;
-    let mut alleles = vec![Allele::from_str(reference, true)
-        .map_err(|e| generate_exception(line_number, &format!("{e:?}")))?];
+    // Sized from ALT's comma count, so a multi-allelic record allocates once.
+    let mut alleles = Vec::with_capacity(2 + alts.bytes().filter(|&b| b == b',').count());
+    alleles.push(
+        Allele::from_str(reference, true)
+            .map_err(|e| generate_exception(line_number, &format!("{e:?}")))?,
+    );
 
     // `alts.indexOf(',') == -1` takes a different path, but both end in the same per-allele check.
     for alt in alts.split(',') {

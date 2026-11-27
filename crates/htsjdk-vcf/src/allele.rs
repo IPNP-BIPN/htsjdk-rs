@@ -62,14 +62,85 @@ impl fmt::Display for AlleleError {
 /// and different reference status are different alleles, which matters because `VCFEncoder`
 /// looks genotype alleles up in a map keyed by allele to find their GT index.
 ///
-/// The bases are shared, not owned: every genotype of a record holds copies of the record's own
-/// alleles, so a clone is a reference count rather than an allocation.
+/// Short bases are held in the allele itself and longer ones are shared: every genotype of a
+/// record holds copies of the record's own alleles, so a clone is a copy or a reference count
+/// rather than an allocation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Allele {
-    bases: Arc<[u8]>,
+    bases: Bases,
     is_ref: bool,
     is_no_call: bool,
     is_symbolic: bool,
+}
+
+/// How many bases an allele holds without a heap buffer: enough for every SNP and most indels.
+const INLINE: usize = 15;
+
+/// An allele's bases, inline up to [`INLINE`] of them and behind an `Arc` above.
+///
+/// Inline rather than one shared buffer per base, as htsjdk interns `A C G T N`: a shared
+/// buffer's reference count is one cache line every thread cloning or dropping an `A` writes to,
+/// which doubled the CPU time of eight threads reading a genotyped VCF at once.
+#[derive(Clone)]
+enum Bases {
+    Inline { len: u8, bytes: [u8; INLINE] },
+    Shared(Arc<[u8]>),
+}
+
+impl Bases {
+    fn new(bases: &[u8]) -> Self {
+        if bases.len() <= INLINE {
+            let mut bytes = [0; INLINE];
+            bytes[..bases.len()].copy_from_slice(bases);
+            Bases::Inline {
+                len: bases.len() as u8,
+                bytes,
+            }
+        } else {
+            Bases::Shared(Arc::from(bases))
+        }
+    }
+
+    fn make_ascii_uppercase(&mut self) {
+        match self {
+            Bases::Inline { len, bytes } => bytes[..*len as usize].make_ascii_uppercase(),
+            Bases::Shared(shared) => Arc::get_mut(shared)
+                .expect("just made")
+                .make_ascii_uppercase(),
+        }
+    }
+}
+
+impl std::ops::Deref for Bases {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Bases::Inline { len, bytes } => &bytes[..*len as usize],
+            Bases::Shared(shared) => shared,
+        }
+    }
+}
+
+// Equality, hash and debug are the bases', as they were when the field was an `Arc<[u8]>`.
+impl PartialEq for Bases {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Bases {}
+
+impl std::hash::Hash for Bases {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state)
+    }
+}
+
+impl fmt::Debug for Bases {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (**self).fmt(f)
+    }
 }
 
 /// `bases.length == 1 && bases[0] == '-'`, or empty.
@@ -160,11 +231,9 @@ impl Allele {
         if is_symbolic && is_ref {
             return Err(AlleleError::SymbolicAsReference);
         }
-        let mut bases: Arc<[u8]> = Arc::from(bases);
+        let mut bases = Bases::new(bases);
         if !is_symbolic {
-            Arc::get_mut(&mut bases)
-                .expect("just made")
-                .make_ascii_uppercase();
+            bases.make_ascii_uppercase();
         }
 
         if !acceptable_bases(&bases, is_ref) {
@@ -187,10 +256,8 @@ impl Allele {
 
     /// `Allele.NO_CALL`.
     pub fn no_call() -> Self {
-        // One empty buffer for every no-call, which a genotype builds per missing allele.
-        static EMPTY: std::sync::LazyLock<Arc<[u8]>> = std::sync::LazyLock::new(|| Arc::from([]));
         Self {
-            bases: Arc::clone(&EMPTY),
+            bases: Bases::new(&[]),
             is_ref: false,
             is_no_call: true,
             is_symbolic: false,
@@ -334,5 +401,38 @@ mod tests {
         assert!(Allele::from_str("M", false).is_err());
         assert!(Allele::from_str("ATM", false).is_err());
         assert!(Allele::from_str("ATN", false).is_ok(), "N is acceptable");
+    }
+
+    /// Either side of the inline limit, an allele keeps the bases it was given, upper-cased, and
+    /// equality and hash follow the bases alone, as they did when every allele held an `Arc`.
+    #[test]
+    fn bases_read_the_same_inline_and_shared() {
+        use std::hash::{BuildHasher, RandomState};
+        let hasher = RandomState::new();
+        for len in 1..=2 * super::INLINE + 1 {
+            let lower: String = "acgtn".chars().cycle().take(len).collect();
+            let upper = lower.to_ascii_uppercase();
+            let a = Allele::from_str(&lower, false).unwrap();
+            let b = Allele::from_str(&upper, false).unwrap();
+            assert_eq!(a.display_string(), upper, "length {len}");
+            assert_eq!(a.len(), len);
+            assert_eq!(a, b, "length {len}");
+            assert_eq!(hasher.hash_one(&a), hasher.hash_one(&b));
+            let shared: std::sync::Arc<[u8]> = std::sync::Arc::from(upper.as_bytes());
+            assert_eq!(hasher.hash_one(&a.bases), hasher.hash_one(&shared));
+            assert_eq!(format!("{a:?}"), format!("{b:?}"));
+            assert!(format!("{a:?}").contains(&format!("{:?}", upper.as_bytes())));
+            let mut shorter = upper.clone();
+            shorter.pop();
+            if !shorter.is_empty() {
+                assert_ne!(a, Allele::from_str(&shorter, false).unwrap());
+            }
+            let symbolic = format!("<{lower}>");
+            assert_eq!(
+                Allele::from_str(&symbolic, false).unwrap().display_string(),
+                symbolic
+            );
+        }
+        assert_eq!(Allele::no_call().len(), 0);
     }
 }
