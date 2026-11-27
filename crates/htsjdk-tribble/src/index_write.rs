@@ -235,8 +235,33 @@ impl LinearIndexCreator {
                 .blocks
                 .extend(closed);
         }
-        Ok(self.chr_list.iter().map(optimize_contig).collect())
+        Ok(as_linked_hash_map(self.chr_list, |index| &index.name)
+            .iter()
+            .map(optimize_contig)
+            .collect())
     }
+}
+
+/// The contigs as `AbstractIndex.chrIndices`, a `LinkedHashMap` filled by `put` in creation order,
+/// holds them: one per name, in the place its name first took, carrying its last run.
+///
+/// Both creators keep one entry per *run* of a contig, and `IndexFactory` refuses a file that
+/// revisits one. The writers that index on the fly (`IndexingVariantContextWriter`) check no
+/// order, so an unsorted VCF written with `CREATE_INDEX` is where this decides the bytes: the
+/// earlier runs of a contig vanish from the file rather than appearing twice.
+fn as_linked_hash_map<T>(runs: Vec<T>, name: impl Fn(&T) -> &String) -> Vec<T> {
+    let mut place: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<T> = Vec::with_capacity(runs.len());
+    for run in runs {
+        match place.get(name(&run)) {
+            Some(&index) => out[index] = run,
+            None => {
+                place.insert(name(&run).clone(), out.len());
+                out.push(run);
+            }
+        }
+    }
+    out
 }
 
 /// `LinearIndex.ChrIndex.optimize(idx, threshold, 0)`.
@@ -1104,7 +1129,8 @@ impl IntervalIndexCreator {
         if !self.chr_list.is_empty() {
             self.close_intervals(final_file_position);
         }
-        self.chr_list
+        // `setChrIndex` puts each run into the same LinkedHashMap as the linear index.
+        as_linked_hash_map(self.chr_list, |(name, _)| name)
             .into_iter()
             .map(|(name, inserted)| {
                 let mut tree = interval_tree::IntervalTree::new();

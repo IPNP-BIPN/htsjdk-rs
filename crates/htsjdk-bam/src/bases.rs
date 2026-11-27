@@ -92,14 +92,29 @@ pub fn write_compressed_bases(read_bases: &[u8], out: &mut Vec<u8>) -> Result<()
 /// `.`, the decode table emits only upper case and `N`. Round-tripping a lowercase read
 /// through a BAM changes it, in htsjdk exactly as here.
 pub fn compressed_bases_to_bytes(length: usize, compressed: &[u8], offset: usize) -> Vec<u8> {
+    let packed = &compressed[offset..offset + length.div_ceil(2)];
     let mut out = vec![0u8; length];
-    for i in 0..length {
-        let byte = compressed[offset + i / 2];
-        let nibble = if i % 2 == 0 { byte >> 4 } else { byte & 0x0F };
-        out[i] = NIBBLE_TO_BASE[nibble as usize];
+    // A byte at a time, both its bases from one table: the nibble loop was a hot spot on every read.
+    let (pairs, last) = out.as_chunks_mut::<2>();
+    for (pair, &byte) in pairs.iter_mut().zip(packed) {
+        *pair = BYTE_TO_BASES[byte as usize];
+    }
+    if let [last] = last {
+        *last = NIBBLE_TO_BASE[(packed[length / 2] >> 4) as usize];
     }
     out
 }
+
+/// Both bases of each packed byte, high nibble first.
+const BYTE_TO_BASES: [[u8; 2]; 256] = {
+    let mut table = [[0u8; 2]; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = [NIBBLE_TO_BASE[i >> 4], NIBBLE_TO_BASE[i & 0x0F]];
+        i += 1;
+    }
+    table
+};
 
 #[cfg(test)]
 mod tests {
@@ -171,6 +186,21 @@ mod tests {
         ] {
             let packed = bytes_to_compressed_bases(read).unwrap();
             assert_eq!(compressed_bases_to_bytes(read.len(), &packed, 0), read);
+        }
+    }
+
+    /// The table gives what the nibble loop gave, for every byte, from an offset, odd or even.
+    #[test]
+    fn the_pair_table_is_the_nibble_loop() {
+        let packed: Vec<u8> = (0..=255u8).collect();
+        for length in [0, 1, 2, 301, 510] {
+            let naive: Vec<u8> = (0..length)
+                .map(|i| {
+                    let byte = packed[1 + i / 2];
+                    NIBBLE_TO_BASE[usize::from(if i % 2 == 0 { byte >> 4 } else { byte & 0x0F })]
+                })
+                .collect();
+            assert_eq!(compressed_bases_to_bytes(length, &packed, 1), naive);
         }
     }
 

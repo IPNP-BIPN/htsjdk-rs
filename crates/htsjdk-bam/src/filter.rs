@@ -111,7 +111,7 @@ pub struct TagFilter {
 
 impl TagFilter {
     fn matches(&self, record: &BamRecord) -> bool {
-        match record.tags.get(self.tag) {
+        match record.tags.find(self.tag).as_deref() {
             Some(actual) => self.values.iter().any(|value| value == actual),
             None => false,
         }

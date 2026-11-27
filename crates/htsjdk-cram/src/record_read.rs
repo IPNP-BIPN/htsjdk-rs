@@ -146,6 +146,10 @@ pub struct RecordReaders {
     /// BYTE. Since QS is external, that is the same block read a different way, so a record's
     /// scores come out of the same bytes its per-base scores would.
     quality_score_array: Option<Encoding>,
+    /// Each tag series' encoding, built once rather than for every tag of every record. One that
+    /// does not build is left out and built where a record reads it, so its refusal is still that
+    /// record's.
+    tags: Vec<(i32, Encoding)>,
 }
 
 impl RecordReaders {
@@ -182,7 +186,28 @@ impl RecordReaders {
         Ok(Self {
             map,
             quality_score_array,
+            tags: Vec::new(),
         })
+    }
+
+    /// The tag series of `header`, resolved ahead of the records that read them.
+    pub fn with_tags(mut self, header: &CompressionHeader) -> Self {
+        self.tags = header
+            .tag_encodings
+            .tag_ids()
+            .into_iter()
+            .filter_map(|id| {
+                let descriptor = header.tag_encodings.get(id)?;
+                create_encoding(
+                    DataSeriesType::ByteArray,
+                    descriptor.id,
+                    &descriptor.parameters,
+                )
+                .ok()
+                .map(|encoding| (id, encoding))
+            })
+            .collect();
+        self
     }
 
     fn get(&self, name: &'static str) -> Result<&Encoding, RecordReadError> {
@@ -284,19 +309,23 @@ pub fn read_record(
             })?;
     for id in ids {
         // One data series per tag id, named by the id itself rather than by a canonical name.
-        let descriptor =
-            header
-                .tag_encodings
-                .get(tag_id(id))
-                .ok_or(RecordReadError::MissingDataSeries {
-                    name: "a tag series",
-                })?;
-        let encoding = create_encoding(
-            DataSeriesType::ByteArray,
-            descriptor.id,
-            &descriptor.parameters,
-        )?;
-        let value = read_byte_array(&encoding, streams, None)?;
+        let id_number = tag_id(id);
+        let value = match readers.tags.iter().find(|(tag, _)| *tag == id_number) {
+            Some((_, encoding)) => read_byte_array(encoding, streams, None)?,
+            None => {
+                let descriptor = header.tag_encodings.get(id_number).ok_or(
+                    RecordReadError::MissingDataSeries {
+                        name: "a tag series",
+                    },
+                )?;
+                let encoding = create_encoding(
+                    DataSeriesType::ByteArray,
+                    descriptor.id,
+                    &descriptor.parameters,
+                )?;
+                read_byte_array(&encoding, streams, None)?
+            }
+        };
         record.tags.push((*id, value));
     }
 

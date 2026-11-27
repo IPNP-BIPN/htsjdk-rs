@@ -1,0 +1,24 @@
+# Files brought to the standard in docs/COMMENTING.md, with the comment-to-code
+# ratio each had when it was done. tools/audit/comment_density.py --check fails if
+# one of them drops below its recorded floor, so the work is a ratchet: nothing
+# already explained can quietly come undone.
+#
+# Regenerate with: python3 tools/audit/comment_density.py --record
+
+crates/jmath/src/beta.rs 0.435
+crates/jmath/src/binomial.rs 0.847
+crates/jmath/src/brent.rs 0.475
+crates/jmath/src/combinatorics.rs 0.584
+crates/jmath/src/continued_fraction.rs 0.828
+crates/jmath/src/dd.rs 0.543
+crates/jmath/src/fast_math_exp.rs 0.392
+crates/jmath/src/fast_math_log.rs 0.446
+crates/jmath/src/log.rs 0.506
+crates/jmath/src/normal.rs 1.541
+crates/jmath/src/percentile.rs 1.069
+crates/jmath/src/poisson.rs 0.642
+crates/jmath/src/saddle_point.rs 0.775
+crates/jmath/src/strict_exp.rs 2.014
+crates/jmath/src/strict_log.rs 1.128
+crates/jmath/src/strict_pow.rs 0.531
+crates/jmath/src/to_string.rs 0.418

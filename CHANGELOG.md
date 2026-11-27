@@ -13,6 +13,25 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Changed
 
+- `Tags` takes 48 bytes inline rather than 64: one state byte for the lock and for what its two
+  cells hold, and a kept block carries its prefix hash in its own allocation.
+- A deferred genotype block frees its parser once parsed, and records on one contig share its name:
+  a VCF record costs 831 bytes unparsed rather than 883, and 1719 parsed rather than 1819.
+- **BGZF costs about a fifth fewer cycles, same bytes, same refusals** (decision 0049). `Deflater::Jdk`
+  and `Deflater::Gkl` deflate through one reused `gkl_deflate::ReusableDeflater` per thread, where
+  zlib was stock and GKL's state was rebuilt per block; reading goes through a strict Rust inflater
+  that hands anything unusual to zlib. Both of a parallel writer's block buffers are reused, a
+  worker is woken per four blocks rather than per block, and a block is one `write` rather than four.
+  Level 1 now beats zlib on incompressible data too.
+- **A BAM record holds 15% less**: a tag block the list would write back is kept as read and freed
+  when the list is made, and a pass-through writes the block. The new `Tags::find` and `Tags::decoded`
+  answer without leaving a list behind, and `Tags::compact` trades a list for its block, which the SAM
+  and CRAM readers do. `Tags` is 32 bytes larger inline. Refusals do not move: whatever the walk does
+  not vouch for takes the old road, and a differential test holds the two together.
+- **SAM and VCF text no longer grow by doubling**: `read_sam`, `write_sam`, `read_vcf` and `write_vcf`
+  size their vectors and strings up front.
+- **CRAM's arithmetic coder and GZIP blocks**: `ByteModel` is one allocation of four bytes per
+  symbol rather than two of four each, and a thread keeps its libdeflate compressor between blocks.
 - **The oracle is htsjdk 5.0.0**, with its runtime dependencies pinned by sha256 and libdeflate
   off image-wide, so every suite runs against 5.0.0 (#271).
 - **CRAM data series are on htslib's content ids**, 11 to 46, where 4.2.0 numbered them 1 to 32.
@@ -29,12 +48,35 @@ with it; each difference is ported and its golden re-frozen from the x86-64 runn
 
 ### Fixed
 
+- **Two VCF fixes from htsjdk 6.0.0 that turn a 5.0.0 refusal into a read** (`docs/htsjdk-upstream.md`):
+  a space in INFO is read (#1825, issue #1667), and `as_int`, `as_double`, `as_int_list` and
+  `as_double_list` give the default for every spelling of missing (#1849, #1899), where 5.0.0
+  threw `NumberFormatException`. A tab in INFO is still refused, and `as_boolean` still gives
+  5.0.0's `false` for `.`.
 - **An unterminated string tag is refused as 5.0.0 refuses it**:
   `SAMFormatException: Null-terminated string tag value is not null terminated.`, where 4.2.0
   ran off the buffer with a bare `BufferUnderflowException`.
+- **A SAM record ending in one tab is read, as 5.0.0 reads it**, where the port refused it as an
+  empty field; and a FASTA whose first lines are `;` comments is read (htsjdk 6.0.0 #1922), where
+  5.0.0 refused it (`docs/htsjdk-upstream.md`).
 - **Reading past the end of an external block is `IllegalStateException`** naming the bytes
   asked for and left, and a stop codec whose block ends before its stop byte is a `CRAMException`
   naming it, where 4.2.0 returned what it had.
+- **Two CRAM fixes from htsjdk 6.0.0 that move no byte 5.0.0 writes** (`docs/htsjdk-upstream.md`):
+  a slice whose QS series is HUFFMAN is read (#1854), where 5.0.0 refused the slice; and a slice
+  whose placed reads are all unmapped spans their starts (#1855), where 5.0.0 threw on the
+  reference lookup and the port wrote a negative span.
+
+- **A read past 2^29 on a long reference is refused as 5.0.0 refuses it, not a panic.** Indexing
+  it overran the 32770-window linear index. `BamWriter::write` now returns `WriteError::Index`
+  (`SAMException: Exception when processing alignment for BAM index <record>`) with the record
+  written, indexes nothing more and finishes with an empty index, which is 5.0.0's 0-byte `.bai`;
+  `build_bam_index` returns `BuildIndexError::Index` (`Exception creating BAM index for record
+  <record>`); the CRAM BAI indexer returns `ArrayIndexOutOfBoundsException: Index 33569 out of
+  bounds for length 32770`. `BamIndexer::process` computes the bin itself and returns the refusal,
+  so it lost its `index_bin` argument.
+- **A read on a reference longer than 2^29 is indexed in its position's bin**, as `BAMIndexer`
+  does, where the port indexed it in bin 0, the value the record's own bin field carries.
 
 ## [0.4.0] - 2026-10-22
 

@@ -176,3 +176,126 @@ fn bcf2_matches_the_oracle() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// Every BCF the golden reads, eager and deferred (decision 0048): the same records and the same
+/// bytes for a file that reads, and for one that does not, the same refusal, at the read or from
+/// the first record whose genotypes are looked at.
+#[test]
+fn deferred_bcf_reads_refuse_what_eager_reads_refuse() {
+    use htsjdk_vcf::bcf2::codec::read_bcf_with;
+    use htsjdk_vcf::reader::GenotypeParsing;
+
+    let text = golden();
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    for line in text
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let parts: Vec<&str> = line.split('\t').collect();
+        match parts[0] {
+            "read" => files.push((parts[1].into(), unhex(parts[2]))),
+            "in" => {
+                let vcf = String::from_utf8(unhex(parts[2])).expect("utf-8");
+                if let Outcome::Bytes(bcf) = to_bcf(&vcf) {
+                    files.push((parts[1].into(), bcf));
+                }
+            }
+            _ => {}
+        }
+    }
+    // None of the golden's damaged files breaks a genotype block, so one is made here: a BCF with
+    // sorted samples whose first record's first FORMAT key is typed CHAR rather than an integer
+    // offset, which `getDictionaryString` cannot cast.
+    let vcf = "##fileformat=VCFv4.2\n\
+               ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+               ##contig=<ID=chr1,length=1000>\n\
+               #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts0\ts1\n\
+               chr1\t10\t.\tA\tT\t50\tPASS\t.\tGT\t0/1\t1/1\n\
+               chr1\t20\t.\tC\tG\t50\tPASS\t.\tGT\t0/0\t0/1\n";
+    let Outcome::Bytes(mut damaged) = to_bcf(vcf) else {
+        panic!("the made-up VCF converts")
+    };
+    let le = |at: usize| i32::from_le_bytes(damaged[at..at + 4].try_into().unwrap()) as usize;
+    let first_record = 5 + 4 + le(5);
+    let genotypes_at = first_record + 8 + le(first_record);
+    damaged[genotypes_at] = 0x17;
+    files.push(("damaged-genotype-key".into(), damaged));
+
+    let mut refused_late = 0;
+    for (case, bytes) in &files {
+        let eager = read_bcf(bytes);
+        let deferred = read_bcf_with(bytes, GenotypeParsing::Deferred);
+        match (eager, deferred) {
+            (Ok(eager), Ok(deferred)) => {
+                assert_eq!(eager.records, deferred.records, "{case}");
+                for (e, d) in eager.records.iter().zip(&deferred.records) {
+                    let mut we = Bcf2Writer::new(&eager.header, false).expect("a writer");
+                    let mut wd = Bcf2Writer::new(&deferred.header, false).expect("a writer");
+                    assert_eq!(
+                        we.encode(e, Origin::Bcf2Codec),
+                        wd.encode(d, Origin::Bcf2Codec),
+                        "{case}"
+                    );
+                }
+            }
+            (Err(eager), Err(deferred)) => {
+                assert_eq!(eager.error, deferred.error, "{case}");
+                assert_eq!(eager.records, deferred.records, "{case}");
+            }
+            (Err(eager), Ok(deferred)) => {
+                let at = eager.records.len();
+                assert_eq!(&deferred.records[..at], &eager.records[..], "{case}");
+                let error = deferred.records[at]
+                    .genotypes
+                    .try_get()
+                    .expect_err("the record the eager read refused");
+                assert_eq!(
+                    (error.class, error.message.as_str()),
+                    (eager.error.class, eager.error.message.as_str()),
+                    "{case}"
+                );
+                refused_late += 1;
+            }
+            (Ok(_), Err(deferred)) => {
+                panic!("{case}: only the deferred read refused: {deferred:?}")
+            }
+        }
+    }
+    assert!(files.len() >= 15, "{} files", files.len());
+    eprintln!(
+        "{} files, {refused_late} refused on first access",
+        files.len()
+    );
+}
+
+/// The BCF codec's FT goes through `GenotypeBuilder.filter(String)`, not `filters(List)`: a
+/// stored `PASS` (which bcftools writes, htsjdk does not) reads as unfiltered, and two names stay
+/// in the order written, unlike the VCF codec, which sorts them.
+#[test]
+fn bcf_ft_pass_is_unfiltered_and_names_keep_their_order() {
+    let vcf = "##fileformat=VCFv4.2\n\
+               ##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">\n\
+               ##FORMAT=<ID=FT,Number=1,Type=String,Description=\"Genotype filter\">\n\
+               ##contig=<ID=chr1,length=1000>\n\
+               #CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts0\ts1\n\
+               chr1\t10\t.\tA\tT\t50\tPASS\t.\tGT:FT\t0/1:LowQD;LowGQ\t1/1:PASS\n";
+    let file = read_vcf(vcf).expect("the VCF reads");
+    let mut vc = file.records[0].clone();
+    assert_eq!(vc.genotypes[0].filters.as_deref(), Some("LowGQ;LowQD"));
+    assert_eq!(vc.genotypes[1].filters, None);
+
+    vc.genotypes[0].filters = Some("LowQD;LowGQ".into());
+    vc.genotypes[1].filters = Some("PASS".into());
+    let mut writer = Bcf2Writer::new(&file.header, false).expect("a writer");
+    let mut bcf = writer.header_bytes();
+    bcf.extend(
+        writer
+            .encode(&vc, Origin::Bcf2Codec)
+            .expect("the record encodes"),
+    );
+    let read = read_bcf(&bcf).expect("the BCF reads");
+    let genotypes = &read.records[0].genotypes;
+    assert_eq!(genotypes[0].filters.as_deref(), Some("LowQD;LowGQ"));
+    assert_eq!(genotypes[1].filters, None);
+    assert!(!genotypes[1].is_filtered());
+}

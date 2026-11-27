@@ -357,7 +357,7 @@ pub fn fully_decode_indexed(
 
     // `fullyDecodeGenotypes` reads the list, which is the decode of a lazy context.
     let mut genotypes = Vec::with_capacity(vc.genotypes.len());
-    for g in vc.genotypes.iter() {
+    for g in vc.genotypes.try_get()? {
         let mut g = g.clone();
         g.extended = decode_attributes(&g.extended, header, index, true, vc)?;
         genotypes.push(g);

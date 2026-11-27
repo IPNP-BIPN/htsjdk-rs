@@ -10,7 +10,7 @@
 //!
 //! | | portable? | used by |
 //! |---|---|---|
-//! | [`math`] (`java.lang.Math`) | **no**, HotSpot intrinsic | `RecalDatum.log10`, `MathUtils.pow` |
+//! | [`math`] (`java.lang.Math`) | **no**, HotSpot intrinsic (but `log1p` and `expm1` are `StrictMath`'s) | `RecalDatum.log10`, `MathUtils.pow` |
 //! | [`strict_math`] (`java.lang.StrictMath`) | yes, fdlibm | rarely in GATK |
 //! | [`fast_math`] (`commons-math3 FastMath`) | yes, pure Java | `MathUtils` |
 //!
@@ -37,7 +37,9 @@ pub mod percentile;
 pub mod poisson;
 pub mod saddle_point;
 pub mod strict_exp;
+pub mod strict_expm1;
 pub mod strict_log;
+pub mod strict_log1p;
 pub mod strict_pow;
 pub mod to_string;
 
@@ -61,6 +63,19 @@ pub mod math {
     #[inline]
     pub fn log10(x: f64) -> f64 {
         crate::log::log10(x)
+    }
+
+    /// `Math.log1p`, which is `StrictMath.log1p`: the JDK declares it as a call to it and HotSpot
+    /// has no intrinsic for it, so the FDLIBM port is exact here too (decision 0051).
+    #[inline]
+    pub fn log1p(x: f64) -> f64 {
+        crate::strict_log1p::log1p(x)
+    }
+
+    /// `Math.expm1`, which is `StrictMath.expm1` for the same reason as [`log1p`].
+    #[inline]
+    pub fn expm1(x: f64) -> f64 {
+        crate::strict_expm1::expm1(x)
     }
 
     /// `Math.round(double)`, which is **not** `floor(x + 0.5)` however much its own javadoc says
@@ -161,6 +176,20 @@ pub mod strict_math {
     #[inline]
     pub fn pow(x: f64, y: f64) -> f64 {
         crate::strict_pow::pow(x, y)
+    }
+
+    /// `StrictMath.log1p`, FDLIBM's `log1p`, exact over every point of the corpus. See
+    /// [`crate::strict_log1p`].
+    #[inline]
+    pub fn log1p(x: f64) -> f64 {
+        crate::strict_log1p::log1p(x)
+    }
+
+    /// `StrictMath.expm1`, FDLIBM's `expm1`, exact over every point of the corpus. See
+    /// [`crate::strict_expm1`].
+    #[inline]
+    pub fn expm1(x: f64) -> f64 {
+        crate::strict_expm1::expm1(x)
     }
 }
 

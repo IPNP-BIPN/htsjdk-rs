@@ -122,3 +122,10 @@ no such property holds, as with `exp`, the function stays unported.
 
 This is a much sharper constraint than "track which library each call site used", and it should
 have been in this record from the start.
+
+## Addendum: `log1p` and `expm1` are exact now (decision 0051)
+
+The table's `Math=Strict` column already said it: 100% for `log1p` and `expm1`, because `Math`
+delegates both to `StrictMath`. So the FDLIBM ports in `strict_log1p.rs` and `strict_expm1.rs`
+are exact against `Math` as well, and both rows moved from "not yet exact" to the exact-match test
+in `tests/conformance.rs`. The `rust=Math` rates above are the host libm's and stay as measured.

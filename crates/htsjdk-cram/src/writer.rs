@@ -604,7 +604,15 @@ fn to_write_record(
         cram |= CF_QS_PRESERVED_AS_ARRAY;
     }
 
-    let read_group = match record.tags.get(htsjdk_bam::tag::Tag::new(b"RG")) {
+    let decoded = record.tags.decoded();
+    let stored_tag = |name: &[u8; 2]| {
+        let tag = htsjdk_bam::tag::Tag::new(name);
+        decoded
+            .binary_search_by_key(&tag, |(t, _)| *t)
+            .ok()
+            .map(|i| &decoded[i].1)
+    };
+    let read_group = match stored_tag(b"RG") {
         Some(TagValue::Str(id)) => read_groups.get(id).copied().unwrap_or(NO_READGROUP_ID),
         _ => NO_READGROUP_ID,
     };
@@ -620,7 +628,7 @@ fn to_write_record(
                 reference,
                 record.alignment_start,
             );
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"NM")) {
+            if let Some(stored) = stored_tag(b"NM") {
                 let stored = match stored {
                     TagValue::Int(v) => *v as i32,
                     TagValue::Float(f) => *f as i32,
@@ -630,7 +638,7 @@ fn to_write_record(
                     strip_nm = false;
                 }
             }
-            if let Some(stored) = record.tags.get(htsjdk_bam::tag::Tag::new(b"MD")) {
+            if let Some(stored) = stored_tag(b"MD") {
                 if !matches!(stored, TagValue::Str(s) if *s == md) {
                     strip_md = false;
                 }
@@ -638,7 +646,7 @@ fn to_write_record(
         }
     }
     let mut tags = Vec::new();
-    for (tag, value) in record.tags.iter() {
+    for (tag, value) in decoded.iter() {
         let name = tag.name();
         if &name == b"RG" || (strip_nm && &name == b"NM") || (strip_md && &name == b"MD") {
             continue;
@@ -1086,12 +1094,7 @@ impl<'a> CramWriter<'a> {
         self.out.extend_from_slice(&body);
         self.global_record_counter += i64::from(record_count);
         if let Some(index) = self.index.as_mut() {
-            index
-                .process_container(entries)
-                .map_err(|message| CramError::Other {
-                    class: "htsjdk.samtools.SAMException",
-                    message,
-                })?;
+            index.process_container(entries)?;
         }
         Ok(())
     }
@@ -1107,11 +1110,13 @@ impl<'a> CramWriter<'a> {
         let mut contexts: BTreeSet<i32> = BTreeSet::new();
         let mut start = i32::MAX;
         let mut end = 0;
+        let mut last_start = 0;
         for record in records.iter() {
             if record.is_placed() {
                 contexts.insert(record.reference_index);
                 start = start.min(record.alignment_start);
                 end = end.max(record.alignment_end);
+                last_start = last_start.max(record.alignment_start);
             } else {
                 contexts.insert(UNMAPPED_UNPLACED_ID);
             }
@@ -1121,7 +1126,7 @@ impl<'a> CramWriter<'a> {
             1 => {
                 let id = *contexts.iter().next().unwrap();
                 if id >= 0 {
-                    (id, start, end - start + 1)
+                    (id, start, placed_span(start, end, last_start))
                 } else {
                     (UNMAPPED_UNPLACED_ID, 0, 0)
                 }
@@ -1278,6 +1283,18 @@ impl<'a> CramWriter<'a> {
     }
 }
 
+/// A single-reference slice's span. Only placed reads that are all unmapped (an alignment end of
+/// 0) and start past 1 make `end - start + 1` negative; 5.0.0 then threw on the reference
+/// lookup, and htsjdk 6.0.0 (#1855) spans their starts instead, as this does. Every span 5.0.0
+/// wrote is unchanged: upstream's `max(end, start)` would also move those.
+fn placed_span(start: i32, end: i32, last_start: i32) -> i32 {
+    if end < start - 1 {
+        last_start - start + 1
+    } else {
+        end - start + 1
+    }
+}
+
 /// `Slice.getBAIEntries` for a slice being written, whose counts its constructor kept.
 fn bai_entries(
     records: &[WriteRecord],
@@ -1298,13 +1315,14 @@ fn bai_entries(
         landmark_index,
     };
     let mut contexts: BTreeSet<i32> = BTreeSet::new();
-    let (mut start, mut end) = (i32::MAX, 0);
+    let (mut start, mut end, mut last_start) = (i32::MAX, 0, 0);
     let (mut mapped, mut unmapped, mut unplaced) = (0, 0, 0);
     for r in records {
         if r.is_placed() {
             contexts.insert(r.reference_index);
             start = start.min(r.alignment_start);
             end = end.max(r.alignment_end);
+            last_start = last_start.max(r.alignment_start);
             if r.is_unmapped() {
                 unmapped += 1;
             } else {
@@ -1333,7 +1351,10 @@ fn bai_entries(
         if id < 0 {
             return vec![entry(UNMAPPED_UNPLACED_ID, counts(0, 0))];
         }
-        return vec![entry(id, counts(start, end - start + 1))];
+        return vec![entry(
+            id,
+            counts(start, placed_span(start, end, last_start)),
+        )];
     }
     // `getMultiRefAlignmentSpans` and `mergeRecordSpan`.
     let mut spans: std::collections::BTreeMap<i32, Span> = std::collections::BTreeMap::new();
@@ -1463,9 +1484,31 @@ fn tag_encoding<'r>(
 
 /// The resolved writers: one encoding per series by name, the QS array, and one per tag.
 struct Encodings {
-    series: HashMap<&'static str, Encoding>,
+    series: HashMap<&'static str, Encoding, BuildSmallKeyHasher>,
     quality_array: Encoding,
-    tags: HashMap<i32, Encoding>,
+    tags: HashMap<i32, Encoding, BuildSmallKeyHasher>,
+}
+
+type BuildSmallKeyHasher = std::hash::BuildHasherDefault<SmallKeyHasher>;
+
+/// For keys of a few bytes that come from the file format's own names, looked up several times per
+/// record and never walked, so neither the order nor a hostile key can reach anything. SipHash was
+/// 2% of writing a CRAM.
+#[derive(Default)]
+struct SmallKeyHasher(u64);
+
+impl std::hash::Hasher for SmallKeyHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 = (self.0 ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
 }
 
 impl Encodings {
@@ -1480,7 +1523,7 @@ impl Encodings {
 
 fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramError> {
     let factory = |e: crate::encoding_factory::FactoryError| CramError::Cram(e.message());
-    let mut series = HashMap::new();
+    let mut series = HashMap::default();
     for (name, kind, _, _) in WRITTEN {
         let ds = DataSeries::by_canonical_name(name.as_bytes().try_into().unwrap()).unwrap();
         let descriptor = compression.encodings.get(ds).unwrap();
@@ -1495,7 +1538,7 @@ fn resolve_encodings(compression: &CompressionHeader) -> Result<Encodings, CramE
         .unwrap();
     let quality_array =
         create_encoding(FactoryType::ByteArray, qs.id, &qs.parameters).map_err(factory)?;
-    let mut tags = HashMap::new();
+    let mut tags = HashMap::default();
     for key in compression.tag_encodings.keys() {
         let descriptor = compression.tag_encodings.get(key).unwrap();
         tags.insert(

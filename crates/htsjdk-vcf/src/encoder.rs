@@ -20,7 +20,7 @@
 //! up with different numbers of colons. `isMissingValue` counts those two characters and
 //! compares to the length, which also makes the *empty string* a missing value.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::allele::Allele;
 use crate::header::{HeaderLine, VcfHeader};
@@ -48,10 +48,17 @@ pub enum EncodeError {
     AlleleNotInVariant(String),
     /// `"GTs cannot be missing for some samples if they are available for others in the record"`.
     UnavailableGenotype(String),
+    /// A deferred genotype block that did not parse when the encoder needed it (decision 0048).
+    Genotypes(crate::genotypes_context::GenotypeError),
 }
 
 pub struct VcfEncoder<'a> {
     header: &'a VcfHeader,
+    /// The INFO, FORMAT and FILTER ids the header declares, collected once: the per-key checks
+    /// used to scan every header line, `##contig` included, for every key of every record.
+    info_ids: HashSet<&'a str>,
+    format_ids: HashSet<&'a str>,
+    filter_ids: HashSet<&'a str>,
     missing_fields: MissingFields,
     /// `outputTrailingFormatFields`. htsjdk defaults it to false, i.e. trailing missing fields
     /// *are* trimmed.
@@ -60,8 +67,36 @@ pub struct VcfEncoder<'a> {
 
 impl<'a> VcfEncoder<'a> {
     pub fn new(header: &'a VcfHeader) -> Self {
+        let (mut info_ids, mut format_ids, mut filter_ids) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+        // The same shapes [`VcfHeader::has_info_line`], `has_format_line` and `has_filter_line`
+        // accept, both FILTER shapes included.
+        for line in &header.lines {
+            match line {
+                HeaderLine::Compound { key, id, .. } if key == "INFO" => {
+                    info_ids.insert(id.as_str());
+                }
+                HeaderLine::Compound { key, id, .. } if key == "FORMAT" => {
+                    format_ids.insert(id.as_str());
+                }
+                HeaderLine::Filter { id, .. } => {
+                    filter_ids.insert(id.as_str());
+                }
+                HeaderLine::Structured { key, fields } if key == "FILTER" => {
+                    for (name, value) in fields {
+                        if name == "ID" {
+                            filter_ids.insert(value.as_str());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         Self {
             header,
+            info_ids,
+            format_ids,
+            filter_ids,
             missing_fields: MissingFields::default(),
             output_trailing_format_fields: false,
         }
@@ -155,7 +190,7 @@ impl<'a> VcfEncoder<'a> {
         // strings.
         let mut info: BTreeMap<&str, String> = BTreeMap::new();
         for (key, value) in &vc.attributes {
-            self.check_header(self.header.has_info_line(key), key, "INFO", vc)?;
+            self.check_header(self.info_ids.contains(key.as_str()), key, "INFO", vc)?;
             if let Some(text) = value.format() {
                 info.insert(key.as_str(), text);
             }
@@ -167,16 +202,22 @@ impl<'a> VcfEncoder<'a> {
         // A record read from a file and never looked at is written from the file's own text, FORMAT
         // column included, so its key order is the INPUT's rather than the recomputed one. That is
         // `isLazyWithData()` in the reference, and it is the difference between
-        // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222).
-        if let Some(unparsed) = vc.genotypes.unparsed_for(&self.header.samples) {
+        // `GT:GQ:DP` copied through and `GT:DP:GQ` rebuilt (#222). The header's samples are not
+        // consulted: the text is copied under a reordered, subset, superset or sites-only header
+        // alike, columns as the file had them. A file whose samples are not sorted never gets
+        // here untouched, because the read decodes it, as `parseVCFLine` does.
+        if let Some(unparsed) = vc.genotypes.unparsed() {
             out.push('\t');
             out.push_str(unparsed);
             return Ok(());
         }
+        // `calcVCFGenotypeKeys` reaches the genotypes, which is where a deferred block is parsed
+        // and, if it is malformed, refused.
+        vc.genotypes.try_peek().map_err(EncodeError::Genotypes)?;
         let keys = vc.calc_vcf_genotype_keys(!self.header.samples.is_empty());
         if !keys.is_empty() {
             for key in &keys {
-                self.check_header(self.header.has_format_line(key), key, "FORMAT", vc)?;
+                self.check_header(self.format_ids.contains(key.as_str()), key, "FORMAT", vc)?;
             }
             out.push('\t');
             for (index, key) in keys.iter().enumerate() {
@@ -210,7 +251,7 @@ impl<'a> VcfEncoder<'a> {
                 .map(String::as_str)
                 .collect();
             for f in &filters {
-                self.check_header(self.header.has_filter_line(f), f, "FILTER", vc)?;
+                self.check_header(self.filter_ids.contains(f), f, "FILTER", vc)?;
             }
             filters.sort_unstable();
             for (index, f) in filters.iter().enumerate() {

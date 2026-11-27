@@ -264,9 +264,9 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "libz-sys",
@@ -360,6 +360,7 @@ name = "htsjdk-vcf"
 version = "0.4.0"
 dependencies = [
  "flate2",
+ "htsjdk-bam",
  "htsjdk-bgzf",
  "htsjdk-tribble",
  "jmath",
@@ -508,9 +509,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.30"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f710a23e6dbf193214fd46ca56a9d6864e550abe86202184532ae7275e46de19"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "pkg-config",
@@ -544,9 +545,9 @@ dependencies = [
 
 [[package]]
 name = "noodles-bam"
-version = "0.97.0"
+version = "0.98.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37641331aad54cbc213d9e4be79d3ceffed2a0f954ed3ae47e464dc06c665615"
+checksum = "9695fd6594a78ecfaaa0c2c365412fed0f69388479504a588a6ba330db82923e"
 dependencies = [
  "bstr",
  "indexmap",
@@ -593,9 +594,9 @@ dependencies = [
 
 [[package]]
 name = "noodles-sam"
-version = "0.92.0"
+version = "0.93.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dcd7dda5f8e4b51b3927803df8a27839e99677aa14334c23e451d5b6feb9628"
+checksum = "5a562af0b8f8e82a939fa4ce311cdddea95cf7f265917e474d75ba0827e09a9a"
 dependencies = [
  "bitflags",
  "bstr",
@@ -622,9 +623,9 @@ dependencies = [
 
 [[package]]
 name = "noodles-vcf"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f4325063c8106413fd8f69bf87400eb52a81114274e6504cab2104eaee4fbb4"
+checksum = "2f83bfcf066b7a26bcd7d9e831e8e14aaccea845bc2196c929521eb29636df2b"
 dependencies = [
  "indexmap",
  "memchr",

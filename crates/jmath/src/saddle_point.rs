@@ -37,11 +37,41 @@
 //!
 //! `logBinomialProbability` has four branches at the ends of its range, chosen by comparing `p`
 //! or `q` against `0.1`, and only the middle one uses the Stirling error at all.
+//!
+//! # Why not the textbook formula
+//!
+//! The obvious log hypergeometric probability is a sum of log binomial coefficients, or of
+//! `logGamma` terms. commons-math does neither: it uses a saddle-point expansion (the Stirling
+//! error plus a deviance term per binomial), and GATK reaches exactly that. In GATK 4.7.0.0's
+//! `FisherExactTest`:
+//!
+//! ```java
+//! final AbstractIntegerDistribution dist = new HypergeometricDistribution(null, m+n, m, k);
+//! final double[] logds = support.mapToDouble(dist::logProbability);
+//! ```
+//!
+//! `FS` then sums the probabilities at or below the observed table's (`logds[x[0][0] - lo] *
+//! REL_ERR`, with `REL_ERR = 1 - 10e-7`), so a last-bit difference in any one of them can move a
+//! point across that threshold. The `saddle_point` golden's 244 `logProbability` rows are what
+//! check this route bit for bit.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `z2 as usize` casts a double to an unsigned array index. It saturates: a negative value
+//!   becomes 0, where Java's `(int) z2` would stay negative and the array read would throw. The
+//!   hypergeometric never passes a negative `z` (every argument is a count inside the support).
+//! - `let (a, b) = (x, y);` binds two names at once from a pair.
+//! - `x.max(0)`, `x.min(y)` are `Math.max(x, 0)` and `Math.min(x, y)`.
+//! - `f64::NEG_INFINITY` is `Double.NEGATIVE_INFINITY`.
 
 #![allow(clippy::excessive_precision)]
 
 use crate::{fast_math, gamma};
 
+/// `SaddlePointExpansion.EXACT_STIRLING_ERRORS`: the Stirling error at `0, 0.5, 1, ..., 15`,
+/// as decimal literals longer than a double holds. Both compilers round a literal to the nearest
+/// double, so the extra digits are harmless (hence the `excessive_precision` allowance above), and
+/// the golden's `getStirlingError` rows at every half-integer below 15 check each entry read.
 const EXACT_STIRLING_ERRORS: [f64; 31] = [
     0.0,
     0.1534264097200273452913848,
@@ -80,6 +110,9 @@ const EXACT_STIRLING_ERRORS: [f64; 31] = [
 const TWO_PI: f64 = 2.0 * std::f64::consts::PI;
 
 /// `SaddlePointExpansion.HALF_LOG_2_PI`, computed with `FastMath.log` as the reference computes it.
+///
+/// A function rather than a `const` because a Rust `const` can only call `const fn`s, and the
+/// table-driven `fast_math::log` is not one. Every call returns the same double.
 fn half_log_2_pi() -> f64 {
     0.5 * fast_math::log(TWO_PI)
 }
@@ -88,15 +121,21 @@ fn half_log_2_pi() -> f64 {
 /// can assert that it is unreachable rather than describing it in a comment.
 pub const EXACT_STIRLING_ERROR_AT_FIFTEEN: f64 = EXACT_STIRLING_ERRORS[30];
 
-/// `SaddlePointExpansion.getStirlingError`.
+/// `SaddlePointExpansion.getStirlingError`: `log(z!) - log(sqrt(2 pi z) (z / e)^z)`, by the three
+/// routes of the module note. A NaN fails `z < 15.0` and comes out of the series as NaN.
 pub fn stirling_error(z: f64) -> f64 {
     if z < 15.0 {
         let z2 = 2.0 * z;
+        // `2z` is an integer exactly when `z` is a half-integer.
         if z2.floor() == z2 {
+            // Saturating cast: see the module note. Java's `(int) z2` agrees for `z >= 0`.
             return EXACT_STIRLING_ERRORS[z2 as usize];
         }
         return gamma::log_gamma(z + 1.0) - (z + 0.5) * fast_math::log(z) + z - half_log_2_pi();
     }
+    // The asymptotic series in `1 / z^2`, in nested form, checked by the golden's
+    // `getStirlingError` rows from 15.0 up. The coefficients are
+    // `1/12, 1/360, 1/1260, 1/1680, 1/1188`.
     let z2 = z * z;
     (0.083333333333333333333
         - (0.00277777777777777777778
@@ -107,7 +146,11 @@ pub fn stirling_error(z: f64) -> f64 {
         / z
 }
 
-/// `SaddlePointExpansion.getDeviancePart`.
+/// `SaddlePointExpansion.getDeviancePart`: `x log(x / mu) + mu - x`, the deviance term of the
+/// expansion.
+///
+/// Near `x == mu` that difference cancels badly, so within ten percent it is summed instead as
+/// a series in `v = (x - mu) / (x + mu)`; elsewhere the closed form is used directly.
 pub fn deviance_part(x: f64, mu: f64) -> f64 {
     if (x - mu).abs() < 0.1 * (x + mu) {
         let d = x - mu;
@@ -117,10 +160,13 @@ pub fn deviance_part(x: f64, mu: f64) -> f64 {
         let mut ej = 2.0 * x * v;
         v *= v;
         let mut j = 1i32;
-        // The loop stops when the addition stops moving the double, not at a tolerance.
+        // The loop stops when the addition stops moving the double, not at a tolerance. `s`
+        // starts as NaN, which is unequal to everything, so the body always runs once.
         while s1 != s {
             s = s1;
             ej *= v;
+            // `((j * 2) + 1)` is `int` arithmetic, widened to a double for the division, as Java
+            // promotes it.
             s1 = s + ej / ((j * 2) + 1) as f64;
             j += 1;
         }
@@ -129,8 +175,12 @@ pub fn deviance_part(x: f64, mu: f64) -> f64 {
     x * fast_math::log(x / mu) + mu - x
 }
 
-/// `SaddlePointExpansion.logBinomialProbability`.
+/// `SaddlePointExpansion.logBinomialProbability`: the log of `P(X = x)` for `n` trials with
+/// success probability `p` and its complement `q`, both passed in rather than `q` derived as
+/// `1 - p`, so the caller's rounding of each is what is used.
 pub fn log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
+    // `x as f64` from an `i32` is exact; Java promotes the `int`s the same way where they meet a
+    // double.
     let (xf, nf) = (x as f64, n as f64);
     if x == 0 {
         return if p < 0.1 {
@@ -156,6 +206,10 @@ pub fn log_binomial_probability(x: i32, n: i32, p: f64, q: f64) -> f64 {
 }
 
 /// `HypergeometricDistribution.getDomain`, which is where the support of the test comes from.
+///
+/// `FisherExactTest` computes the same pair itself, as `Math.max(0, k - n)` and
+/// `Math.min(k, m)` with `n` the second row's total: `sample - (population - successes)` is that
+/// `k - n`.
 pub fn hypergeometric_domain(population: i32, successes: i32, sample: i32) -> (i32, i32) {
     (
         (sample - (population - successes)).max(0),

@@ -23,6 +23,11 @@
 //! uniform draw: `QualByDepth` jitters every QD above 35 with it, so a GenotypeGVCFs QD is only
 //! reproducible through here.
 //!
+//! The host's `f64::ln` is no substitute either: it is the platform libm, not FDLIBM, and the
+//! module's claim is checked by `strict_log_is_strictmath` in `tests/conformance.rs`, which also
+//! asserts that the StrictMath and Math columns differ somewhere, so the test cannot pass by
+//! routing here to the correctly rounded function (decision 0044).
+//!
 //! ## The algorithm, as FDLIBM states it
 //!
 //! ```text
@@ -48,6 +53,19 @@
 //! `clippy::excessive_precision` is allowed module-wide: the constants carry FDLIBM's printed
 //! digits, which say more than an `f64` holds, and trimming them would make the port cite a
 //! value its source never wrote. They round to the same bits either way.
+//!
+//! ## Reading this file without reading Rust
+//!
+//! - `x.to_bits()` is `Double.doubleToRawLongBits(x)` as an unsigned `u64`; `f64::from_bits` is
+//!   `Double.longBitsToDouble`;
+//! - `as` between integer types keeps the low bits and reinterprets the sign: `u32 as i32` turns
+//!   a high word with the sign bit set into a negative `int`, which is what the C's signed `hx`
+//!   holds, and why `hx < 0` below means "x is negative";
+//! - `>>` on a signed integer (`i32`) is arithmetic, Java's `>>`; on an unsigned one it is
+//!   logical, Java's `>>>`;
+//! - `let mut` marks a variable that may be reassigned; without `mut` a binding is final;
+//! - `if` is an expression: the last `if / else if / else` chain in [`log`] *is* the returned
+//!   value, with no `return` written.
 
 #![allow(clippy::excessive_precision)]
 
@@ -70,14 +88,17 @@ const LG5: f64 = 1.818_357_216_161_805_012e-1;
 const LG6: f64 = 1.531_383_769_920_937_332e-1;
 const LG7: f64 = 1.479_819_860_511_658_591e-1;
 
+/// The C's `__HI(x)`: the sign, exponent and top 20 mantissa bits, as a signed `int`.
 fn high_word(x: f64) -> i32 {
     (x.to_bits() >> 32) as u32 as i32
 }
 
+/// The C's `__LO(x)`: the low 32 mantissa bits, as an `unsigned`.
 fn low_word(x: f64) -> u32 {
     x.to_bits() as u32
 }
 
+/// `x` with its high word replaced, the C's `__HI(x) = high`; the low word is kept.
 fn with_high_word(x: f64, high: i32) -> f64 {
     f64::from_bits((u64::from(high as u32) << 32) | u64::from(low_word(x)))
 }
@@ -100,7 +121,8 @@ pub fn log(x: f64) -> f64 {
         }
         if hx < 0 {
             // log(-#) = NaN. The C writes `(x-x)/zero`, kept as written rather than as `f64::NAN`
-            // because the NaN an FPU produces for 0/0 need not have the constant's bits.
+            // because the NaN an FPU produces for 0/0 need not have the constant's bits
+            // (decision 0012: x86-64 sets the sign bit, AArch64 does not).
             #[allow(clippy::eq_op)]
             let zero = x - x;
             return zero / 0.0;
@@ -113,8 +135,12 @@ pub fn log(x: f64) -> f64 {
     if hx >= 0x7ff0_0000 {
         return x + x;
     }
+    // k is the unbiased exponent; hx keeps only the top 20 mantissa bits.
     k += (hx >> 20) - 1023;
     hx &= 0x000f_ffff;
+    // `0x95f64 + hx` carries into bit 20 exactly when hx >= 0x6a09c, a mantissa at or above
+    // about sqrt(2). Then `i` is 0x100000: x is normalised to [sqrt(2)/2, 1) and k gains one.
+    // Otherwise `i` is 0 and x is normalised to [1, sqrt(2)). This is step 1's range.
     let i = (hx + 0x95f64) & 0x10_0000;
     // Normalise x or x/2.
     x = with_high_word(x, hx | (i ^ 0x3ff0_0000));
@@ -144,6 +170,9 @@ pub fn log(x: f64) -> f64 {
     let j = 0x6b851 - hx;
     let t1 = w * (LG2 + w * (LG4 + w * LG6));
     let t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
+    // `i | j` is positive exactly when both are non-negative, that is when
+    // 0x6147a <= hx <= 0x6b851: the mantissas nearest sqrt(2), where |f| is largest. Those take
+    // the `hfsq` form; the rest take the shorter `s * (f - r)` form.
     i |= j;
     let r = t2 + t1;
     if i > 0 {

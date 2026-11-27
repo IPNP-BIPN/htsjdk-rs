@@ -306,12 +306,13 @@ pub fn parse_line_with<F>(
 where
     F: FnMut(&str) -> Option<i32>,
 {
-    let mut fields: Vec<&str> = line.split('\t').collect();
-    // `StringUtil.split` keeps the empty token between two tabs, but not the one after a
-    // trailing tab: a line ending in a tab has no empty last field.
-    if fields.len() > 1 && fields.last() == Some(&"") {
-        fields.pop();
-    }
+    // `StringUtil.split` drops one trailing empty token, so 5.0.0 reads a record ending in a tab
+    // (htsjdk 6.0.0 #1929 restores that after its own regression); a second tab is an empty field.
+    let fields: Vec<&str> = line
+        .strip_suffix('\t')
+        .unwrap_or(line)
+        .split('\t')
+        .collect();
     if fields.len() < NUM_REQUIRED_FIELDS {
         return Err(ParseError::NotEnoughFields(fields.len()));
     }
@@ -415,7 +416,7 @@ where
         fastq_to_phred(qual)
     };
 
-    let mut tags = Tags::new();
+    let mut tags = Tags::with_capacity(fields.len() - NUM_REQUIRED_FIELDS);
     for field in &fields[NUM_REQUIRED_FIELDS..] {
         let (tag, value) = parse_tag(field)?;
         tags.insert(tag, value);
@@ -452,6 +453,20 @@ mod tests {
 
     const PLAIN: &str = "read1\t99\tchr1\t100\t60\t4M\t=\t300\t250\tACGT\t?@AB";
 
+    /// 5.0.0's `StringUtil.split` drops one trailing empty token, so a record ending in a tab
+    /// reads; a second tab leaves an empty twelfth field.
+    #[test]
+    fn one_trailing_tab_is_dropped_as_htsjdk_drops_it() {
+        let bare = format!("{PLAIN}\t");
+        assert!(parse_line(&bare, resolver).unwrap().tags.is_empty());
+        let tagged = parse_line(&format!("{PLAIN}\tXY:Z:abc\t"), resolver).unwrap();
+        assert_eq!(tagged.tags.len(), 1);
+        assert_eq!(
+            parse_line(&format!("{PLAIN}\t\t"), resolver),
+            Err(ParseError::EmptyField(11))
+        );
+    }
+
     #[test]
     fn a_plain_line_parses_to_its_fields() {
         let r = parse_line(PLAIN, resolver).unwrap();
@@ -486,22 +501,6 @@ mod tests {
     fn an_empty_field_is_refused_with_its_zero_based_position() {
         let line = "read1\t99\tchr1\t100\t60\t4M\t=\t300\t250\t\t?@AB";
         assert_eq!(parse_line(line, resolver), Err(ParseError::EmptyField(9)));
-    }
-
-    /// A trailing tab is not an empty field: `StringUtil.split` drops the empty token after it,
-    /// as Picard's CheckDuplicateMarking test files, whose records end in one, need.
-    #[test]
-    fn a_trailing_tab_is_not_an_empty_field() {
-        let line = "read1\t0\tchr1\t100\t60\t4M\t*\t0\t0\tACGT\t?@AB\tRG:Z:L1\t";
-        let record = parse_line(line, resolver).unwrap();
-        assert_eq!(record.tags.len(), 1);
-        assert_eq!(
-            parse_line(
-                "read1\t0\tchr1\t100\t60\t4M\t*\t0\t0\tACGT\t?@AB\t\t",
-                resolver
-            ),
-            Err(ParseError::EmptyField(11))
-        );
     }
 
     #[test]

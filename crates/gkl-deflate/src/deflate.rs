@@ -39,20 +39,22 @@ const MAX_DIST: usize = W_SIZE - MIN_LOOKAHEAD;
 const WINDOW_SIZE: usize = 2 * W_SIZE;
 const WINDOW_PADDING: usize = MAX_MATCH + 8;
 
-/// How many leading bytes `a` and `b` share, `a.len()` at most: the byte loop of zlib's
-/// `longest_match`, compared a word at a time.
-fn common_prefix(a: &[u8], b: &[u8]) -> usize {
-    let n = a.len().min(b.len());
+/// How many of `n` leading bytes `a` and `b` share: the byte loop of zlib's `longest_match`,
+/// compared a word at a time.
+///
+/// # Safety
+/// `a` and `b` must each be valid for reads of `n` bytes.
+#[inline(always)]
+unsafe fn common_prefix_raw(a: *const u8, b: *const u8, n: usize) -> usize {
     let mut i = 0;
     while i + 8 <= n {
-        let x = u64::from_le_bytes(a[i..i + 8].try_into().unwrap())
-            ^ u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        let x = a.add(i).cast::<u64>().read_unaligned() ^ b.add(i).cast::<u64>().read_unaligned();
         if x != 0 {
-            return i + (x.trailing_zeros() / 8) as usize;
+            return i + (u64::from_le(x).trailing_zeros() / 8) as usize;
         }
         i += 8;
     }
-    while i < n && a[i] == b[i] {
+    while i < n && *a.add(i) == *b.add(i) {
         i += 1;
     }
     i
@@ -73,7 +75,10 @@ fn common_prefix_is_the_byte_loop() {
             b[(seed >> 40) as usize % len] ^= 1;
         }
         let expected = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-        assert_eq!(common_prefix(&a, &b), expected);
+        assert_eq!(
+            unsafe { common_prefix_raw(a.as_ptr(), b.as_ptr(), len) },
+            expected
+        );
     }
 }
 
@@ -300,13 +305,13 @@ struct Match {
     orgstart: usize,
 }
 
-pub struct Deflater<'a> {
-    input: &'a [u8],
+/// The whole state of a deflater, and every buffer it owns: one per thread, reset between blocks.
+pub struct Deflater {
     next_in: usize,
 
-    window: Vec<u8>,
-    prev: Vec<u16>,
-    head: Vec<u16>,
+    window: Box<[u8; WINDOW_SIZE + WINDOW_PADDING]>,
+    prev: Box<[u16; W_SIZE]>,
+    head: Box<[u16; HASH_SIZE]>,
 
     ins_h: usize,
     strstart: usize,
@@ -325,27 +330,62 @@ pub struct Deflater<'a> {
     /// True for Intel's levels 4 to 6, where `deflate_medium` replaces `deflate_slow`.
     medium: bool,
     trees: Trees,
-    out: Vec<u8>,
+    pub(crate) out: Vec<u8>,
 }
 
-impl<'a> Deflater<'a> {
-    pub fn new(input: &'a [u8], level: usize, flavour: Flavour) -> Self {
-        let (hash, medium) = match flavour {
-            Flavour::Jdk => (Hash::Multiplicative, false),
-            Flavour::Gkl { sse42: false } => (Hash::Multiplicative, (4..=6).contains(&level)),
-            Flavour::Gkl { sse42: true } => (
-                Hash::Crc32c {
-                    three_byte: level >= 6,
-                },
-                (4..=6).contains(&level),
-            ),
-        };
+/// A mask that keeps a window index in the allocation, so the hot reads carry no bounds check. It
+/// changes nothing: every index in range is already below `WINDOW_SIZE`.
+const WINDOW_INDEX: usize = WINDOW_SIZE - 1;
+
+/// [`Deflater::insert_string`] on the deflate loops' local hash.
+#[inline(always)]
+fn insert_at(
+    hash: Hash,
+    window: &[u8; WINDOW_SIZE + WINDOW_PADDING],
+    head: &mut [u16; HASH_SIZE],
+    prev: &mut [u16; W_SIZE],
+    ins_h: &mut usize,
+    str_pos: usize,
+) -> u16 {
+    // SAFETY: `str_pos` is below `WINDOW_SIZE - MIN_MATCH`, `fill_window`'s invariant, and the
+    // window holds `WINDOW_PADDING` bytes more.
+    match hash {
+        Hash::Multiplicative => {
+            let c = unsafe { *window.get_unchecked(str_pos + MIN_MATCH - 1) };
+            *ins_h = ((*ins_h << HASH_SHIFT) ^ c as usize) & HASH_MASK;
+        }
+        Hash::Crc32c { three_byte } => {
+            let mut val = unsafe { window.as_ptr().add(str_pos).cast::<u32>().read_unaligned() };
+            val = u32::from_le(val);
+            if three_byte {
+                val &= 0x00FF_FFFF;
+            }
+            *ins_h = crc32c_u32(val) as usize & HASH_MASK;
+        }
+    }
+    let at = *ins_h & HASH_MASK;
+    let old = head[at];
+    prev[str_pos & W_MASK] = old;
+    head[at] = str_pos as u16;
+    old
+}
+
+/// A zeroed array on the heap, without passing through the stack on the way there.
+fn zeroed<T: Copy + Default, const N: usize>() -> Box<[T; N]> {
+    vec![T::default(); N]
+        .into_boxed_slice()
+        .try_into()
+        .unwrap_or_else(|_| unreachable!("the vector has N elements"))
+}
+
+impl Deflater {
+    pub fn new(level: usize, flavour: Flavour) -> Self {
+        let (hash, medium) = Self::rules(level, flavour);
         Deflater {
-            input,
             next_in: 0,
-            window: vec![0; WINDOW_SIZE + WINDOW_PADDING],
-            prev: vec![0; W_SIZE],
-            head: vec![0; HASH_SIZE],
+            window: zeroed(),
+            prev: zeroed(),
+            head: zeroed(),
             ins_h: 0,
             strstart: 0,
             lookahead: 0,
@@ -360,19 +400,55 @@ impl<'a> Deflater<'a> {
             hash,
             medium,
             trees: Trees::new(LIT_BUFSIZE),
-            out: Vec::with_capacity(input.len() / 2 + 64),
+            out: Vec::new(),
         }
     }
 
-    pub fn finish(mut self) -> Vec<u8> {
-        if self.medium {
-            self.deflate_medium();
-        } else if self.config.slow {
-            self.deflate_slow();
-        } else {
-            self.deflate_fast();
+    fn rules(level: usize, flavour: Flavour) -> (Hash, bool) {
+        match flavour {
+            Flavour::Jdk => (Hash::Multiplicative, false),
+            Flavour::Gkl { sse42: false } => (Hash::Multiplicative, (4..=6).contains(&level)),
+            Flavour::Gkl { sse42: true } => (
+                Hash::Crc32c {
+                    three_byte: level >= 6,
+                },
+                (4..=6).contains(&level),
+            ),
         }
-        self.out
+    }
+
+    /// Back to the state [`Self::new`] answers. `prev` is left as it is, as zlib's `lm_init` leaves
+    /// it: a chain only reaches an entry through a position hashed since the reset. The window is
+    /// cleared because `longest_match` reads past the data, and those bytes must be a fresh
+    /// deflater's zeros for a reused one to answer as a fresh one does.
+    pub fn reset(&mut self) {
+        self.window.fill(0);
+        self.head.fill(NIL);
+        self.next_in = 0;
+        self.ins_h = 0;
+        self.strstart = 0;
+        self.lookahead = 0;
+        self.block_start = 0;
+        self.match_start = 0;
+        self.match_length = MIN_MATCH - 1;
+        self.prev_length = MIN_MATCH - 1;
+        self.prev_match = 0;
+        self.match_available = false;
+        self.insert = 0;
+        self.trees.reset();
+        self.out.clear();
+    }
+
+    /// Deflates `input` into [`Self::out`], from a state that is new or was just reset.
+    pub fn run(&mut self, input: &[u8]) {
+        self.out.reserve(input.len() / 2 + 64);
+        if self.medium {
+            self.deflate_medium(input);
+        } else if self.config.slow {
+            self.deflate_slow(input);
+        } else {
+            self.deflate_fast(input);
+        }
     }
 
     /// zlib's `UPDATE_HASH`, and only reachable on the multiplicative path. Intel's macro has the
@@ -408,37 +484,29 @@ impl<'a> Deflater<'a> {
     #[inline]
     fn insert_string(&mut self, str_pos: usize) -> u16 {
         self.hash_at(str_pos);
-        let head = self.head[self.ins_h];
+        let at = self.ins_h & HASH_MASK;
+        let head = self.head[at];
         self.prev[str_pos & W_MASK] = head;
-        self.head[self.ins_h] = str_pos as u16;
+        self.head[at] = str_pos as u16;
         head
     }
 
     /// Ported from zlib's `slide_hash`. Every recorded position moves down by one window, and
     /// anything that falls off the bottom becomes NIL.
     fn slide_hash(&mut self) {
+        // `m >= W_SIZE ? m - W_SIZE : NIL` is a saturating subtraction, which vectorizes.
         for slot in self.head.iter_mut() {
-            let m = *slot as usize;
-            *slot = if m >= W_SIZE {
-                (m - W_SIZE) as u16
-            } else {
-                NIL
-            };
+            *slot = slot.saturating_sub(W_SIZE as u16);
         }
         for slot in self.prev.iter_mut() {
-            let m = *slot as usize;
-            *slot = if m >= W_SIZE {
-                (m - W_SIZE) as u16
-            } else {
-                NIL
-            };
+            *slot = slot.saturating_sub(W_SIZE as u16);
         }
     }
 
     /// Ported from zlib's `fill_window`. The slide is the part that matters for byte-identity:
     /// it happens at a fixed point, and `insert` carries across it the positions that were read
     /// but never hashed.
-    fn fill_window(&mut self) {
+    fn fill_window(&mut self, input: &[u8]) {
         loop {
             let mut more = WINDOW_SIZE - self.lookahead - self.strstart;
 
@@ -456,13 +524,13 @@ impl<'a> Deflater<'a> {
                 self.slide_hash();
                 more += W_SIZE;
             }
-            if self.next_in == self.input.len() {
+            if self.next_in == input.len() {
                 break;
             }
 
-            let n = more.min(self.input.len() - self.next_in);
+            let n = more.min(input.len() - self.next_in);
             let dst = self.strstart + self.lookahead;
-            self.window[dst..dst + n].copy_from_slice(&self.input[self.next_in..self.next_in + n]);
+            self.window[dst..dst + n].copy_from_slice(&input[self.next_in..self.next_in + n]);
             self.next_in += n;
             self.lookahead += n;
 
@@ -488,7 +556,7 @@ impl<'a> Deflater<'a> {
                 }
             }
 
-            if self.lookahead >= MIN_LOOKAHEAD || self.next_in == self.input.len() {
+            if self.lookahead >= MIN_LOOKAHEAD || self.next_in == input.len() {
                 break;
             }
         }
@@ -496,6 +564,7 @@ impl<'a> Deflater<'a> {
 
     /// Ported from zlib's `longest_match`. The two `UNALIGNED_OK` variants in the C differ only in
     /// how fast they compare; this is the plain one, and it finds the same match.
+    #[inline]
     fn longest_match(&mut self, mut cur_match: usize) -> usize {
         let mut chain_length = self.config.max_chain;
         let mut best_len = self.prev_length;
@@ -503,8 +572,8 @@ impl<'a> Deflater<'a> {
         // zlib's NIL is 0, and a saturating subtraction lands on it for the same reason.
         let limit = self.strstart.saturating_sub(MAX_DIST);
         let scan = self.strstart;
-        let strend = self.strstart + MAX_MATCH;
-        let (window, prev) = (&self.window[..], &self.prev[..]);
+        let window = self.window.as_ptr();
+        let prev: &[u16; W_SIZE] = &self.prev;
         let mut match_start = None;
 
         // Already sitting on a good match: spend a quarter of the budget looking for a better one.
@@ -516,25 +585,30 @@ impl<'a> Deflater<'a> {
             nice_match = self.lookahead;
         }
 
+        // SAFETY for every read below. `scan` is below `WINDOW_SIZE - MIN_LOOKAHEAD`, which is
+        // `fill_window`'s invariant; `cur_match` and `best_len` are each below `scan` and
+        // `MAX_MATCH`; so the furthest byte read, `scan + MAX_MATCH` and its 16-bit neighbour,
+        // lies inside the window's `WINDOW_PADDING` bytes of slack.
+        let pair = |at: usize| unsafe { window.add(at).cast::<u16>().read_unaligned() };
         // The cheap rejections zlib makes before comparing anything: the last byte of the current
         // best and the one past it, then the first two bytes, each pair one 16-bit compare as
         // `UNALIGNED_OK` makes it. A best of 0 has no last byte, so only the one past it is asked.
-        let pair = |at: usize| u16::from_le_bytes([window[at], window[at + 1]]);
         let end_of = |best_len: usize| best_len.saturating_sub(1);
         let mut scan_end = pair(scan + end_of(best_len));
         let scan_start = pair(scan);
         loop {
             let m = cur_match;
             let end_matches = if best_len == 0 {
-                window[m] == window[scan]
+                unsafe { *window.add(m) == *window.add(scan) }
             } else {
                 pair(m + best_len - 1) == scan_end
             };
             if end_matches && pair(m) == scan_start {
                 // scan[2] == match[2] is implied by the hash, so the comparison starts at 3 and
                 // stops at the first differing byte or at strend, eight bytes at a time.
-                let len =
-                    3 + common_prefix(&window[scan + 3..strend], &window[m + 3..m + MAX_MATCH]);
+                let len = 3 + unsafe {
+                    common_prefix_raw(window.add(scan + 3), window.add(m + 3), MAX_MATCH - 3)
+                };
                 if len > best_len {
                     match_start = Some(cur_match);
                     best_len = len;
@@ -567,71 +641,100 @@ impl<'a> Deflater<'a> {
         let stored_len = (self.strstart as isize - self.block_start) as usize;
         let buf = if self.block_start >= 0 {
             let start = self.block_start as usize;
-            Some(self.window[start..start + stored_len].to_vec())
+            Some(&self.window[start..start + stored_len])
         } else {
             None
         };
-        self.trees
-            .flush_block(&mut self.out, buf.as_deref(), stored_len, last);
+        self.trees.flush_block(&mut self.out, buf, stored_len, last);
         self.block_start = self.strstart as isize;
     }
 
     /// Ported from zlib's `deflate_fast`, used at levels 1 to 3: take the first match the chain
     /// offers, never look for a better one starting a byte later.
-    fn deflate_fast(&mut self) {
+    fn deflate_fast(&mut self, input: &[u8]) {
+        // In locals for the same reason as in `deflate_slow`: on data with no matches this loop is
+        // one literal per turn, and every store through `self` is one the compiler has to keep.
+        let hash = self.hash;
+        let max_lazy = self.config.max_lazy;
+        let mut strstart = self.strstart;
+        let mut lookahead = self.lookahead;
+        let mut ins_h = self.ins_h;
+        let mut match_length = self.match_length;
         loop {
-            if self.lookahead < MIN_LOOKAHEAD {
-                self.fill_window();
-                if self.lookahead == 0 {
+            if lookahead < MIN_LOOKAHEAD {
+                (self.strstart, self.lookahead, self.ins_h) = (strstart, lookahead, ins_h);
+                self.match_length = match_length;
+                self.fill_window(input);
+                (strstart, lookahead, ins_h) = (self.strstart, self.lookahead, self.ins_h);
+                if lookahead == 0 {
                     break;
                 }
             }
 
             let mut hash_head = NIL;
-            if self.lookahead >= MIN_MATCH {
-                hash_head = self.insert_string(self.strstart);
+            if lookahead >= MIN_MATCH {
+                hash_head = insert_at(
+                    hash,
+                    &self.window,
+                    &mut self.head,
+                    &mut self.prev,
+                    &mut ins_h,
+                    strstart,
+                );
             }
 
-            if hash_head != NIL && self.strstart - hash_head as usize <= MAX_DIST {
-                self.match_length = self.longest_match(hash_head as usize);
+            if hash_head != NIL && strstart - hash_head as usize <= MAX_DIST {
+                self.strstart = strstart;
+                self.lookahead = lookahead;
+                self.match_length = match_length;
+                match_length = self.longest_match(hash_head as usize);
             }
 
             let bflush;
-            if self.match_length >= MIN_MATCH {
-                bflush = self.trees.tally_dist(
-                    self.strstart - self.match_start,
-                    self.match_length - MIN_MATCH,
-                );
-                self.lookahead -= self.match_length;
+            if match_length >= MIN_MATCH {
+                bflush = self
+                    .trees
+                    .tally_dist(strstart - self.match_start, match_length - MIN_MATCH);
+                lookahead -= match_length;
 
                 // Insert every position the match covers, unless the match is long enough that
                 // zlib judges the insertions not worth it.
-                if self.match_length <= self.config.max_lazy && self.lookahead >= MIN_MATCH {
-                    self.match_length -= 1;
+                if match_length <= max_lazy && lookahead >= MIN_MATCH {
+                    match_length -= 1;
                     loop {
-                        self.strstart += 1;
-                        self.insert_string(self.strstart);
-                        self.match_length -= 1;
-                        if self.match_length == 0 {
+                        strstart += 1;
+                        insert_at(
+                            hash,
+                            &self.window,
+                            &mut self.head,
+                            &mut self.prev,
+                            &mut ins_h,
+                            strstart,
+                        );
+                        match_length -= 1;
+                        if match_length == 0 {
                             break;
                         }
                     }
-                    self.strstart += 1;
+                    strstart += 1;
                 } else {
-                    self.strstart += self.match_length;
-                    self.match_length = 0;
+                    strstart += match_length;
+                    match_length = 0;
                     // The same priming, and Intel skips it on the same condition.
-                    if self.hash == Hash::Multiplicative {
-                        self.ins_h = self.window[self.strstart] as usize;
-                        self.update_hash(self.window[self.strstart + 1]);
+                    if hash == Hash::Multiplicative {
+                        self.ins_h = self.window[strstart] as usize;
+                        self.update_hash(self.window[strstart + 1]);
+                        ins_h = self.ins_h;
                     }
                 }
             } else {
-                bflush = self.trees.tally_lit(self.window[self.strstart]);
-                self.lookahead -= 1;
-                self.strstart += 1;
+                bflush = self.trees.tally_lit(self.window[strstart]);
+                lookahead -= 1;
+                strstart += 1;
             }
             if bflush {
+                (self.strstart, self.lookahead, self.ins_h) = (strstart, lookahead, ins_h);
+                self.match_length = match_length;
                 self.flush_block(false);
             }
         }
@@ -650,7 +753,7 @@ impl<'a> Deflater<'a> {
     /// searched twice. The lookahead is therefore about avoiding work, not about choosing better.
     ///
     /// [`Self::fizzle_matches`] runs between the two searches and can rewrite both.
-    fn deflate_medium(&mut self) {
+    fn deflate_medium(&mut self, input: &[u8]) {
         // `current` is always assigned before it is read; the initialiser only satisfies the
         // compiler, as `memset` does in the C.
         let mut current;
@@ -659,7 +762,7 @@ impl<'a> Deflater<'a> {
         loop {
             let mut hash_head: u16 = 0;
             if self.lookahead < MIN_LOOKAHEAD {
-                self.fill_window();
+                self.fill_window(input);
                 if self.lookahead == 0 {
                     break;
                 }
@@ -882,78 +985,120 @@ impl<'a> Deflater<'a> {
 
     /// Ported from zlib's `deflate_slow`, used at levels 4 to 9: hold each match for one byte to
     /// see whether the next position offers a longer one.
-    fn deflate_slow(&mut self) {
+    ///
+    /// The position and the hash live in locals and go back to `self` only around the calls that
+    /// read them there: a store through `head` or `prev` would otherwise make the compiler reload
+    /// every field of `self` at every position.
+    fn deflate_slow(&mut self, input: &[u8]) {
+        let hash = self.hash;
+        let max_lazy = self.config.max_lazy;
+        let mut strstart = self.strstart;
+        let mut lookahead = self.lookahead;
+        let mut ins_h = self.ins_h;
+        let mut match_length = self.match_length;
+        let mut match_start = self.match_start;
+        let mut match_available = self.match_available;
+        let mut prev_length;
+        let mut prev_match;
         loop {
-            if self.lookahead < MIN_LOOKAHEAD {
-                self.fill_window();
-                if self.lookahead == 0 {
+            if lookahead < MIN_LOOKAHEAD {
+                (self.strstart, self.lookahead, self.ins_h) = (strstart, lookahead, ins_h);
+                self.match_start = match_start;
+                self.fill_window(input);
+                (strstart, lookahead, ins_h) = (self.strstart, self.lookahead, self.ins_h);
+                match_start = self.match_start;
+                if lookahead == 0 {
                     break;
                 }
             }
 
             let mut hash_head = NIL;
-            if self.lookahead >= MIN_MATCH {
-                hash_head = self.insert_string(self.strstart);
+            if lookahead >= MIN_MATCH {
+                hash_head = insert_at(
+                    hash,
+                    &self.window,
+                    &mut self.head,
+                    &mut self.prev,
+                    &mut ins_h,
+                    strstart,
+                );
             }
 
-            self.prev_length = self.match_length;
-            self.prev_match = self.match_start;
-            self.match_length = MIN_MATCH - 1;
+            prev_length = match_length;
+            prev_match = match_start;
+            match_length = MIN_MATCH - 1;
 
             if hash_head != NIL
-                && self.prev_length < self.config.max_lazy
-                && self.strstart - hash_head as usize <= MAX_DIST
+                && prev_length < max_lazy
+                && strstart - hash_head as usize <= MAX_DIST
             {
-                self.match_length = self.longest_match(hash_head as usize);
+                self.prev_length = prev_length;
+                self.strstart = strstart;
+                self.lookahead = lookahead;
+                self.match_start = match_start;
+                match_length = self.longest_match(hash_head as usize);
+                match_start = self.match_start;
                 // A three-byte match from far away costs more to encode than three literals.
-                if self.match_length <= 5
-                    && self.match_length == MIN_MATCH
-                    && self.strstart - self.match_start > TOO_FAR
+                if match_length <= 5
+                    && match_length == MIN_MATCH
+                    && strstart - match_start > TOO_FAR
                 {
-                    self.match_length = MIN_MATCH - 1;
+                    match_length = MIN_MATCH - 1;
                 }
             }
 
-            if self.prev_length >= MIN_MATCH && self.match_length <= self.prev_length {
-                let max_insert = self.strstart + self.lookahead - MIN_MATCH;
-                let bflush = self.trees.tally_dist(
-                    self.strstart - 1 - self.prev_match,
-                    self.prev_length - MIN_MATCH,
-                );
+            if prev_length >= MIN_MATCH && match_length <= prev_length {
+                let max_insert = strstart + lookahead - MIN_MATCH;
+                let bflush = self
+                    .trees
+                    .tally_dist(strstart - 1 - prev_match, prev_length - MIN_MATCH);
 
-                self.lookahead -= self.prev_length - 1;
-                self.prev_length -= 2;
+                lookahead -= prev_length - 1;
+                prev_length -= 2;
                 loop {
-                    self.strstart += 1;
-                    if self.strstart <= max_insert {
-                        self.insert_string(self.strstart);
+                    strstart += 1;
+                    if strstart <= max_insert {
+                        insert_at(
+                            hash,
+                            &self.window,
+                            &mut self.head,
+                            &mut self.prev,
+                            &mut ins_h,
+                            strstart,
+                        );
                     }
-                    self.prev_length -= 1;
-                    if self.prev_length == 0 {
+                    prev_length -= 1;
+                    if prev_length == 0 {
                         break;
                     }
                 }
-                self.match_available = false;
-                self.match_length = MIN_MATCH - 1;
-                self.strstart += 1;
+                match_available = false;
+                match_length = MIN_MATCH - 1;
+                strstart += 1;
                 if bflush {
+                    self.strstart = strstart;
                     self.flush_block(false);
                 }
-            } else if self.match_available {
+            } else if match_available {
                 // The previous byte was held back and has now lost: emit it as a literal.
-                let bflush = self.trees.tally_lit(self.window[self.strstart - 1]);
+                let bflush = self
+                    .trees
+                    .tally_lit(self.window[(strstart - 1) & WINDOW_INDEX]);
                 if bflush {
+                    self.strstart = strstart;
                     self.flush_block(false);
                 }
-                self.strstart += 1;
-                self.lookahead -= 1;
+                strstart += 1;
+                lookahead -= 1;
             } else {
-                self.match_available = true;
-                self.strstart += 1;
-                self.lookahead -= 1;
+                match_available = true;
+                strstart += 1;
+                lookahead -= 1;
             }
         }
-        if self.match_available {
+        (self.strstart, self.lookahead, self.ins_h) = (strstart, lookahead, ins_h);
+        (self.match_length, self.match_start) = (match_length, match_start);
+        if match_available {
             self.trees.tally_lit(self.window[self.strstart - 1]);
             self.match_available = false;
         }

@@ -75,6 +75,11 @@ const CASES: &[(&str, &str, Which)] = &[
     ("ft-pass", "GT:FT\t0/1:PASS\t1/1:LowQual", Which::Two),
     ("ft-missing", "GT:FT\t0/1:.\t1/1:PASS", Which::Two),
     ("ft-two", "GT:FT\t0/1:LowQual;q10\t1/1:PASS", Which::Two),
+    (
+        "ft-unsorted",
+        "GT:FT\t0/1:LowQD;LowGQ\t1/1:q10;PASS;LowQual",
+        Which::Two,
+    ),
     ("extended-key", "GT:XX\t0/1:hello\t1/1:world", Which::Two),
     ("no-gt", "GQ\t99\t50", Which::Two),
     ("gt-not-first", "GQ:GT\t99:0/1\t50:1/1", Which::Two),
@@ -142,11 +147,11 @@ fn render(label: &str, genotype: &Genotype) -> String {
         .map_or_else(|| "none".to_string(), |value| value.to_string());
     let ad = ints(genotype.ad.as_deref());
     let pl = ints(genotype.pl.as_deref());
-    // An empty filter list is `PASS`, which the accessor reports as no filters at all.
-    let filters = match genotype.filters.as_deref() {
-        None | Some("") => "unfiltered".to_string(),
-        Some(text) => text.to_string(),
-    };
+    // `PASS` is no filters at all (`filters(emptyList)` is null), so `Some("")` must not occur.
+    let filters = genotype
+        .filters
+        .clone()
+        .unwrap_or_else(|| "unfiltered".to_string());
     let mut extended: Vec<String> = genotype
         .extended
         .iter()

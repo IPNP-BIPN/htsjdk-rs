@@ -28,7 +28,7 @@ fn has(rec: &BamRecord, bit: u16) -> bool {
 
 /// `SAMRecord.getIntegerAttribute(SAMTag.HI)`.
 fn hit_index(rec: &BamRecord) -> Option<i64> {
-    match rec.tags.get(Tag::new(b"HI")) {
+    match rec.tags.find(Tag::new(b"HI")).as_deref() {
         Some(TagValue::Int(v)) => Some(*v),
         _ => None,
     }

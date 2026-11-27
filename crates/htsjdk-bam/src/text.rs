@@ -22,6 +22,8 @@
 //! That is worth knowing before anyone tries to "round-trip" a BAM through SAM and compare
 //! bytes: it works, but only because the ladder is deterministic.
 
+use std::fmt::Write as _;
+
 use crate::record::BamRecord;
 use crate::tag::{Tag, TagValue};
 
@@ -37,6 +39,27 @@ const FIELD_SEPARATOR: char = '\t';
 /// `SAMUtils.phredToFastq`: Phred plus 33.
 pub fn phred_to_fastq(quals: &[u8]) -> String {
     quals.iter().map(|&q| (q + 33) as char).collect()
+}
+
+/// [`encode_tag`] onto the end of `out`, with no string of its own for the two kinds most tags are.
+fn push_tag(out: &mut String, tag: Tag, value: &TagValue) -> Option<()> {
+    let [first, second] = tag.name();
+    match value {
+        TagValue::Str(text) => {
+            out.push(first as char);
+            out.push(second as char);
+            out.push_str(":Z:");
+            out.push_str(text);
+        }
+        TagValue::Int(v) if (i32::MIN as i64..=u32::MAX as i64).contains(v) => {
+            out.push(first as char);
+            out.push(second as char);
+            out.push_str(":i:");
+            write!(out, "{v}").expect("a String takes any text");
+        }
+        _ => out.push_str(&encode_tag(tag, value)?),
+    }
+    Some(())
 }
 
 /// `TextTagCodec.encode`, the text form of one tag.
@@ -128,6 +151,22 @@ pub fn java_float_to_string(f: f32) -> String {
     jmath::to_string::float_to_string(f)
 }
 
+/// `SAMRecord.toString()`: the record's SAM line, its reference indices resolved against `names`.
+pub fn sam_string(rec: &BamRecord, names: &[String]) -> String {
+    let name_of = |index: i32| {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| names.get(i))
+            .map_or(NO_ALIGNMENT_REFERENCE_NAME, |n| n.as_str())
+    };
+    write_alignment(
+        rec,
+        name_of(rec.reference_index),
+        name_of(rec.mate_reference_index),
+    )
+    .unwrap_or_default()
+}
+
 /// `SAMTextWriter.writeAlignment`, without the trailing newline.
 ///
 /// `reference_name` and `mate_reference_name` are resolved by the caller from the header, since
@@ -174,9 +213,9 @@ pub fn write_alignment(
     } else {
         out.push_str(&phred_to_fastq(&rec.base_qualities));
     }
-    for (tag, value) in rec.tags.iter() {
+    for (tag, value) in rec.tags.decoded().iter() {
         out.push(FIELD_SEPARATOR);
-        out.push_str(&encode_tag(*tag, value)?);
+        push_tag(&mut out, *tag, value)?;
     }
     Some(out)
 }

@@ -1,5 +1,6 @@
 //! `FastMath.log`, ported from `org.apache.commons.math3.util.FastMath` (commons-math3 3.5),
-//! which is Apache 2.0. See `docs/decisions/0023-commons-math3-is-portable-where-the-jdk-is-not.md`.
+//! which is Apache 2.0. See
+//! `docs/decisions/0023-commons-math3-is-portable-where-the-jdk-is-not.md`.
 //!
 //! The logarithm eleven call sites in `Gamma`, `Erf` and `NormalDistribution` reach, and therefore
 //! what GATK's `MannWhitneyU` and every rank-sum annotation stand on. It is **not**
@@ -35,6 +36,29 @@
 //! The six terms are added smallest-last through a running compensation (`c = a + t;
 //! d = -(c - a - t)`), with a comment listing each term's magnitude range. Reassociating that sum
 //! is not an optimisation; it is a different function.
+//!
+//! # Why not the host's `f64::ln`
+//!
+//! `FastMath.log` is not correctly rounded, so no other implementation reproduces it by being
+//! accurate: only the same table (`LN_MANT`, generated into [`crate::fast_math_tables`]), the same
+//! polynomials and the same order of additions do. `tests/fastmath_exp.rs` checks every `log` row
+//! of the 3.5 golden and every `FastMath` `log` point of `jmath.csv` bit for bit.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `x.to_bits() as i64` is `Double.doubleToRawLongBits(x)`: `to_bits` gives the bits as an
+//!   unsigned `u64`, and `as i64` reinterprets them as Java's signed `long`. A literal such as
+//!   `0x8000000000000000u64 as i64` is written that way because Rust rejects a hexadecimal `i64`
+//!   literal above `i64::MAX`, where Java's `0x8000000000000000L` is simply negative;
+//! - `bits <<= 1` on an `i64` discards the bits shifted out, as Java's `<<` does;
+//! - `Option<&mut [f64; 2]>` is the nullable `double[] hiPrec` (`None` is `null`);
+//!   `hi_prec.is_none()` is `hiPrec == null`, `if let Some(hi) = hi_prec.as_deref_mut()` is
+//!   `if (hiPrec != null)` with `hi` the array, borrowed for that block only;
+//! - `COEF.iter().rev().skip(1)` walks a coefficient table from its second-to-last row down to
+//!   row 0, the Java `for (int i = COEF.length - 2; i >= 0; i--)`;
+//! - `exp as f64` converts the `int` exponent to `double` exactly, Java's implicit widening;
+//! - `|a: &mut f64, b: &mut f64, term: f64| { .. }` is a closure (a lambda) that updates two
+//!   variables of the caller through writable references; `*a` reads or writes what `a` points to.
 
 #![allow(clippy::excessive_precision)]
 
@@ -83,6 +107,7 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
     }
     let mut bits = x.to_bits() as i64;
 
+    // Negative (sign bit set, which includes -0.0 but that returned above) or NaN.
     if (bits & (0x8000000000000000u64 as i64) != 0 || x.is_nan()) && x != 0.0 {
         if let Some(hi) = hi_prec.as_deref_mut() {
             hi[0] = f64::NAN;
@@ -97,6 +122,7 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
         return f64::INFINITY;
     }
 
+    // The sign bit is clear here, so the shift leaves the biased exponent alone.
     let mut exp = ((bits >> 52) - 1023) as i32;
 
     if bits & 0x7ff0000000000000 == 0 {
@@ -147,6 +173,8 @@ pub fn log_with_hi_prec(x: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
         return ya + yb;
     }
 
+    // The top ten mantissa bits index the 1,024-entry `LN_MANT` table; `epsilon` is the rest of
+    // the mantissa relative to that entry's value, the argument of the polynomial below.
     let mantissa_index = ((bits & 0x000ffc0000000000) >> 42) as usize;
     let lnm = [
         f64::from_bits(LN_MANT_A[mantissa_index]),

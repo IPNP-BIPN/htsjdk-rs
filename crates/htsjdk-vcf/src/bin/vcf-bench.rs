@@ -24,7 +24,7 @@ static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::path::{Path, PathBuf};
 
-use htsjdk_vcf::reader::{read_vcf, VcfFile};
+use htsjdk_vcf::reader::{read_vcf_with, GenotypeParsing, VcfFile};
 use htsjdk_vcf::vcf_file::write_vcf;
 
 fn corpus_text(records: usize, samples: usize) -> String {
@@ -142,7 +142,13 @@ fn main() {
 }
 
 fn read(path: &Path, decode: bool) -> VcfFile {
-    let file = read_vcf(&std::fs::read_to_string(path).expect("reads")).expect("parses");
+    // Deferred, as htsjdk reads: the genotype columns are parsed when something first looks
+    // (decision 0048), so the lazy row parses none and the decoded row parses on `first()`.
+    let file = read_vcf_with(
+        &std::fs::read_to_string(path).expect("reads"),
+        GenotypeParsing::Deferred,
+    )
+    .expect("parses");
     if decode {
         for record in &file.records {
             let _ = record.genotypes.first();

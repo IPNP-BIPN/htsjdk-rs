@@ -6,9 +6,11 @@
 //! - `src/main/java/htsjdk/samtools/util/BlockCompressedOutputStream.java`
 //!   (`deflateBlock`, `writeGzipBlock`, `flush`, `close`)
 //!
-//! The deflate backend must be zlib, never miniz_oxide. See
-//! `docs/decisions/0001-deflate-backend.md`.
+//! The deflate bytes must be zlib's, never miniz_oxide's. See
+//! `docs/decisions/0001-deflate-backend.md`. They are produced by `gkl-deflate`'s port of zlib and
+//! checked against the C library; see `docs/decisions/0049-zlibs-bytes-without-zlibs-cycles.md`.
 
+mod inflate;
 pub mod read;
 pub mod termination;
 pub mod vfp;
@@ -17,6 +19,13 @@ mod write;
 pub use read::{decompress_all, BgzfError, BgzfReader, DecompressedBlock};
 pub use termination::{check_termination, FileTermination};
 pub use write::{BgzfWriter, Deflater};
+
+/// A gzip member's CRC-32, by libdeflate, which picks PCLMULQDQ/VPCLMULQDQ or the ARMv8 CRC and
+/// PMULL instructions at run time. A checksum has one answer, so where it comes from moves no byte.
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
+    // SAFETY: the pointer and length are a live slice's; libdeflate only reads them.
+    unsafe { libdeflate_sys::libdeflate_crc32(0, bytes.as_ptr().cast(), bytes.len()) }
+}
 
 // Constants transcribed from BlockCompressedStreamConstants.
 pub const BLOCK_HEADER_LENGTH: usize = 18;

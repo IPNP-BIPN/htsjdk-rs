@@ -293,21 +293,34 @@ fn every_accessor_answers_as_the_reference_answers() {
         produced.len(),
         golden.len()
     );
+    // htsjdk 6.0.0 (#1849, #1899), taken by this port: a missing value gives the numeric
+    // accessors' default where 5.0.0 threw. Those golden rows are 5.0.0's crash; the defaults
+    // themselves are pinned in `attributes::tests`. See docs/htsjdk-upstream.md.
+    let mut lifted = 0;
     for (index, (mine, theirs)) in produced.iter().zip(golden.iter()).enumerate() {
+        if theirs.starts_with("as\t")
+            && theirs.ends_with("E:java.lang.NumberFormatException:For input string: \".\"")
+        {
+            assert!(!mine.contains("\tE:"), "row {index}: {mine}");
+            lifted += 1;
+            continue;
+        }
         assert_eq!(mine, theirs, "row {index}");
     }
+    assert_eq!(lifted, 12, "5.0.0 crashes on a missing value");
 }
 
-/// Stated on its own, because it is the reason [`Value::Missing`] exists as a variant distinct from
-/// `Value::Str(".")` and a port that collapsed them would pass every other suite.
+/// Stated on its own. [`Value::Missing`] and `Value::Str(".")` differed for `asInt` in 5.0.0; since
+/// htsjdk 6.0.0's fix is taken they differ for no accessor, and still render alike.
 #[test]
-fn the_three_spellings_of_missing_are_two_behaviours() {
+fn the_three_spellings_of_missing_are_one_behaviour() {
     let dot = record("I1=.");
     let empty = record("I1=");
     let bare = record("I1");
 
     let value = |vc: &VariantContext| vc.attributes.first().map(|(_, value)| value.clone());
-    assert!(as_int(value(&dot).as_ref(), -1).is_err());
+    // 5.0.0 threw here; htsjdk 6.0.0's default is taken (#1849).
+    assert_eq!(as_int(value(&dot).as_ref(), -1), Ok(-1));
     assert_eq!(as_int(value(&empty).as_ref(), -1), Ok(-1));
     assert_eq!(as_int(value(&bare).as_ref(), -1), Ok(-1));
 

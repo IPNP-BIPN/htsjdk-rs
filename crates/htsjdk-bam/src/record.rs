@@ -236,15 +236,27 @@ impl BamRecord {
             )
         };
 
-        // `getReadNameLength()` is the character count; the +1 is the null terminator.
-        let read_name_len = self.read_name.encode_utf16().count();
+        // `getReadNameLength()` is the character count; the +1 is the null terminator. An ASCII
+        // name, which is every aligner's, has as many UTF-16 units as bytes.
+        let ascii_name = self.read_name.is_ascii();
+        let read_name_len = if ascii_name {
+            self.read_name.len()
+        } else {
+            self.read_name.encode_utf16().count()
+        };
         let mut block_size = FIXED_BLOCK_SIZE
             + read_name_len
             + 1
             + cigar_to_write.num_elements() * CIGAR_SIZE_MULTIPLIER
             + read_length.div_ceil(2) // 2 bases per byte, round up
             + read_length;
-        block_size += tags.binary_size()?;
+        // A kept block is measured as read instead of by making its list. If the prefix no longer
+        // matches, the list is written and the length patched below, as the kept block's is.
+        let raw_len = tags.raw_len();
+        block_size += match raw_len {
+            Some(len) => len,
+            None => tags.binary_size()?,
+        };
 
         // The sentinel has the same reference length as the real CIGAR, so displacing a long
         // CIGAR does not move the bin.
@@ -283,7 +295,11 @@ impl BamRecord {
             });
         }
 
-        out.extend(self.read_name.encode_utf16().map(|u| (u & 0xFF) as u8));
+        if ascii_name {
+            out.extend_from_slice(self.read_name.as_bytes());
+        } else {
+            out.extend(self.read_name.encode_utf16().map(|u| (u & 0xFF) as u8));
+        }
         out.push(0);
         // Straight into the buffer: `encode()` and `bytes_to_compressed_bases` each allocated a
         // `Vec` per record for bytes that are written and dropped in the same breath.
@@ -307,11 +323,12 @@ impl BamRecord {
             }
             None => {
                 tags.write(out)?;
-                debug_assert_eq!(
-                    out.len() - start,
-                    4 + block_size,
+                let written = out.len() - start - 4;
+                debug_assert!(
+                    raw_len.is_some() || written == block_size,
                     "block_size must describe the bytes actually written"
                 );
+                out[start..start + 4].copy_from_slice(&(written as i32).to_le_bytes());
             }
         }
         Ok(())
@@ -410,12 +427,8 @@ impl BamRecord {
         };
         p += read_len;
 
-        let (mut tags, canonical) = Tags::read_checked(&input[p..total])
+        let tags = Tags::read_lazily(&input[p..total], &input[4 + FIXED_BLOCK_SIZE..p])
             .map_err(|error| DecodeError::MalformedTags(error.to_string()))?;
-        if !canonical {
-            let prefix = &input[4 + FIXED_BLOCK_SIZE..p];
-            tags.keep_raw(&input[p..total], crate::tag::prefix_hash(prefix));
-        }
 
         Ok(Some((
             BamRecord {

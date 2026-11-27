@@ -249,10 +249,11 @@ pub struct Trees {
     pub sym_next: usize,
     pub sym_end: usize,
 
-    bi_buf: u32,
-    /// Signed, because zlib's `bi_valid += length - Buf_size` is a negative step in the flushing
-    /// branch. Unsigned here would underflow where the C simply subtracts.
-    bi_valid: i32,
+    /// Bits not yet written, low end first. zlib holds 16 and flushes two bytes at a time; the
+    /// stream is the same sequence of bits however many are held back.
+    bi_buf: u64,
+    bi_valid: u32,
+    tables: &'static Tables,
 
     /// zlib keeps this inside the tree descriptor. Here it is one field, written by `gen_bitlen`
     /// and read by `gen_codes` immediately afterwards.
@@ -280,9 +281,17 @@ impl Trees {
             bi_buf: 0,
             bi_valid: 0,
             bl_count: [0; MAX_BITS + 1],
+            tables: &TABLES,
         };
         trees.init_block();
         trees
+    }
+
+    /// Back to the state [`Self::new`] answers, keeping the allocation.
+    pub fn reset(&mut self) {
+        self.init_block();
+        self.bi_buf = 0;
+        self.bi_valid = 0;
     }
 
     fn init_block(&mut self) {
@@ -302,10 +311,17 @@ impl Trees {
     }
 
     /// Record a literal. Returns true when the symbol buffer is full and the block must be closed.
+    #[inline(always)]
     pub fn tally_lit(&mut self, c: u8) -> bool {
-        self.sym_buf[self.sym_next] = 0;
-        self.sym_buf[self.sym_next + 1] = 0;
-        self.sym_buf[self.sym_next + 2] = c;
+        debug_assert!(self.sym_next + 3 <= self.sym_buf.len());
+        // SAFETY: a block closes when `sym_next` reaches `sym_end`, three bytes short of the
+        // buffer's end, so three more bytes always fit.
+        unsafe {
+            let at = self.sym_buf.as_mut_ptr().add(self.sym_next);
+            *at = 0;
+            *at.add(1) = 0;
+            *at.add(2) = c;
+        }
         self.sym_next += 3;
         self.dyn_ltree[c as usize].freq += 1;
         self.sym_next == self.sym_end
@@ -313,19 +329,27 @@ impl Trees {
 
     /// Record a match of `len` bytes at `dist` back. `len` arrives already reduced by MIN_MATCH,
     /// as zlib's `_tr_tally_dist` expects.
+    #[inline(always)]
     pub fn tally_dist(&mut self, dist: usize, len: usize) -> bool {
-        self.sym_buf[self.sym_next] = dist as u8;
-        self.sym_buf[self.sym_next + 1] = (dist >> 8) as u8;
-        self.sym_buf[self.sym_next + 2] = len as u8;
+        debug_assert!(self.sym_next + 3 <= self.sym_buf.len());
+        // SAFETY: as in `tally_lit`.
+        unsafe {
+            let at = self.sym_buf.as_mut_ptr().add(self.sym_next);
+            *at = dist as u8;
+            *at.add(1) = (dist >> 8) as u8;
+            *at.add(2) = len as u8;
+        }
         self.sym_next += 3;
         let dist = dist - 1;
-        self.dyn_ltree[TABLES.length_code[len] as usize + LITERALS + 1].freq += 1;
-        self.dyn_dtree[TABLES.d_code(dist)].freq += 1;
+        let tables = self.tables;
+        self.dyn_ltree[tables.length_code[len & 0xff] as usize + LITERALS + 1].freq += 1;
+        self.dyn_dtree[tables.d_code(dist)].freq += 1;
         self.sym_next == self.sym_end
     }
 
     /// Ported from zlib's `pqdownheap`. Ties are broken by `depth`, which is what keeps two trees
     /// with the same frequencies from coming out differently.
+    #[inline(always)]
     fn pqdownheap(&mut self, which: Which, mut k: usize) {
         let v = self.heap[k];
         let mut j = k << 1;
@@ -349,6 +373,9 @@ impl Trees {
             || (tree[n].freq == tree[m].freq && self.depth[n] <= self.depth[m])
     }
 
+    #[inline(always)]
+    // Inlined all the way down, so that each of `build_tree`'s three calls knows its tree and these
+    // `match`es stop being paid for at every node.
     fn tree(&self, which: Which) -> &[Node] {
         match which {
             Which::Literal => &self.dyn_ltree,
@@ -357,6 +384,7 @@ impl Trees {
         }
     }
 
+    #[inline(always)]
     fn tree_mut(&mut self, which: Which) -> &mut [Node] {
         match which {
             Which::Literal => &mut self.dyn_ltree,
@@ -367,6 +395,7 @@ impl Trees {
 
     /// Ported from zlib's `build_tree`: build the Huffman tree, then its code lengths, then its
     /// codes, and leave `opt_len` and `static_len` updated so the caller can pick a block type.
+    #[inline(always)]
     fn build_tree(&mut self, which: Which) {
         let kind = which.kind();
         let elems = which.elems();
@@ -449,6 +478,7 @@ impl Trees {
     /// Ported from zlib's `gen_bitlen`. The overflow loop at the end is the part worth reading: a
     /// Huffman tree can be deeper than `max_length`, and deflate cannot express that, so the tree
     /// is flattened by moving leaves up one level at a time.
+    #[inline(always)]
     fn gen_bitlen(&mut self, which: Which, kind: Kind, max_code: usize) {
         let mut bl_count = [0u16; MAX_BITS + 1];
         let max_length = kind.max_length();
@@ -523,11 +553,14 @@ impl Trees {
 
     /// Ported from zlib's `scan_tree`: count the runs the bit length alphabet will encode.
     fn scan_tree(&mut self, which: Which, max_code: usize) {
-        let mut tree: Vec<Node> = self.tree(which)[..max_code + 2].to_vec();
+        let mut lens = [0u16; L_CODES + 2];
+        for (len, node) in lens.iter_mut().zip(&self.tree(which)[..=max_code]) {
+            *len = node.len;
+        }
         // zlib's guard: a length no real code can have, so the last run always closes.
-        tree[max_code + 1].len = 0xffff;
+        lens[max_code + 1] = 0xffff;
         let mut prevlen: isize = -1;
-        let mut nextlen = tree[0].len as usize;
+        let mut nextlen = lens[0] as usize;
         let mut count = 0;
         let mut max_count = 7;
         let mut min_count = 4;
@@ -540,7 +573,7 @@ impl Trees {
 
         for n in 0..=max_code {
             curlen = nextlen;
-            nextlen = tree[n + 1].len as usize;
+            nextlen = lens[n + 1] as usize;
             count += 1;
             if count < max_count && curlen == nextlen {
                 continue;
@@ -574,11 +607,14 @@ impl Trees {
     /// Ported from zlib's `send_tree`, the emitting twin of `scan_tree`. The two must walk the
     /// tree identically or the header describes a different tree from the one that follows.
     fn send_tree(&mut self, out: &mut Vec<u8>, which: Which, max_code: usize) {
-        let mut tree: Vec<Node> = self.tree(which)[..max_code + 2].to_vec();
-        tree[max_code + 1].len = 0xffff;
+        let mut lens = [0u16; L_CODES + 2];
+        for (len, node) in lens.iter_mut().zip(&self.tree(which)[..=max_code]) {
+            *len = node.len;
+        }
+        lens[max_code + 1] = 0xffff;
         let bl_tree = self.bl_tree;
         let mut prevlen: isize = -1;
-        let mut nextlen = tree[0].len as usize;
+        let mut nextlen = lens[0] as usize;
         let mut count = 0;
         let mut max_count = 7;
         let mut min_count = 4;
@@ -589,7 +625,7 @@ impl Trees {
 
         for n in 0..=max_code {
             let curlen = nextlen;
-            nextlen = tree[n + 1].len as usize;
+            nextlen = lens[n + 1] as usize;
             count += 1;
             if count < max_count && curlen == nextlen {
                 continue;
@@ -663,65 +699,91 @@ impl Trees {
         self.send_bits(out, tree[c].code as u32, tree[c].len as u32);
     }
 
-    /// Ported from zlib's `send_bits`. Bits accumulate low-end first in a 16-bit window, and are
-    /// flushed a whole `u16` at a time, little-endian.
+    /// Ported from zlib's `send_bits`: bits accumulate low end first, and whole bytes leave.
     #[inline]
     fn send_bits(&mut self, out: &mut Vec<u8>, value: u32, length: u32) {
-        const BUF_SIZE: i32 = 16;
-        let length = length as i32;
-        if self.bi_valid > BUF_SIZE - length {
-            self.bi_buf |= (value << self.bi_valid) & 0xffff;
-            out.push(self.bi_buf as u8);
-            out.push((self.bi_buf >> 8) as u8);
-            self.bi_buf = (value & 0xffff) >> (BUF_SIZE - self.bi_valid);
-            self.bi_valid += length - BUF_SIZE;
-        } else {
-            self.bi_buf |= (value << self.bi_valid) & 0xffff;
-            self.bi_valid += length;
+        self.bi_buf |= (value as u64) << self.bi_valid;
+        self.bi_valid += length;
+        if self.bi_valid >= 32 {
+            out.extend_from_slice(&(self.bi_buf as u32).to_le_bytes());
+            self.bi_buf >>= 32;
+            self.bi_valid -= 32;
         }
     }
 
     /// Flush whatever bits remain and align to a byte boundary.
     fn bi_windup(&mut self, out: &mut Vec<u8>) {
-        if self.bi_valid > 8 {
-            out.push(self.bi_buf as u8);
-            out.push((self.bi_buf >> 8) as u8);
-        } else if self.bi_valid > 0 {
-            out.push(self.bi_buf as u8);
-        }
+        let bytes = self.bi_valid.div_ceil(8) as usize;
+        out.extend_from_slice(&self.bi_buf.to_le_bytes()[..bytes]);
         self.bi_buf = 0;
         self.bi_valid = 0;
     }
 
     /// Ported from zlib's `compress_block`: replay the symbol buffer through a pair of trees.
-    fn compress_block(&mut self, out: &mut Vec<u8>, ltree: &[Node], dtree: &[Node]) {
-        if self.sym_next != 0 {
-            let mut sx = 0;
-            while sx < self.sym_next {
-                let mut dist = self.sym_buf[sx] as usize;
-                dist += (self.sym_buf[sx + 1] as usize) << 8;
-                let lc = self.sym_buf[sx + 2] as usize;
-                sx += 3;
-                if dist == 0 {
-                    self.send_code(out, lc, ltree);
-                } else {
-                    let code = TABLES.length_code[lc] as usize;
-                    self.send_code(out, code + LITERALS + 1, ltree);
-                    let extra = EXTRA_LBITS[code] as u32;
-                    if extra != 0 {
-                        self.send_bits(out, (lc - TABLES.base_length[code] as usize) as u32, extra);
-                    }
-                    let dist = dist - 1;
-                    let code = TABLES.d_code(dist);
-                    self.send_code(out, code, dtree);
-                    let extra = EXTRA_DBITS[code] as u32;
-                    if extra != 0 {
-                        self.send_bits(out, (dist - TABLES.base_dist[code] as usize) as u32, extra);
-                    }
-                }
-            }
+    ///
+    /// One symbol is at most 48 bits, 15 + 5 + 15 + 13, so eight bytes are written per symbol with
+    /// fewer than 8 bits held over, and only the whole bytes among them are kept.
+    fn compress_block(&mut self, out: &mut Vec<u8>, trees: BlockTrees) {
+        let (ltree, dtree) = match trees {
+            BlockTrees::Static => (&self.tables.static_ltree[..], &self.tables.static_dtree[..]),
+            BlockTrees::Dynamic => (&self.dyn_ltree[..], &self.dyn_dtree[..]),
+        };
+        // Every code below is below its tree's length: `lc` and the length code index a table of
+        // 256 and 29, and the distance code is at most 29.
+        let symbols = self.sym_next / 3;
+        out.reserve(symbols * 6 + 32);
+        let mut buf = self.bi_buf;
+        let mut valid = self.bi_valid;
+        // Fewer than 8 held over, as the loop assumes.
+        while valid >= 8 {
+            out.push(buf as u8);
+            buf >>= 8;
+            valid -= 8;
         }
-        self.send_code(out, END_BLOCK, ltree);
+        let tables = self.tables;
+        let mut len = out.len();
+        // SAFETY: `reserve` above holds six bytes per symbol and 32 over; each symbol advances `at`
+        // by at most six and writes eight, inside the slack; `set_len` covers exactly what the
+        // loop advanced over, every byte of which has been written.
+        unsafe {
+            let base = out.as_mut_ptr();
+            for sym in self.sym_buf[..self.sym_next].as_chunks::<3>().0 {
+                let dist = sym[0] as usize | (sym[1] as usize) << 8;
+                let lc = sym[2] as usize;
+                if dist == 0 {
+                    let node = ltree.get_unchecked(lc);
+                    buf |= (node.code as u64) << valid;
+                    valid += node.len as u32;
+                } else {
+                    let code = tables.length_code[lc] as usize;
+                    let node = ltree.get_unchecked(code + LITERALS + 1);
+                    buf |= (node.code as u64) << valid;
+                    valid += node.len as u32;
+                    let extra = EXTRA_LBITS[code] as u32;
+                    // Masked for the one code with no extra bits and no base, a match of 258.
+                    let rest = (lc - tables.base_length[code] as usize) as u64;
+                    buf |= (rest & ((1 << extra) - 1)) << valid;
+                    valid += extra;
+                    let dist = dist - 1;
+                    let code = tables.d_code(dist);
+                    let node = dtree.get_unchecked(code);
+                    buf |= (node.code as u64) << valid;
+                    valid += node.len as u32;
+                    let extra = EXTRA_DBITS[code] as u32;
+                    buf |= ((dist - tables.base_dist[code] as usize) as u64) << valid;
+                    valid += extra;
+                }
+                base.add(len).cast::<u64>().write_unaligned(buf.to_le());
+                len += (valid / 8) as usize;
+                buf >>= valid & !7;
+                valid &= 7;
+            }
+            out.set_len(len);
+        }
+        self.bi_buf = buf;
+        self.bi_valid = valid;
+        let end = ltree[END_BLOCK];
+        self.send_bits(out, end.code as u32, end.len as u32);
     }
 
     /// Ported from zlib's `_tr_stored_block`.
@@ -757,20 +819,25 @@ impl Trees {
             self.stored_block(out, buf, last);
         } else if static_lenb == opt_lenb {
             self.send_bits(out, (STATIC_TREES << 1) + last as u32, 3);
-            let (ltree, dtree) = (TABLES.static_ltree, TABLES.static_dtree);
-            self.compress_block(out, &ltree, &dtree);
+            self.compress_block(out, BlockTrees::Static);
         } else {
             self.send_bits(out, (DYN_TREES << 1) + last as u32, 3);
             let (l, d, b) = (self.l_max_code + 1, self.d_max_code + 1, max_blindex + 1);
             self.send_all_trees(out, l, d, b);
-            let (ltree, dtree) = (self.dyn_ltree, self.dyn_dtree);
-            self.compress_block(out, &ltree, &dtree);
+            self.compress_block(out, BlockTrees::Dynamic);
         }
         self.init_block();
         if last {
             self.bi_windup(out);
         }
     }
+}
+
+/// Which pair of trees a block is sent with.
+#[derive(Clone, Copy)]
+enum BlockTrees {
+    Static,
+    Dynamic,
 }
 
 /// Which of the three trees a call is about.
