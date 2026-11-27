@@ -17,12 +17,12 @@
 //!
 //! `Math.pow` is the one intrinsic decision 0007 deferred, and the reason was specific: HotSpot's
 //! `pow` uses `rcpps`, the packed approximate reciprocal, at six sites, and unlike `log` it does
-//! not refine the approximation away. The hazard that raised — that `pow`'s bits might depend on
-//! the silicon — was tested and did not materialise: 404,883 points regenerated on real AMD EPYC
+//! not refine the approximation away. The hazard that raised (that `pow`'s bits might depend on
+//! the silicon) was tested and did not materialise: 404,883 points regenerated on real AMD EPYC
 //! matched the emulated corpus exactly.
 //!
-//! What was never produced is a **bound**. The record holds a rate — 99.9378% agreement with the
-//! host libm, against `exp`'s 99.9711% — and a rate says how often, not how far. Decision 0025 did
+//! What was never produced is a **bound**. The record holds a rate (99.9378% agreement with the
+//! host libm, against `exp`'s 99.9711%), and a rate says how often, not how far. Decision 0025 did
 //! for `exp` exactly what this file exists to make possible for `pow`: port the permissively
 //! licensed implementation, then measure the distance to the intrinsic rather than assume it.
 //!
@@ -61,9 +61,32 @@
 //! `(anything)**0` is `1` including `NaN**0`; `(+-1)**(+-Inf)` is `NaN` rather than `1`;
 //! `(-anything)**(non-integer)` is `NaN` while `(-anything)**(integer)` carries the sign of
 //! `(-1)**integer`. Each is transcribed rather than derived, and [`pow`]'s tests walk them.
+//!
+//! # Measured
+//!
+//! Decision 0027: `strict_pow_is_strictmath` in `tests/conformance.rs` matches `StrictMath.pow`
+//! on all 404,964 corpus points, and against `Math.pow` this port's worst divergence is 1 ulp
+//! (at `pow(2, -0.5)`). The host's `f64::powf` is not used because it is the platform libm, which
+//! is neither FDLIBM nor fixed across hosts.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `x.to_bits()` is `Double.doubleToRawLongBits(x)` as an unsigned `u64`, and `f64::from_bits`
+//!   is `Double.longBitsToDouble`; `high`, `low`, `with_high` and `clear_low` below are the C's
+//!   `__HI`/`__LO` word access built from them;
+//! - `as` between integer types keeps the low bits: `u32 as i32` reinterprets the sign bit, which
+//!   is how `hx` and `hy` come out negative for a negative argument, as in the C;
+//! - `>>` on `i32` is arithmetic (Java's `>>`), on `u32` logical (Java's `>>>`). `hx >> 31` is
+//!   therefore 0 or -1;
+//! - `wrapping_sub` subtracts modulo 2^32, the C's `unsigned` arithmetic; Rust's plain `-` would
+//!   panic on overflow in a debug build;
+//! - `let (t1, t2);` declares two variables that each branch below assigns exactly once, which
+//!   the compiler checks; `let mut ix = ix;` inside a block makes a new, shadowing variable rather
+//!   than modifying the outer one;
+//! - `if` is an expression, so `return if hy < 0 { a } else { b };` is the C's `?:`.
 
 // The constants below are FDLIBM's decimal literals, transcribed. Several carry more digits than
-// are needed to name their double, and clippy is right that the tail is redundant — but the
+// are needed to name their double, and clippy is right that the tail is redundant, but the
 // redundant digits are the source's, not this port's, and shortening them would make the file a
 // paraphrase of fdlibm rather than a transcription of it. The values are identical either way; the
 // provenance is not.
@@ -141,7 +164,8 @@ const L3: f64 = 3.333_333_298_183_774_3e-1;
 const L4: f64 = 2.727_281_238_085_340_1e-1;
 const L5: f64 = 2.306_607_457_755_617_6e-1;
 const L6: f64 = 2.069_750_178_003_384_2e-1;
-/// `P1` to `P5`: the polynomial of step 3, not the same coefficients as `exp`'s.
+/// `P1` to `P5`: the polynomial of step 3. The same five doubles as [`crate::strict_exp`]'s; `P5`
+/// is printed with a last digit of 5 here and 6 there, and both literals are `0x3e66376972bea4d0`.
 const P1: f64 = 1.666_666_666_666_660_2e-1;
 const P2: f64 = -2.777_777_777_701_559_3e-3;
 const P3: f64 = 6.613_756_321_437_934e-5;
@@ -173,10 +197,11 @@ const IVLN2_L: f64 = 1.925_962_991_126_617_5e-8;
 ///
 /// Two lint families are silenced here rather than worked around. `eq_op` fires on `(x-x)/(x-x)`
 /// and `z-z`, which are how FDLIBM produces a NaN *and* raises the invalid flag; writing
-/// `f64::NAN` instead would be a different program in C and is kept faithful here. `approx_constant`
-/// fires on `lg2`, which is `ln 2` — the same refusal [`crate::strict_exp`] makes, for the same
-/// reason: the value is fdlibm's literal, and substituting one from elsewhere would make the port
-/// depend on two sources agreeing to the last bit rather than on the one it cites.
+/// `f64::NAN` instead would be a different program in C and is kept faithful here.
+/// `approx_constant` fires on `lg2`, which is `ln 2`: the same refusal [`crate::strict_exp`]
+/// makes, for the same reason. The value is fdlibm's literal, and substituting one from elsewhere
+/// would make the port depend on two sources agreeing to the last bit rather than on the one it
+/// cites.
 #[allow(
     clippy::many_single_char_names,
     clippy::similar_names,
@@ -212,6 +237,8 @@ pub fn pow(x: f64, y: f64) -> f64 {
             // |y| >= 2**53: every such double is an even integer.
             yisint = 2;
         } else if iy >= 0x3ff0_0000 {
+            // k is y's unbiased exponent. Above 20 the bit of weight one lies in the low word,
+            // so the test shifts `ly`; at 20 or below it lies in the high word and `ly` must be 0.
             let k = (iy >> 20) - 0x3ff;
             if k > 20 {
                 let j = ly >> (52 - k);
@@ -231,6 +258,7 @@ pub fn pow(x: f64, y: f64) -> f64 {
     if ly == 0 {
         if iy == 0x7ff0_0000 {
             // y is +-Inf.
+            // Zero exactly when |x| == 1: high word 0x3ff00000 and low word 0.
             if ((ix as u32).wrapping_sub(0x3ff0_0000) | lx) == 0 {
                 // (+-1)**(+-Inf) is NaN, not 1. Case 9.
                 return y - y;

@@ -17,6 +17,39 @@
 //!
 //! `clippy::excessive_precision` is allowed for the same reason: the pairs were emitted at
 //! 400-bit precision and the digits record what was generated, not what `f64` can hold.
+//!
+//! # Why not the host's `f64::ln`
+//!
+//! The platform libm is not correctly rounded: decision 0006 found it wrong on all 4 corpus
+//! points where it and `Math.log` disagreed, and on both such points for `log10`, while `Math`
+//! was right on every one. Rounding the true value once is the one target every host reaches
+//! identically.
+//!
+//! # Two phases, one answer (decision 0045)
+//!
+//! [`ln_dd`] is the accurate method: a 22-term series in double-double ([`crate::dd`]). It is
+//! slow, so a fast phase computes a cheaper value with an error bound, and [`round_if_certain`]
+//! accepts it only when every point within twice the bound rounds to the same `f64`. Otherwise,
+//! and for every subnormal, the series decides. The fast phase therefore cannot change an
+//! answer, only how quickly it is found.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `x.to_bits()` is `Double.doubleToRawLongBits(x)` as an unsigned `u64`; `f64::from_bits` is
+//!   `Double.longBitsToDouble`. `x.to_bits() >> 52 & 0x7ff` is the biased exponent: in Rust `>>`
+//!   binds tighter than `&`, and `&` tighter than `!=`, so `a >> 52 & 0x7ff != 0` reads as
+//!   `((a >> 52) & 0x7ff) != 0` (Java would parse `0x7ff != 0` first and reject it);
+//! - `as` converts numbers: `u64 as i64` keeps the bits, `usize as f64` and `i64 as f64` round
+//!   to the nearest double (exact for every such conversion outside the tests);
+//! - `Option<f64>` is "an `f64` or nothing", Java's nullable `Double` checked by the compiler;
+//!   `cond.then_some(v)` is `cond ? v : null`, and `if let Some(a) = opt { .. }` runs the block
+//!   only when there is a value, binding it to `a`;
+//! - a function returning `(DoubleDouble, f64)` returns a pair by value;
+//! - `static TABLE: OnceLock<..>` with `get_or_init` is a lazily initialised constant, built on
+//!   the first call and shared afterwards: Java's initialisation-on-demand holder idiom;
+//! - `for (i, entry) in table.iter_mut().enumerate().skip(1)` walks the array from index 1 with
+//!   each slot's index `i` and a writable reference `entry`; `*entry = ..` stores through it;
+//! - a function's last expression is its return value; `return` marks only the early exits.
 #![allow(clippy::approx_constant, clippy::excessive_precision)]
 
 use crate::dd::{self, DoubleDouble};
@@ -179,6 +212,10 @@ fn ln_rounded(x: f64) -> f64 {
 }
 
 /// `java.lang.Math.log`, correctly rounded.
+///
+/// The special values are tested first and in this order: NaN or negative gives NaN, either zero
+/// (`x == 0.0` is also true for `-0.0`) gives negative infinity, positive infinity gives itself,
+/// and one gives `0.0` exactly. Everything else is finite and positive.
 pub fn log(x: f64) -> f64 {
     if x.is_nan() || x < 0.0 {
         return f64::NAN;
@@ -195,7 +232,10 @@ pub fn log(x: f64) -> f64 {
     ln_rounded(x)
 }
 
-/// `java.lang.Math.log10`, correctly rounded.
+/// `java.lang.Math.log10`, correctly rounded: the natural logarithm in double-double, times
+/// `log10(e)` in double-double, rounded once.
+///
+/// Same special values as [`log`], plus the exact powers of ten below.
 pub fn log10(x: f64) -> f64 {
     if x.is_nan() || x < 0.0 {
         return f64::NAN;
@@ -213,6 +253,9 @@ pub fn log10(x: f64) -> f64 {
     // Exact powers of ten must return exact integers. The series route would land within one
     // ulp but not necessarily *on* the integer, and log10 of a power of ten showing up as
     // 2.9999999999999996 is the kind of thing that survives all the way into a report column.
+    // `x.fract()` is the fractional part, so this asks "is x an integer". The cap is 1e22
+    // because every power of ten up to 10^22 is an exact double (5^22 < 2^53), so `p *= 10.0`
+    // below never rounds and the equality test is exact.
     if x.fract() == 0.0 && x > 0.0 && x <= 1e22 {
         let mut p = 1.0f64;
         for k in 0..=22 {
