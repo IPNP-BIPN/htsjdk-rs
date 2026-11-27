@@ -18,6 +18,9 @@ flate2.workspace = true
 # CRAM is defined in terms of SAM records: the record model walks a cigar and compares read bases
 # against a reference, and both of those are already ported here.
 htsjdk-bam = { path = "../htsjdk-bam" }
+# Containers are decompressed and their records decoded on rayon's workers, a window ahead
+# of the one being read.
+rayon = "1.12.0"
 # A slice header carries the MD5 of the reference bases it was compressed against.
 md-5 = "0.11"
 # `Math.log`, which the rANS Nx16 encoder sizes its order-1 tables with.

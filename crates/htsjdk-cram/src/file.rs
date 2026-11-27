@@ -197,6 +197,56 @@ pub fn read_container(
     at: usize,
     major: u8,
 ) -> Result<(ContainerWalk, usize), FileError> {
+    walk_container(cram, at, major, |method, raw, _, size| {
+        decompress(method, raw, size)
+    })
+}
+
+/// A block [`read_container_deferred`] left compressed: its method, where its bytes lie in the
+/// slice the container was read from, and the size it decompresses to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeferredBlock {
+    pub method: CompressionMethod,
+    pub range: std::ops::Range<usize>,
+    pub uncompressed_size: i32,
+}
+
+/// [`read_container`] without the decompression: every block's content is left empty, and its
+/// compressed bytes are listed in the order `read_container` would decompress them.
+///
+/// Only the structure is read, so a container this accepts can still fail in a block, and one
+/// this refuses can fail in a block before the point it refuses at: `read_container` over the
+/// same bytes is what gives the refusal.
+pub fn read_container_deferred(
+    cram: &[u8],
+    at: usize,
+    major: u8,
+) -> Result<(ContainerWalk, Vec<DeferredBlock>, usize), FileError> {
+    let mut deferred = Vec::new();
+    let (container, end) = walk_container(cram, at, major, |method, _, range, size| {
+        deferred.push(DeferredBlock {
+            method,
+            range,
+            uncompressed_size: size,
+        });
+        Ok(Vec::new())
+    })?;
+    Ok((container, deferred, end))
+}
+
+/// The walk both read the container with, `content` giving each block's content from its
+/// method, its compressed bytes and where they lie, and its uncompressed size.
+fn walk_container(
+    cram: &[u8],
+    at: usize,
+    major: u8,
+    mut content: impl FnMut(
+        CompressionMethod,
+        &[u8],
+        std::ops::Range<usize>,
+        i32,
+    ) -> Result<Vec<u8>, FileError>,
+) -> Result<(ContainerWalk, usize), FileError> {
     let offset = at;
     let header = ContainerHeader::read(cram.get(at..).ok_or(FileError::Truncated)?, major)?;
     let blocks_start = at + header.byte_length;
@@ -248,7 +298,7 @@ pub fn read_container(
                 content_type: header.content_type().unwrap_or(ContentType::External),
                 method,
                 content_id: header.content_id,
-                content: decompress(method, raw, header.uncompressed_size)?,
+                content: content(method, raw, start..end, header.uncompressed_size)?,
             });
             cursor += header.total_length(major);
         }
