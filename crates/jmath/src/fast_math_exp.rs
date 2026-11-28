@@ -3,8 +3,8 @@
 //! `docs/decisions/0023-commons-math3-is-portable-where-the-jdk-is-not.md`.
 //!
 //! This is the exponential GATK's `MathUtils` and commons-math3's own `Gamma`, `Erf` and
-//! `NormalDistribution` reach. It is **not** [`crate::math::exp`], which is `java.lang.Math.exp`,
-//! a HotSpot intrinsic whose port was withdrawn in decision 0014 for being a GPL2 transcription.
+//! `NormalDistribution` reach. It is **not** `java.lang.Math.exp`, a HotSpot intrinsic whose port
+//! (once `jmath::math::exp`) was withdrawn in decision 0014 for being a GPL2 transcription.
 //! Two exponentials, two licences, two different answers on the same input: a call site that
 //! names `FastMath` must reach this one.
 //!
@@ -17,9 +17,11 @@
 //! ```
 //!
 //! The port was written on the computing branch, to avoid transcribing 3,550 literals by hand,
-//! and the oracle was asked whether the two branches agree. **They do not: 577 of 5,050 entries
+//! and the oracle was asked whether the two branches agree. **They do not: 417 of 5,050 entries
 //! differ**, all in the integer table, which is the reciprocal path. See
-//! `docs/decisions/0024-fastmaths-two-table-branches-do-not-agree.md`.
+//! `docs/decisions/0024-fastmaths-two-table-branches-do-not-agree.md`, which counted 577 on raw
+//! bits; 160 of those are the same NaN with opposite signs, and `tests/fastmath_exp.rs` now
+//! asserts 417 with NaN signs out of the comparison.
 //!
 //! So the port carries the **literals**, in [`crate::fast_math_tables`], generated from the
 //! oracle's own arrays rather than typed in, and keeps [`recomputed_tables`] beside them so the
@@ -44,6 +46,27 @@
 //! so a subnormal result keeps its precision. A port that folded them into the general path would
 //! agree everywhere except on the subnormal range, which is exactly where an exponential is
 //! interesting to a likelihood.
+//!
+//! # Why not the host's `f64::exp`
+//!
+//! `FastMath.exp` is a table lookup plus a short polynomial, not a correctly rounded function,
+//! and the host libm is a different algorithm that differs from host to host. Only the same
+//! tables, the same polynomial and the same order of additions give the same bits; the golden
+//! `tests/data/fastmath_exp.txt.gz`, read by `tests/fastmath_exp.rs`, is what checks that.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `&mut [f64; 2]` is a writable reference to a two-element array: the reference's `double[]`
+//!   out-parameter of length two. `&[f64; 2]` is the read-only form;
+//! - `Option<&mut [f64; 2]>` is the reference's nullable `double[] hiPrec`: `None` is `null`.
+//!   `hi_prec.as_deref_mut()` borrows the array inside for one use without giving it up, so the
+//!   same `hi_prec` can be tested again later, and `if let Some(hi) = ..` is `if (hiPrec != null)`;
+//! - `x as i32` truncates toward zero, saturates at the `int` range and gives 0 for NaN, which is
+//!   exactly Java's `(int) x`;
+//! - `|args| body` is a closure, Java's lambda;
+//! - `static X: OnceLock<T>` with `get_or_init` is a lazily built constant, Java's
+//!   initialisation-on-demand holder;
+//! - arrays are values: `let squared = xs;` copies the two doubles, as `xs.clone()` would in Java.
 
 // The literals below are the reference's, character for character, including the ones clippy
 // would rather see written as a constant or shortened. `2.718281828459045` is the high half of a
@@ -112,12 +135,14 @@ fn resplit(a: &mut [f64; 2]) {
     }
 }
 
+/// `FastMathCalc.splitMult`: the product of two splits, then [`resplit`].
 fn split_mult(a: &[f64; 2], b: &[f64; 2], ans: &mut [f64; 2]) {
     ans[0] = a[0] * b[0];
     ans[1] = a[0] * b[1] + a[1] * b[0] + a[1] * b[1];
     resplit(ans);
 }
 
+/// `FastMathCalc.splitAdd`: the sum of two splits, then [`resplit`].
 fn split_add(a: &[f64; 2], b: &[f64; 2], ans: &mut [f64; 2]) {
     ans[0] = a[0] + b[0];
     ans[1] = a[1] + b[1];
@@ -169,6 +194,8 @@ fn quad_mult(a: &[f64; 2], b: &[f64; 2], result: &mut [f64; 2]) {
     result[0] = zs[0];
     result[1] = zs[1];
 
+    // The same six-statement compensated add follows each of the three remaining products, so it
+    // is written once as a closure; every call runs exactly those six statements in that order.
     let accumulate = |zs: &[f64; 2], result: &mut [f64; 2]| {
         let mut tmp = result[0] + zs[0];
         result[1] -= tmp - result[0] - zs[0];
@@ -248,7 +275,9 @@ fn exp_int(mut p: i32, result: &mut [f64; 2]) {
     resplit(result);
 }
 
-/// The four tables, however they were obtained.
+/// The four tables, however they were obtained: `EXP_INT_TABLE_A`/`_B` (1,500 entries, `exp` of
+/// an integer part as a split, at index 750 + that integer) and `EXP_FRAC_TABLE_A`/`_B` (1,025
+/// entries, `exp(i/1024)` for `i` in 0 to 1024).
 pub struct Tables {
     pub exp_int_a: Vec<f64>,
     pub exp_int_b: Vec<f64>,
@@ -262,6 +291,8 @@ static RECOMPUTED: OnceLock<Tables> = OnceLock::new();
 /// The tables `FastMath` actually uses: the shipped literals.
 pub fn tables() -> &'static Tables {
     TABLES.get_or_init(|| {
+        // The generated tables store raw bit patterns; this turns each into its double, as
+        // `Double.longBitsToDouble` would, and collects them into a `Vec` (Java's `ArrayList`).
         let widen = |bits: &[u64]| bits.iter().map(|b| f64::from_bits(*b)).collect();
         Tables {
             exp_int_a: widen(&crate::fast_math_tables::EXP_INT_A),
@@ -326,6 +357,8 @@ pub fn exp(x: f64) -> f64 {
 /// term changes the order of the final additions rather than being an optimisation.
 pub fn exp_with_extra(x: f64, extra: f64, mut hi_prec: Option<&mut [f64; 2]>) -> f64 {
     let tables = tables();
+    // Truncation toward zero; for negative x this is -(int) -x, and the `int_val -= 1` below
+    // moves it one lower, so `x - int_val` lies in (0, 1] there and in [0, 1) for x >= 0.
     let mut int_val = x as i32;
 
     if x < 0.0 {
@@ -340,6 +373,8 @@ pub fn exp_with_extra(x: f64, extra: f64, mut hi_prec: Option<&mut [f64; 2]>) ->
         }
         if int_val < -709 {
             // The shift keeps a subnormal result precise; the divisor is exp(40.19140625).
+            // `.map(|_| &mut inner)` hands the recursive call a scratch array only when the caller
+            // gave one (`None` stays `None`); its two halves are then divided into the caller's.
             let mut inner = [0.0f64; 2];
             let result = exp_with_extra(
                 x + 40.19140625,
@@ -374,10 +409,13 @@ pub fn exp_with_extra(x: f64, extra: f64, mut hi_prec: Option<&mut [f64; 2]>) ->
         return f64::INFINITY;
     }
 
+    // The integer table is centred on index 750, so `exp(int_val)` sits at 750 + int_val.
     let index = (EXP_INT_TABLE_MAX_INDEX as i32 + int_val) as usize;
     let int_part_a = tables.exp_int_a[index];
     let int_part_b = tables.exp_int_b[index];
 
+    // `(x - int_val) * 1024`, truncated, picks the `exp(i/1024)` entry. It reaches 1024, the
+    // table's last entry, when a negative x is an integer, for one.
     let int_frac = ((x - int_val as f64) * 1024.0) as i32 as usize;
     let frac_part_a = tables.exp_frac_a[int_frac];
     let frac_part_b = tables.exp_frac_b[int_frac];

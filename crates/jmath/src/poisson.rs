@@ -4,7 +4,12 @@
 //! GATK's `NuMTFilterTool` asks it one question: at what alternate depth does a call stop being
 //! explicable as a nuclear insertion of mitochondrial DNA? The answer is a quantile,
 //! `new PoissonDistribution(coverage * copies / 2).inverseCumulativeProbability(0.99)`, and it is
-//! the only arithmetic in that tool.
+//! the only arithmetic in that tool. In GATK 4.7.0.0's `NuMTFilterTool.getMaxAltDepthCutoff` the
+//! mean is `medianAutosomalCoverage * maxNuMTAutosomalCopies / 2.0`, and then:
+//!
+//! ```java
+//! return autosomalCoverage.inverseCumulativeProbability(1 - LOWER_BOUND_PROB);
+//! ```
 //!
 //! # The CDF is the regularized gamma, and its epsilon is not the gamma's default
 //!
@@ -35,6 +40,16 @@
 //! For a Poisson the mean and the variance are the same number, so the bracket is
 //! `mu -/+ k * sqrt(mu)`, and the variance is zero only for a mean of zero, which the constructor
 //! refuses.
+//!
+//! # Reading this file without reading Rust
+//!
+//! - `Result<T, PoissonError>` is "a `T` or an error", the model of a thrown exception; `?` after a
+//!   call passes the error up unchanged, and `impl From<GammaError>` lets it carry the gamma's.
+//! - `i32::MAX` is `Integer.MAX_VALUE`; `f64::from(x)` is the exact `(double) x`.
+//! - `tmp.ceil() as i32` saturates at the `int` range and sends NaN to zero, as Java's `(int)`
+//!   does.
+//! - `a.wrapping_add(b)` is Java's `a + b` on `int`: it wraps on overflow. Plain `+` on an `i32`
+//!   panics on overflow in a debug build.
 
 use crate::gamma::{regularized_gamma_q, GammaError};
 
@@ -74,7 +89,8 @@ fn check_mean(mean: f64) -> Result<(), PoissonError> {
     Ok(())
 }
 
-/// `cumulativeProbability(x)`.
+/// `cumulativeProbability(x)`: the quoted body in the module note, with the distribution's own
+/// epsilon and iteration cap rather than `Gamma`'s.
 pub fn cumulative_probability(mean: f64, x: i32) -> Result<f64, PoissonError> {
     check_mean(mean)?;
     if x < 0 {
@@ -119,6 +135,7 @@ pub fn inverse_cumulative_probability(mean: f64, p: f64) -> Result<i32, PoissonE
 
     // For a Poisson the variance IS the mean, so sigma is its square root and is zero only for a
     // mean of zero, which the constructor already refused.
+    // `f64::sqrt` is correctly rounded, so it is `FastMath.sqrt`'s double too.
     let sigma = mean.sqrt();
     let chebyshev_applies = !(mean.is_infinite()
         || mean.is_nan()
@@ -143,9 +160,11 @@ pub fn inverse_cumulative_probability(mean: f64, p: f64) -> Result<i32, PoissonE
     // The midpoint is a WRAPPING add. Java's `(lower + upper) / 2` overflows silently when the
     // bracket still reaches `Integer.MAX_VALUE`, which is why the reference re-computes it as
     // `lower + (upper - lower) / 2` whenever the result falls outside the bracket. That guard is
-    // reachable: a NaN quantile narrows nothing, so the first midpoint is taken over the whole
-    // support. A port that adds without wrapping panics there in debug and answers the same number
-    // in release, which is the worst of both.
+    // reachable: a NaN quantile narrows nothing and fails every `>= p`, so the lower end climbs
+    // while the upper stays at `Integer.MAX_VALUE`; the first midpoint (`-1 + MAX`) fits, and the
+    // second (`2^30 - 1 + MAX`) overflows. A mean above about `1.07e9` overflows the same way,
+    // since both ends of its bracket are near the mean. A port that adds without wrapping panics
+    // there in debug and answers the same number in release, which is the worst of both.
     while lower + 1 < upper {
         let mut middle = lower.wrapping_add(upper) / 2;
         if middle < lower || middle > upper {
@@ -248,8 +267,9 @@ mod tests {
 
     /// A NaN is not refused: it passes both comparisons, narrows nothing, and walks the support.
     ///
-    /// It is also the only case that reaches the overflow guard, since the bracket still spans to
-    /// `Integer.MAX_VALUE` when the first midpoint is taken.
+    /// It is also the case in this suite that reaches the overflow guard: the upper end stays at
+    /// `Integer.MAX_VALUE` while the lower climbs, and the second midpoint overflows. (A mean
+    /// above about `1.07e9` reaches it too; none is tested.)
     #[test]
     fn a_nan_quantile_is_not_refused() {
         assert_eq!(
